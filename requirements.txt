@@ -1,0 +1,16 @@
+# Core data stack
+pandas>=2.2
+numpy>=1.26
+
+# Market data provider
+yfinance>=0.2.40
+
+# HTTP and HTML parsing for S&P 500 scraper
+requests>=2.32.0
+lxml>=4.9.3
+
+# Plotting (for sector weights visualization)
+matplotlib>=3.8
+
+# Parquet backend for caching (pandas.to_parquet)
+pyarrow>=14.0.0
