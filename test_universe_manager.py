@@ -6,12 +6,21 @@ from universe_manager import UniverseManager
 store = MarketDataStore(data_root="./data")
 
 # 2. Load universe (e.g. S&P 500 list from CSV)
-universe = UniverseManager.from_csv(
+# universe = UniverseManager.from_csv(
+#     data_store=store,
+#     csv_path="./data/universe/sp500_constituents.csv",
+#     ticker_col="Symbol",
+#     sector_col="GICS Sector",    # or None if you don't have it yet
+#     name="SP500_static",
+# )
+universe = UniverseManager.from_membership_csv(
     data_store=store,
-    csv_path="./data/universies/sp500_constituents.csv",
+    csv_path="data/universe/sp500_membership_history_enriched.csv",
     ticker_col="Symbol",
-    sector_col="GICS Sector",    # or None if you don't have it yet
-    name="SP500_static",
+    sector_col="GICS Sector",
+    date_added_col="DateAdded",
+    date_removed_col="DateRemoved",
+    name="SP500_hist",
 )
 
 # 3. Ensure all data is locally cached for your backtest window

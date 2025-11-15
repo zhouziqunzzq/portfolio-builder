@@ -12,55 +12,77 @@ from market_data_store import MarketDataStore
 @dataclass
 class UniverseManager:
     data_store: MarketDataStore
-    _tickers: List[str]
-    sector_map: Optional[Dict[str, str]] = None
-    name: Optional[str] = None
+    membership: pd.DataFrame   # full membership, including Unknown
+    name: str = "SP500_hist"
 
     def __post_init__(self):
-        # Normalize tickers to uppercase and de-duplicate
-        self._tickers = sorted({t.upper() for t in self._tickers})
-        if self.sector_map is not None:
-            # Normalize keys to uppercase
-            self.sector_map = {k.upper(): v for k, v in self.sector_map.items()}
+        df = self.membership.copy()
+        # Normalize sector column name
+        if "GICS Sector" in df.columns and "Sector" not in df.columns:
+            df = df.rename(columns={"GICS Sector": "Sector"})
+
+        # Keep full membership
+        self.membership = df
+
+        # Tradable subset = known sector only
+        self.membership_tradable = df[df["Sector"] != "Unknown"].copy()
+
+        # Optional: small diagnostic
+        n_total = df["Symbol"].nunique()
+        n_tradable = self.membership_tradable["Symbol"].nunique()
+        print(f"[UniverseManager] Symbols total: {n_total}, tradable: {n_tradable}")
 
     # -------- alternative constructor from CSV --------
 
     @classmethod
-    def from_csv(
+    def from_membership_csv(
         cls,
         data_store: MarketDataStore,
-        csv_path: str | Path,
+        csv_path: str,
         ticker_col: str = "Symbol",
-        sector_col: Optional[str] = None,
-        name: Optional[str] = None,
+        sector_col: str = "GICS Sector",
+        date_added_col: str = "DateAdded",
+        date_removed_col: str = "DateRemoved",
+        name: str = "SP500_hist",
     ) -> "UniverseManager":
-        csv_path = Path(csv_path)
         df = pd.read_csv(csv_path)
-
-        if ticker_col not in df.columns:
-            raise ValueError(f"Ticker column '{ticker_col}' not found in {csv_path}")
-
-        tickers = df[ticker_col].astype(str).str.upper().tolist()
-
-        sector_map = None
-        if sector_col is not None and sector_col in df.columns:
-            sector_map = {
-                str(t).upper(): str(s)
-                for t, s in zip(df[ticker_col], df[sector_col])
+        df = df.rename(
+            columns={
+                ticker_col: "Symbol",
+                sector_col: "Sector",
+                date_added_col: "DateAdded",
+                date_removed_col: "DateRemoved",
             }
-
+        )
+        tickers = df["Symbol"].astype(str).str.upper().tolist()
+        df["DateAdded"] = pd.to_datetime(df["DateAdded"]).dt.normalize()
+        df["DateRemoved"] = pd.to_datetime(df["DateRemoved"]).dt.normalize()
         return cls(
             data_store=data_store,
-            _tickers=tickers,
-            sector_map=sector_map,
-            name=name or csv_path.stem,
+            membership=df,
+            name=name,
         )
 
     # -------- basic info --------
+    @property
+    def all_tickers(self, include_unknown: bool = False) -> List[str]:
+        if include_unknown:
+            return sorted(self.membership["Symbol"].unique())
+        # Only tickers with known sector
+        return sorted(self.membership_tradable["Symbol"].unique())
+
+    @property
+    def sector_map(self) -> dict[str, str]:
+        df = self.membership_tradable.sort_values("DateAdded")
+        sectors = {}
+        for sym, g in df.groupby("Symbol"):
+            # last known sector is fine
+            sectors[sym] = g.iloc[-1]["Sector"]
+        return sectors
 
     def tickers(self) -> List[str]:
         """Return list of tickers in the universe."""
-        return list(self._tickers)
+        return self.all_tickers
 
     def sectors(self) -> set[str]:
         """Return set of sectors present in the universe (if sector_map is available)."""
@@ -88,11 +110,11 @@ class UniverseManager:
         This will populate the local cache via MarketDataStore.
         """
         print(
-            f"[UniverseManager] Ensuring OHLCV for {len(self._tickers)} tickers "
+            f"[UniverseManager] Ensuring OHLCV for {len(self.all_tickers)} tickers "
             f"({self.name or 'universe'}) {start} → {end} ({interval})"
         )
-        for i, ticker in enumerate(self._tickers, start=1):
-            print(f"[UniverseManager] [{i}/{len(self._tickers)}] {ticker}")
+        for i, ticker in enumerate(self.all_tickers, start=1):
+            print(f"[UniverseManager] [{i}/{len(self.all_tickers)}] {ticker}")
             _ = self.data_store.get_ohlcv(
                 ticker=ticker,
                 start=start,
@@ -113,7 +135,7 @@ class UniverseManager:
         Uses the underlying cache (and will fetch any missing data).
         """
         result: Dict[str, pd.DataFrame] = {}
-        for ticker in self._tickers:
+        for ticker in self.all_tickers:
             df = self.data_store.get_ohlcv(
                 ticker=ticker,
                 start=start,
@@ -124,43 +146,53 @@ class UniverseManager:
             if not df.empty:
                 result[ticker] = df
         return result
+    
+    def build_membership_mask(self, index: pd.DatetimeIndex) -> pd.DataFrame:
+        tickers = self.all_tickers  # tradable only
+        mask = pd.DataFrame(False, index=index, columns=tickers)
+
+        for _, row in self.membership_tradable.iterrows():
+            sym = row["Symbol"]
+            added = row["DateAdded"]
+            removed = row["DateRemoved"]
+
+            if sym not in mask.columns:
+                continue
+
+            if pd.isna(removed):
+                valid = (index >= added)
+            else:
+                valid = (index >= added) & (index < removed)
+
+            mask.loc[valid, sym] = True
+
+        return mask
 
     def get_price_matrix(
         self,
-        start,
-        end,
+        start: str,
+        end: str,
         field: str = "Close",
         interval: str = "1d",
-        auto_adjust: bool = True,
     ) -> pd.DataFrame:
         """
-        Build a wide price matrix: index = Date, columns = tickers, values = [field].
-        Missing tickers (no data) are silently skipped.
+        Fetch OHLCV prices for all tickers in membership, apply membership mask so that
+        before DateAdded / after DateRemoved the prices are NaN.
         """
-        series_list = []
-        for ticker in self._tickers:
-            df = self.data_store.get_ohlcv(
-                ticker=ticker,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=auto_adjust,
-            )
-            if df.empty:
-                continue
-
+        # 1. Fetch all tickers' data
+        data = {}
+        for sym in self.all_tickers:
+            df = self.data_store.get_ohlcv(sym, start, end, interval=interval)
             if field not in df.columns:
-                # You could raise here if you want stricter behavior.
-                print(
-                    f"[UniverseManager] WARNING: field '{field}' not found for {ticker}, skipping."
-                )
                 continue
+            data[sym] = df[field]
 
-            s = df[field].rename(ticker.upper())
-            series_list.append(s)
+        prices = pd.DataFrame(data).sort_index()
 
-        if not series_list:
-            return pd.DataFrame()
+        # 2. Build membership mask on this date index
+        mask = self.build_membership_mask(prices.index)
 
-        price_matrix = pd.concat(series_list, axis=1).sort_index()
-        return price_matrix
+        # 3. Apply mask: tickers not in index at a given date become NaN
+        prices = prices.where(mask)
+
+        return prices

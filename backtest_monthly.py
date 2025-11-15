@@ -82,12 +82,21 @@ else:
 # 1. Setup data + universe
 store = MarketDataStore(data_root="./data")
 
-universe = UniverseManager.from_csv(
+# Load universe (static)
+# universe = UniverseManager.from_csv(
+#     data_store=store,
+#     csv_path="data/universe/sp500_constituents.csv",
+#     ticker_col="Symbol",
+#     sector_col="GICS Sector",
+#     name="SP500_static",
+# )
+# Or load universe (historical membership)
+universe = UniverseManager.from_membership_csv(
     data_store=store,
-    csv_path="data/universe/sp500_constituents.csv",
+    csv_path="data/universe/sp500_membership_history_enriched.csv",
     ticker_col="Symbol",
-    sector_col="GICS Sector",
-    name="SP500_static",
+    sector_col="GICS Sector",     # if your enriched CSV renamed it
+    name="SP500_hist",
 )
 
 prices = universe.get_price_matrix(start=start, end=end, field="Close", interval="1d")
