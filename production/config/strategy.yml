@@ -9,8 +9,11 @@ strategy:
 
 universe:
   name: sp500
-  membership_csv: data/sp500_membership.csv
   filter_unknown_sectors: true
+  current_constituents_filename: current_constituents.csv
+  membership_csv: data/sp500_membership.csv
+  membership_raw_filename: sp500_membership_raw.csv
+  membership_enriched_filename: sp500_membership_enriched.csv
 
 market_data:
   root: data/prices

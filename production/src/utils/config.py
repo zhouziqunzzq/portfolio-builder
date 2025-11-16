@@ -19,6 +19,9 @@ class UniverseConfig:
     name: str
     membership_csv: str
     filter_unknown_sectors: bool = True
+    current_constituents_filename: str = "current_constituents.csv"
+    membership_raw_filename: str | None = None
+    membership_enriched_filename: str | None = None
 
 
 @dataclass
