@@ -158,7 +158,7 @@ print("Cash weights (implicit):")
 print(1 - sector_weights_daily.sum(axis=1).tail())
 
 # Monthly sector weights: last value in each calendar month
-sector_weights_monthly = sector_weights_daily.resample("M").last()
+sector_weights_monthly = sector_weights_daily.resample("ME").last()
 print("Sector Weights Monthly:")
 print(sector_weights_monthly.head())
 print(sector_weights_monthly.tail())
@@ -321,7 +321,7 @@ if ENABLE_PLOTS:
     plt.tight_layout()
 
     # === Turnover over time (monthly average) ===
-    monthly_turnover = result["turnover"].resample("M").mean()
+    monthly_turnover = result["turnover"].resample("ME").mean()
 
     plt.figure(figsize=(10, 4))
     plt.plot(monthly_turnover.index, monthly_turnover.values)
@@ -336,7 +336,7 @@ if ENABLE_PLOTS:
     sector_alloc_window = sector_weights_daily.loc[warmup_start:warmup_end]
 
     # Optionally, downsample to monthly for readability
-    sector_alloc_monthly = sector_alloc_window.resample("M").last()
+    sector_alloc_monthly = sector_alloc_window.resample("ME").last()
 
     plt.figure(figsize=(10, 6))
     plt.stackplot(

@@ -1,7 +1,8 @@
 .venv/
 .vscode/
-__pycache__/
+__pycache__
 
 # Cached market data files
 test_data/
 data/
+production/data/

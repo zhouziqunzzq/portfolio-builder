@@ -1,0 +1,56 @@
+# Strategy configuration for Momentum V1.5 (production defaults)
+# These values are intentionally conservative and easily overridden per environment.
+
+strategy:
+  name: Momentum V1.5
+  rebalance: monthly
+  rebalance_day: EOM   # EOM or explicit YYYY-MM-DD for backfills
+  warmup_days: 300     # ensure signals stabilize before first use
+
+universe:
+  name: sp500
+  membership_csv: data/sp500_membership.csv
+  filter_unknown_sectors: true
+
+market_data:
+  root: data/prices
+  source: yfinance
+  session:
+    retries: 3
+    backoff_seconds: 2
+    timeout_seconds: 30
+
+signals:
+  momentum_windows: [63, 126, 252]
+  momentum_weights: [1.0, 1.0, 1.0]
+  vol_window: 20
+  vol_penalty: 0.5   # stock-score = momentum - vol_penalty * vol
+
+sectors:
+  weights:
+    w_min: 0.03
+    w_max: 0.30
+  smoothing_alpha: 1.0   # softmax sharpness
+  smoothing_beta: 0.3    # smoothing factor for weights (0=stick,1=jump)
+  trend_filter:
+    enabled: true
+    benchmark: SPY
+    window: 200
+  risk_on_equity_frac: 1.0   # equity fraction when trend is ON
+  risk_off_equity_frac: 0.7  # equity fraction when trend is OFF
+
+stocks:
+  top_k_per_sector: 2
+  weighting: equal-weight  # equal-weight | inverse-vol
+
+costs:
+  turnover_bps_per_100pct: 10
+
+runtime:
+  output_root: data
+  save:
+    signals: true
+    weights: true
+    logs: true
+  plotting: false
+  log_level: INFO

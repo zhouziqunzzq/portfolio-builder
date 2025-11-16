@@ -14,3 +14,6 @@ matplotlib>=3.8
 
 # Parquet backend for caching (pandas.to_parquet)
 pyarrow>=14.0.0
+
+# YAML config
+pyyaml>=6.0

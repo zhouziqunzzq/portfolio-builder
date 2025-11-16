@@ -110,7 +110,8 @@ class SignalEngine:
     # ------------------------------------------------------------------
     def compute_simple_returns(self) -> pd.DataFrame:
         """Daily simple returns: r_t = P_t / P_{t-1} - 1."""
-        rets = self.prices.pct_change()
+        # Explicitly disable implicit forward-filling (FutureWarning removal)
+        rets = self.prices.pct_change(fill_method=None)
         return rets
 
     def compute_momentum_components(
@@ -241,7 +242,8 @@ class SignalEngine:
         stacked = stock_score.copy()
         stacked.columns = pd.MultiIndex.from_arrays([sectors, stacked.columns])
         # level 0: sector, level 1: ticker
-        sector_scores = stacked.groupby(level=0, axis=1).mean()
+        # Avoid deprecated groupby with axis=1 by transposing
+        sector_scores = stacked.T.groupby(level=0).mean().T
 
         return sector_scores
 

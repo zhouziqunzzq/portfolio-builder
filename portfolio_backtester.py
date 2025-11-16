@@ -12,8 +12,8 @@ class PortfolioBacktester:
     """
     Simple vectorized backtester for a weight-based multi-asset portfolio.
 
-    - prices: Date Ã Ticker (Close)
-    - weights: Date Ã Ticker (target weights on those dates)
+    - prices: Date x Ticker (Close)
+    - weights: Date x Ticker (target weights on those dates)
     """
     prices: pd.DataFrame
     weights: pd.DataFrame
@@ -50,7 +50,8 @@ class PortfolioBacktester:
         """
         Instrument returns from prices: simple pct change, NaN -> 0.
         """
-        rets = self.prices.pct_change().fillna(0.0)
+        # Explicit fill_method=None to avoid deprecated implicit forward-fill
+        rets = self.prices.pct_change(fill_method=None).fillna(0.0)
         return rets
 
     def _compute_turnover(self, weights: pd.DataFrame) -> pd.Series:
