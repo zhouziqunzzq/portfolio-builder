@@ -26,6 +26,7 @@ class SectorWeightEngine:
     trend_window: int = 200              # SMA window for trend filter
     risk_on_equity_frac: float = 1.0     # equity fraction in risk-on
     risk_off_equity_frac: float = 0.7    # equity fraction in risk-off
+    top_k_sectors: Optional[int] = None  # keep only top-k sectors each rebalance (others zeroed, then renormalize)
 
     def __post_init__(self):
         # Align benchmark index to sector_scores index
@@ -48,6 +49,11 @@ class SectorWeightEngine:
             raise ValueError("beta should be in [0, 1]")
         if not (0 <= self.risk_off_equity_frac <= self.risk_on_equity_frac <= 1.0):
             raise ValueError("Equity fractions must be between 0 and 1")
+
+        # Resolve default for top_k_sectors to number of sectors
+        n_sectors = len(self.sector_scores.columns)
+        if self.top_k_sectors is None or int(self.top_k_sectors) <= 0 or int(self.top_k_sectors) > n_sectors:
+            self.top_k_sectors = n_sectors
 
     # ------------------------------------------------------------
     # Trend filter
@@ -121,6 +127,29 @@ class SectorWeightEngine:
             )
         return w_smoothed / total
 
+    def _apply_top_k(self, w: pd.Series) -> pd.Series:
+        """Keep only top-k sectors by weight, zero others, then renormalize to 1.
+
+        If k is invalid or >= number of sectors, return w normalized.
+        """
+        if w.empty:
+            return w
+        k = int(self.top_k_sectors or len(w))
+        if k >= len(w) or k <= 0:
+            total = float(w.sum())
+            return (w / total) if total > 0 else pd.Series(1.0 / len(w), index=w.index, dtype=float)
+
+        keep_idx = w.nlargest(k).index
+        w2 = w.copy()
+        w2.loc[~w2.index.isin(keep_idx)] = 0.0
+        total = float(w2.sum())
+        if total > 0:
+            return w2 / total
+        # Fallback: equal-weight among kept indices
+        w2.loc[:] = 0.0
+        w2.loc[keep_idx] = 1.0 / float(k)
+        return w2
+
     # ------------------------------------------------------------
     # Main public method
     # ------------------------------------------------------------
@@ -151,13 +180,16 @@ class SectorWeightEngine:
             # 3) smoothing vs previous
             w_smoothed = self._smooth_weights(prev_weights, w_capped)
 
+            # 3.5) enforce top-k selection and renormalize among selected sectors
+            w_selected = self._apply_top_k(w_smoothed)
+
             # 4) trend-based equity scaling
             if trend_state.loc[dt] == 1:
                 equity_frac = self.risk_on_equity_frac
             else:
                 equity_frac = self.risk_off_equity_frac
 
-            w_final = w_smoothed * equity_frac   # remaining 1 - equity_frac = implicit cash
+            w_final = w_selected * equity_frac   # remaining 1 - equity_frac = implicit cash
 
             weights.loc[dt] = w_final
             prev_weights = w_smoothed

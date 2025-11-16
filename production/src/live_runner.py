@@ -385,6 +385,7 @@ def compute_sector_weights_step(
         w_max = float(cfg.sectors.weights.get("w_max", 0.30))
         risk_on_frac = float(getattr(cfg.sectors, "risk_on_equity_frac", 1.0))
         risk_off_frac = float(getattr(cfg.sectors, "risk_off_equity_frac", 0.7))
+        top_k_sectors = getattr(cfg.sectors, "top_k_sectors", None)
 
         swe = SectorWeightEngine(
             sector_scores=sector_scores,
@@ -396,6 +397,7 @@ def compute_sector_weights_step(
             trend_window=trend_window,
             risk_on_equity_frac=risk_on_frac,
             risk_off_equity_frac=risk_off_frac,
+            top_k_sectors=top_k_sectors,
         )
         sector_weights_daily = swe.compute_weights()
 

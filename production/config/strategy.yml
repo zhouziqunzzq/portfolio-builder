@@ -35,6 +35,9 @@ sectors:
     w_max: 0.30
   smoothing_alpha: 1.0   # softmax sharpness
   smoothing_beta: 0.3    # smoothing factor for weights (0=stick,1=jump)
+  # Keep only the top-K sectors at each rebalance (others set to 0 and remaining renormalized).
+  # Default (null or omitted) means use the total number of sectors (i.e., no truncation).
+  top_k_sectors: null
   trend_filter:
     enabled: true
     benchmark: SPY

@@ -47,6 +47,7 @@ class SectorConfig:
     risk_on_equity_frac: float = 1.0
     risk_off_equity_frac: float = 0.7
     trend_filter: Dict[str, Any] = field(default_factory=dict)
+    top_k_sectors: Optional[int] = None
 
 
 @dataclass
