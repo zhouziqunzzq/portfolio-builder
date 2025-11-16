@@ -181,6 +181,17 @@ def plot_stacked_topn(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int 
     ax.set_ylabel("Weight")
     ax.set_ylim(0, 1.0)
     ax.legend(ncol=3, fontsize="small", loc="upper left", bbox_to_anchor=(0, -0.12))
+    # Make x-axis tick density a bit higher than default
+    try:
+        from matplotlib import dates as mdates  # type: ignore
+        if len(Y.index) > 0:
+            # Bi-annual ticks (every 6 months) for both monthly and daily
+            locator = mdates.MonthLocator(interval=6)
+            formatter = mdates.DateFormatter("%Y-%m")
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(formatter)
+    except Exception:
+        pass
     fig.autofmt_xdate()
 
     plots_dir = _ensure_plots_dir(cfg)
@@ -207,11 +218,21 @@ def plot_heatmap(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int = 40,
 
     top = _pick_top_tickers(df, top_n=top_n, method="max")
     mat = df[top].fillna(0.0).T
+    # Convert datetime columns to date-only strings BEFORE plotting so seaborn doesn't include time
+    try:
+        mat.columns = [c.strftime("%Y-%m-%d") if isinstance(c, pd.Timestamp) else str(c) for c in mat.columns]
+    except Exception:
+        mat.columns = [str(c) for c in mat.columns]
     fig, ax = plt.subplots(figsize=(12, 8))
     sns.heatmap(mat, cmap=cmap, ax=ax, cbar_kws={"label": "Weight"})
     ax.set_title(f"Weight Heatmap (Top {top_n}, {frequency})")
     ax.set_xlabel("Date")
     ax.set_ylabel("Ticker")
+    # Ensure x tick labels are the date-only strings
+    try:
+        ax.set_xticklabels(list(mat.columns), rotation=45, ha="right")
+    except Exception:
+        pass
     plt.tight_layout()
 
     plots_dir = _ensure_plots_dir(cfg)
@@ -241,6 +262,17 @@ def plot_bump_ranks(logger, cfg, df: pd.DataFrame, frequency: str, top_k: int = 
     ax.set_title(f"Rank Trajectories (Top {top_k}, {frequency})")
     ax.set_ylabel("Higher is better (rank inverted)")
     ax.legend(ncol=3, fontsize="small", loc="upper left", bbox_to_anchor=(0, -0.12))
+    # Make x-axis tick density a bit higher than default
+    try:
+        from matplotlib import dates as mdates  # type: ignore
+        if len(R.index) > 0:
+            # Bi-annual ticks (every 6 months)
+            locator = mdates.MonthLocator(interval=6)
+            formatter = mdates.DateFormatter("%Y-%m")
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(formatter)
+    except Exception:
+        pass
     fig.autofmt_xdate()
 
     plots_dir = _ensure_plots_dir(cfg)
@@ -293,6 +325,16 @@ def plot_tickers_timeseries(
     ax.set_ylabel("Weight")
     ax.set_ylim(0, max(0.05, float(W[chosen].max().max()) * 1.1))
     ax.legend(ncol=3, fontsize="small", loc="upper left", bbox_to_anchor=(0, -0.12))
+    # Set bi-annual ticks on x-axis
+    try:
+        from matplotlib import dates as mdates  # type: ignore
+        if len(W.index) > 0:
+            locator = mdates.MonthLocator(interval=6)
+            formatter = mdates.DateFormatter("%Y-%m")
+            ax.xaxis.set_major_locator(locator)
+            ax.xaxis.set_major_formatter(formatter)
+    except Exception:
+        pass
     fig.autofmt_xdate()
 
     plots_dir = _ensure_plots_dir(cfg)
