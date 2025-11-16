@@ -26,13 +26,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--regen-universe", action="store_true", help="Rebuild universe artifacts: current constituents snapshot, historical membership, sector enrichment")
     p.add_argument("--update-prices", action="store_true", help="Update OHLCV cache for tickers and compute SPY trend status")
     p.add_argument("--rebalance", action="store_true", help="Force a rebalance run")
-    p.add_argument("--print-portfolio", action="store_true", help="Print the latest sector and stock weights in a human-friendly format")
-    p.add_argument(
-        "--print-frequency",
-        choices=["monthly", "daily"],
-        default="monthly",
-        help="When printing portfolio, choose which frequency of weights to display (monthly or daily)",
-    )
     p.add_argument("--rebalance-start", default=None, help="Explicit start date YYYY-MM-DD for rebalance; overrides --signal-start during rebalance")
 
     # Single-step actions that can be run independently
@@ -607,85 +600,6 @@ def rebalance_pipeline(
     compute_stock_weights_step(args=args, cfg=cfg, um=um, mds=mds, logger=logger)
 
 
-def print_portfolio(args: argparse.Namespace, cfg, logger) -> None:
-    """Print a human-friendly summary of the latest sector and stock weights.
-
-    - Reads the latest monthly sector weights and stock weights CSVs.
-    - Excludes zero-weight positions.
-    - Includes a Cash line if the weights sum to less than 100%.
-    - Sorts entries by weight descending and formats as percentages.
-    """
-    try:
-        weights_dir = (cfg.output_root_path / "weights").resolve()
-        epsilon = 1e-9
-
-        # Decide frequency based on flag
-        freq = (args.print_frequency or "monthly").lower()
-        is_daily = freq == "daily"
-
-        # Load latest sector weights for the chosen frequency
-        sector_glob = "sector_weights_daily_*.csv" if is_daily else "sector_weights_monthly_*.csv"
-        sector_files = sorted(weights_dir.glob(sector_glob))
-        if sector_files:
-            latest_sector = sector_files[-1]
-            df_sec = pd.read_csv(latest_sector, index_col=0)
-            if not df_sec.empty:
-                try:
-                    df_sec.index = pd.to_datetime(df_sec.index)
-                except Exception:
-                    pass
-                last_idx = df_sec.index[-1]
-                sec_series = df_sec.iloc[-1].fillna(0.0)
-                sec_series = sec_series[sec_series.abs() > epsilon]
-                sec_series = sec_series.sort_values(ascending=False)
-                total = float(sec_series.sum()) if len(sec_series) else 0.0
-                cash = max(0.0, 1.0 - total)
-
-                hdr = f"Sector allocation ({'DAILY' if is_daily else 'MONTHLY'} as of %s)"
-                logger.info(hdr, str(getattr(last_idx, 'date', lambda: last_idx)()))
-                if len(sec_series) == 0 and cash <= epsilon:
-                    logger.info("(no non-zero sector weights found)")
-                else:
-                    for i, (name, w) in enumerate(sec_series.items(), start=1):
-                        logger.info("%2d) %-20s %6.2f%%", i, str(name), w * 100.0)
-                    if cash > epsilon:
-                        logger.info("    %-20s %6.2f%%", "Cash", cash * 100.0)
-        else:
-            logger.info("=== Sector allocation (%s) ===", "DAILY" if is_daily else "MONTHLY")
-            logger.info("No %s found; run --compute-sector-weights", sector_glob)
-
-        # Load latest stock weights for the chosen frequency
-        stock_glob = "stock_weights_daily_*.csv" if is_daily else "stock_weights_monthly_*.csv"
-        stock_files = sorted(weights_dir.glob(stock_glob))
-        if stock_files:
-            latest_stock = stock_files[-1]
-            df_stock = pd.read_csv(latest_stock, index_col=0)
-            if not df_stock.empty:
-                try:
-                    df_stock.index = pd.to_datetime(df_stock.index)
-                except Exception:
-                    pass
-                last_idx = df_stock.index[-1]
-                stk_series = df_stock.iloc[-1].fillna(0.0)
-                stk_series = stk_series[stk_series.abs() > epsilon]
-                stk_series = stk_series.sort_values(ascending=False)
-                total = float(stk_series.sum()) if len(stk_series) else 0.0
-                cash = max(0.0, 1.0 - total)
-
-                hdr = f"Stock allocation ({'DAILY' if is_daily else 'MONTHLY'} as of %s)"
-                logger.info(hdr, str(getattr(last_idx, 'date', lambda: last_idx)()))
-                if len(stk_series) == 0 and cash <= epsilon:
-                    logger.info("(no non-zero stock weights found)")
-                else:
-                    for i, (ticker, w) in enumerate(stk_series.items(), start=1):
-                        logger.info("%2d) %-8s %8s %6.2f%%", i, str(ticker)[:8], "", w * 100.0)
-                    if cash > epsilon:
-                        logger.info("    %-8s %8s %6.2f%%", "Cash", "", cash * 100.0)
-        else:
-            logger.info("=== Stock allocation (%s) ===", "DAILY" if is_daily else "MONTHLY")
-            logger.info("No %s found; run --compute-stock-weights", stock_glob)
-    except Exception as e:
-        logger.exception("Failed to print portfolio: %s", e)
 
 
 def main() -> int:
@@ -734,9 +648,7 @@ def main() -> int:
     if args.__dict__.get("rebalance"):
         rebalance_pipeline(args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt)
 
-    # Print portfolio summary
-    if args.__dict__.get("print_portfolio"):
-        print_portfolio(args=args, cfg=cfg, logger=logger)
+    # Printing of portfolio has moved to the dedicated explorer (production/explore_portfolio.py)
 
     return 0
 
