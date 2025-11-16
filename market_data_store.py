@@ -20,6 +20,7 @@ class MarketDataStore:
         end: datetime | str,
         interval: str = "1d",
         auto_adjust: bool = True,
+        local_only: bool = False,
     ) -> pd.DataFrame:
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
@@ -35,7 +36,11 @@ class MarketDataStore:
             end=end_dt,
             interval=interval,
             auto_adjust=auto_adjust,
+            local_only=local_only,
         )
+
+        if df_full is None or df_full.empty:
+            return pd.DataFrame()
 
         return df_full.loc[(df_full.index >= start_dt) & (df_full.index <= end_dt)]
 
@@ -141,8 +146,14 @@ class MarketDataStore:
         end: datetime,
         interval: str,
         auto_adjust: bool,
+        local_only: bool,
     ) -> pd.DataFrame:
         df_cached = self._load_cached_df(ticker, interval)
+        # If running in local-only mode, never attempt to fetch online.
+        if local_only:
+            if df_cached is None:
+                return pd.DataFrame()
+            return df_cached
 
         if df_cached is None or df_cached.empty:
             df_new = self._fetch_online(ticker, start, end, interval, auto_adjust)

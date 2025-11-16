@@ -174,6 +174,7 @@ class UniverseManager:
         end: str,
         field: str = "Close",
         interval: str = "1d",
+        local_only: bool = False,
     ) -> pd.DataFrame:
         """
         Fetch OHLCV prices for all tickers in membership, apply membership mask so that
@@ -182,7 +183,7 @@ class UniverseManager:
         # 1. Fetch all tickers' data
         data = {}
         for sym in self.all_tickers:
-            df = self.data_store.get_ohlcv(sym, start, end, interval=interval)
+            df = self.data_store.get_ohlcv(sym, start, end, interval=interval, local_only=local_only)
             if field not in df.columns:
                 continue
             data[sym] = df[field]

@@ -82,6 +82,10 @@ else:
 # 1. Setup data + universe
 store = MarketDataStore(data_root="./data")
 
+# When True, only use locally cached OHLCV files and do not attempt any online
+# downloads. Set to True for offline runs or CI where network access is limited.
+LOCAL_ONLY = True
+
 # Load universe (static)
 # universe = UniverseManager.from_csv(
 #     data_store=store,
@@ -99,7 +103,7 @@ universe = UniverseManager.from_membership_csv(
     name="SP500_hist",
 )
 
-prices = universe.get_price_matrix(start=start, end=end, field="Close", interval="1d")
+prices = universe.get_price_matrix(start=start, end=end, field="Close", interval="1d", local_only=LOCAL_ONLY)
 
 # 2. Signals
 engine = SignalEngine(prices=prices, sector_map=universe.sector_map)
@@ -213,7 +217,7 @@ print("Avg daily turnover:", result["turnover"].mean())
 print("Avg daily cost impact:", result["cost"].mean())
 
 # === Benchmark comparison ===
-spy_prices = store.get_ohlcv("SPY", start, end)
+spy_prices = store.get_ohlcv("SPY", start, end, local_only=LOCAL_ONLY)
 bench = compute_benchmark(spy_prices, warmup_start, warmup_end)
 
 # IMPORTANT: make sure compute_benchmark returns Volatility & Sharpe too
