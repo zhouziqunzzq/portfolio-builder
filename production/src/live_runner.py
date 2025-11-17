@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--signal-start", default=None, help="Explicit start date YYYY-MM-DD for signal window; overrides automatic lookback")
     p.add_argument("--compute-sector-weights", action="store_true", help="Compute sector weights from sector scores and benchmark using SectorWeightEngine")
     p.add_argument("--compute-stock-weights", action="store_true", help="Allocate sector weights to stocks using StockAllocator")
+    p.add_argument("--dump-membership-mask", action="store_true", help="Dump membership mask CSV/Parquet under output_root/masks for archival")
 
     # Debugging options
     p.add_argument("--mask-summary", action="store_true", help="Print a brief summary of the membership mask for a recent window")
@@ -131,6 +132,11 @@ def regenerate_universe(um: UniverseManager, cfg, logger) -> None:
                 "enriched_path": str(enriched_path),
             },
         )
+        # Auto dump membership mask snapshot after regeneration
+        try:
+            dump_membership_mask(args=argparse.Namespace(mask_start=None, mask_end=None), um=um, cfg=cfg, logger=logger, run_dt=datetime.utcnow().date())
+        except Exception as e:
+            logger.warning("Auto dump of membership mask failed after regeneration: %s", e)
     except Exception as e:
         logger.exception("Failed step: historical membership/enrichment: %s", e)
 
@@ -161,6 +167,74 @@ def summarize_membership_mask(args: argparse.Namespace, um: UniverseManager, log
         )
     except Exception as e:
         logger.exception("Failed to compute mask summary: %s", e)
+
+
+def dump_membership_mask(
+    args: argparse.Namespace,
+    um: UniverseManager,
+    cfg,
+    logger,
+    run_dt: date | None = None,
+) -> None:
+    """Dump a membership mask snapshot to output_root/masks.
+
+    If --mask-start/--mask-end are provided, restrict to that window; otherwise
+    infer the full historical range from the membership CSV:
+      - Daily schema: use [min(date), max(date)].
+      - Range schema: use [min(date_added), max(date_removed or run_dt)].
+    """
+    try:
+        # Load membership to infer default window
+        mem = um.load_from_membership_csv()
+        start_arg = getattr(args, "mask_start", None)
+        end_arg = getattr(args, "mask_end", None)
+
+        if start_arg and end_arg:
+            start_dt = datetime.strptime(str(start_arg), "%Y-%m-%d").date()
+            end_dt = datetime.strptime(str(end_arg), "%Y-%m-%d").date()
+        else:
+            # Infer from schema
+            if {"date", "ticker", "in_sp500"}.issubset(mem.columns):
+                start_dt = pd.to_datetime(mem["date"]).min().date()
+                end_dt = pd.to_datetime(mem["date"]).max().date()
+            elif {"ticker", "date_added"}.issubset(mem.columns):
+                start_dt = pd.to_datetime(mem["date_added"]).min().date()
+                if "date_removed" in mem.columns:
+                    dr = pd.to_datetime(mem["date_removed"]).copy()
+                    # Replace NaT with run_dt (or today if not provided)
+                    if run_dt is None:
+                        run_dt = datetime.utcnow().date()
+                    dr = dr.fillna(pd.Timestamp(run_dt))
+                    end_dt = dr.max().date()
+                else:
+                    end_dt = (run_dt or datetime.utcnow().date())
+            else:
+                raise ValueError("Unsupported membership CSV schema for mask dump")
+
+        # Build and persist mask
+        mask = um.membership_mask(start=str(start_dt), end=str(end_dt))
+        out_dir = (cfg.output_root_path / "masks").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname_stem = f"membership_mask_{start_dt}_{end_dt}"
+        csv_path = out_dir / f"{fname_stem}.csv"
+        pq_path = out_dir / f"{fname_stem}.parquet"
+        mask.astype(int).to_csv(csv_path)
+        try:
+            mask.astype(bool).to_parquet(pq_path)
+        except Exception as e:
+            logger.warning("Parquet save failed for membership mask (%s); CSV written at %s", e, csv_path)
+        logger.info(
+            "Membership mask dumped",
+            extra={
+                "rows": int(mask.shape[0]),
+                "tickers": int(mask.shape[1]),
+                "start": str(start_dt),
+                "end": str(end_dt),
+                "path": str(csv_path.name),
+            },
+        )
+    except Exception as e:
+        logger.exception("Failed to dump membership mask: %s", e)
 
 
 def update_prices_and_trend(
@@ -645,6 +719,10 @@ def main() -> int:
     # Compute stock weights using StockAllocator
     if args.__dict__.get("compute_stock_weights"):
         compute_stock_weights_step(args=args, cfg=cfg, um=um, mds=mds, logger=logger)
+
+    # Dump membership mask (archival)
+    if args.__dict__.get("dump_membership_mask"):
+        dump_membership_mask(args=args, um=um, cfg=cfg, logger=logger, run_dt=run_dt)
 
     # Full rebalance pipeline
     if args.__dict__.get("rebalance"):

@@ -47,6 +47,12 @@ class SectorConfig:
     risk_on_equity_frac: float = 1.0
     risk_off_equity_frac: float = 0.7
     trend_filter: Dict[str, Any] = field(default_factory=dict)
+    # If set, only the top-K sectors by (smoothed) weight are kept; others are set to 0 and
+    # the remaining K are renormalized to sum to 1 BEFORE trend equity scaling.
+    # Important: Because renormalization happens after capping/floors, the final per-sector
+    # weights do not strictly obey w_max; selected sectors can end up above w_max after the
+    # renormalization step, and non-selected sectors will be 0 regardless of w_min. If you
+    # want that behavior explicit, consider using w_min=0 when enabling top_k_sectors.
     top_k_sectors: Optional[int] = None
 
 

@@ -31,11 +31,17 @@ signals:
 
 sectors:
   weights:
-    w_min: 0.03
+    w_min: 0.00 # top-k enabled, set min to 0.0 to avoid conflicts
     w_max: 0.30
   smoothing_alpha: 1.0   # softmax sharpness
   smoothing_beta: 0.3    # smoothing factor for weights (0=stick,1=jump)
   # Keep only the top-K sectors at each rebalance (others set to 0 and remaining renormalized).
+  # NOTE: When top_k_sectors is enabled, final selected-sector weights are renormalized
+  # among the K winners AFTER capping/floors and smoothing. As a result, the final
+  # per-sector weights may exceed the configured w_max (i.e., w_max is not a hard cap
+  # on the final numbers when renormalization occurs among only K sectors). Likewise,
+  # non-selected sectors will be forced to 0 even if w_min > 0. Consider setting w_min: 0.0
+  # when using top_k_sectors if you want the intent to be explicit.
   # Default (null or omitted) means use the total number of sectors (i.e., no truncation).
   top_k_sectors: 5
   trend_filter:
