@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sectors", default=str(Path(__file__).resolve().parents[1] / "config" / "sectors.yml"), help="Path to sectors.yml")
     p.add_argument("--local-only", action="store_true", help="Disable network calls and use only local caches/artifacts")
     p.add_argument("--backtest-start", default=None, help="Explicit backtest start date (YYYY-MM-DD); overrides earliest weight date")
+    p.add_argument("--backtest-end", default=None, help="Explicit backtest end date (YYYY-MM-DD); overrides latest weight date")
     # Plotting controls
     p.add_argument("--plot-all", action="store_true", help="Generate all standard plots")
     p.add_argument("--plot-equity", action="store_true", help="Plot equity curve (log)")
@@ -87,6 +88,13 @@ def main() -> int:
                 override_start = earliest_weight_date
 
         effective_start_date = override_start or earliest_weight_date
+        # Optional override for end date
+        override_end = None
+        if getattr(args, "backtest_end", None):
+            try:
+                override_end = datetime.strptime(str(args.backtest_end), "%Y-%m-%d").date()
+            except Exception:
+                logger.warning("Invalid --backtest-end=%s (expected YYYY-MM-DD); ignoring", args.backtest_end)
         # Trim weights to effective_start_date onward
         stock_weights_monthly = stock_weights_monthly.loc[stock_weights_monthly.index.date >= effective_start_date]
         if stock_weights_monthly.empty:
@@ -94,7 +102,17 @@ def main() -> int:
             return 0
 
         start_dt = effective_start_date
-        end_dt = stock_weights_monthly.index.max().date()
+        latest_weight_date = stock_weights_monthly.index.max().date()
+        if override_end:
+            # Cap to latest available weight date
+            if override_end > latest_weight_date:
+                logger.info("--backtest-end %s is after last weight date %s; using latest weight date", override_end, latest_weight_date)
+                override_end = latest_weight_date
+            # Ensure end is not before start
+            if override_end < start_dt:
+                logger.warning("--backtest-end %s is before effective start date %s; adjusting end to start", override_end, start_dt)
+                override_end = start_dt
+        end_dt = override_end or latest_weight_date
 
         tickers = um.tickers
         price_mat = um.get_price_matrix(
