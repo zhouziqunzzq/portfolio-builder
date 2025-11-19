@@ -2,13 +2,19 @@
 
 Lightweight toolkit to build and test a sector-rotating equity portfolio using local OHLCV caching, a static S&P 500 universe, signal calculations, and a sector weighting engine.
 
-### Components
+### Components (production)
 
-- `market_data_store.py` — Local parquet cache for OHLCV via yfinance. Fetches missing ranges and keeps metadata.
-- `universe_manager.py` — Loads a universe from CSV and ensures data coverage; can build price matrices.
-- `signal_engine.py` — Computes momentum/volatility and aggregate stock/sector scores.
-- `sector_weight_engine.py` — Converts sector scores into bounded, smoothed portfolio weights with a trend filter.
-- `get_sp500.py` — Scrapes the S&P 500 constituents from Wikipedia, normalizes tickers for yfinance, and writes a CSV.
+This repository ships a production-ready entrypoint under the `production/` directory. The
+`production/src/` package contains self-contained, inlined copies of the core implementation
+so production runners can import them without runtime path hacks.
+
+- `production/src/market_data_store.py` — Local parquet cache for OHLCV via yfinance. Fetches missing ranges and keeps metadata.
+- `production/src/universe_manager.py` — Loads a universe from CSV (membership histories are stored under `production/data/`) and can build price matrices.
+- `production/src/signal_engine.py` — Computes momentum/volatility and aggregate stock/sector scores.
+- `production/src/sector_weight_engine.py` — Converts sector scores into bounded, smoothed portfolio weights with a trend filter.
+- `production/src/stock_allocator.py` — Allocates sector weights down to individual stock-level weights.
+
+Note: Some earlier development helper scripts (for example, a standalone `get_sp500.py` scraper) have been removed or moved into the production runners. If you relied on those, use the production runner flags (see "Production CLI Tools") or provide your own universe CSV under `production/data/current_constituents.csv` or `production/data/sp500_membership.csv`.
 
 ### Data layout
 
@@ -40,46 +46,52 @@ Why these packages?
 - `matplotlib` for plotting (sector weights chart)
 - `pyarrow` (or `fastparquet`) to write/read parquet cache files
 
-### 2) Fetch S&P 500 universe
+### 2) Universe data
+
+This repo no longer exposes a top-level `get_sp500.py` helper. Universe membership and related CSVs are stored under `production/data/` (for example `production/data/current_constituents.csv` and `production/data/sp500_membership*.csv`).
+
+If you need to (re)generate a universe from Wikipedia or another source, either:
+
+- Add your own CSV at `production/data/current_constituents.csv` (recommended), or
+- Use the production runner to regenerate the universe if your configuration supports it:
 
 ```bash
-python get_sp500.py
+python production/run_live.py --regenerate-universe
 ```
 
-This script:
+When creating a universe CSV manually, ensure tickers are normalized for yfinance (uppercase, replace `.` with `-`, e.g., `BRK.B` → `BRK-B`).
 
-- Requests the Wikipedia S&P 500 list with a browser-like User-Agent to avoid HTTP 403.
-- Parses the constituents table using `pandas.read_html`.
-- Normalizes tickers for yfinance by replacing dots with dashes (e.g., `BRK.B` → `BRK-B`, `BF.B` → `BF-B`).
-- Writes the CSV. Recommended output path: `data/universe/sp500_constituents.csv`.
+### 3) Warm the cache and run the pipeline
 
-If you see a 403 Forbidden during scraping, ensure `get_sp500.py` sets headers with a realistic `User-Agent` and `Accept-Language`.
-
-### 3) Warm the cache and inspect a price matrix
+The production runners provide step-wise and full-pipeline execution. Common quick checks:
 
 ```bash
-python test_universe_manager.py
+# Update prices and warm the parquet cache
+python production/run_live.py --update-prices
+
+# Compute signals
+python production/run_live.py --compute-signals
+
+# Compute sector weights
+python production/run_live.py --compute-sector-weights
+
+# Compute stock weights
+python production/run_live.py --compute-stock-weights
+
+# Or run the full rebalance pipeline
+python production/run_live.py --rebalance
 ```
 
-This loads the universe CSV, ensures the local OHLCV cache for a backtest window, and prints a sample price matrix. First run will be slower as it downloads data and writes parquet files.
-
-### 4) Signals and sector weights
-
-```bash
-python test_signal_engine.py
-python test_sector_weight_engine.py
-```
-
-The sector weight script prints weights and (optionally) plots a stacked area chart of sector allocations over time.
+First runs that update prices will be slower while the local parquet cache is populated.
 
 ## Ticker normalization for yfinance
 
-Wikipedia uses dot notation for share classes (e.g., `BRK.B`, `BF.B`), while yfinance expects dashes (`BRK-B`, `BF-B`). The `get_sp500.py` script normalizes via:
+Wikipedia uses dot notation for share classes (e.g., `BRK.B`, `BF.B`), while yfinance expects dashes (`BRK-B`, `BF-B`). When preparing a universe CSV ensure tickers are normalized by:
 
-- Uppercase
-- Replace `.` with `-`
+- Uppercasing tickers
+- Replacing `.` with `-` (e.g., `BRK.B` → `BRK-B`)
 
-If you encounter additional symbol quirks, extend the normalization function in `get_sp500.py`.
+If you encounter additional symbol quirks, extend your normalization step or the universe generation logic used by your workflow.
 
 ## Troubleshooting
 

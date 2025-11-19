@@ -9,7 +9,7 @@ from .utils.config import load_app_config
 from .utils.logging import configure_logging
 from .universe_manager import UniverseManager
 from .market_data_store import MarketDataStore
-from portfolio_backtester import PortfolioBacktester
+from .portfolio_backtester import PortfolioBacktester
 from .utils.backtest_plotting import (
     plot_equity_curve,
     plot_drawdown,
