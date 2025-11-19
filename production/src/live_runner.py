@@ -411,6 +411,22 @@ def compute_signals_step(
             )
         except Exception as e:
             logger.exception("Failed to compute sector scores: %s", e)
+
+        # Also compute and persist per-stock realized volatility (useful for inverse-vol weighting later)
+        try:
+            stock_vol = eng.compute_volatility(window=vol_window)
+            sv_fname = f"stock_vol_{end_dt.strftime('%Y-%m-%d')}"
+            sv_csv = out_dir / f"{sv_fname}.csv"
+            sv_pq = out_dir / f"{sv_fname}.parquet"
+            try:
+                stock_vol.to_parquet(sv_pq)
+            except Exception:
+                # Fallback to CSV if parquet save fails
+                stock_vol.to_csv(sv_csv)
+            logger.info("Saved stock volatility matrix: %s", sv_pq.name if sv_pq.exists() else sv_csv.name)
+        except Exception as e:
+            logger.warning("Failed to compute/save stock volatility (%s); continuing", e)
+        
     except Exception as e:
         logger.exception("Signal computation failed: %s", e)
 
@@ -555,30 +571,52 @@ def compute_stock_weights_step(
         stock_vol = None
         if weighting_mode == "inverse_vol":
             try:
-                # Determine window from config and load prices for the needed range (+warmup)
-                vol_window = int(getattr(cfg.signals, "vol_window", 20))
-                warmup_days = max(30, vol_window + 10)
-                start_dt = (sector_weights_monthly.index.min() - pd.Timedelta(days=warmup_days)).date()
-                end_dt = sector_weights_monthly.index.max().date()
+                # Attempt to load cached stock volatility computed during the signals step
+                stem = s_latest.stem.replace("stock_scores_", "")
+                sv_pq = (signals_dir / f"stock_vol_{stem}.parquet")
+                sv_csv = (signals_dir / f"stock_vol_{stem}.csv")
+                if sv_pq.exists():
+                    try:
+                        stock_vol = pd.read_parquet(sv_pq)
+                        stock_vol.index = pd.to_datetime(stock_vol.index)
+                        logger.info("Loaded cached stock volatility from %s", sv_pq.name)
+                    except Exception as e:
+                        logger.warning("Failed to read cached parquet stock_vol (%s); will attempt CSV or recompute", e)
+                        stock_vol = None
+                if stock_vol is None and sv_csv.exists():
+                    try:
+                        stock_vol = pd.read_csv(sv_csv, index_col=0)
+                        stock_vol.index = pd.to_datetime(stock_vol.index)
+                        logger.info("Loaded cached stock volatility from %s", sv_csv.name)
+                    except Exception as e:
+                        logger.warning("Failed to read cached CSV stock_vol (%s); will recompute", e)
+                        stock_vol = None
 
-                # Use columns present in stock_scores as our universe tickers
-                tickers = [t.strip().upper() for t in stock_scores.columns]
+                if stock_vol is None:
+                    # Determine window from config and load prices for the needed range (+warmup)
+                    vol_window = int(getattr(cfg.signals, "vol_window", 20))
+                    warmup_days = max(30, vol_window + 10)
+                    start_dt = (sector_weights_monthly.index.min() - pd.Timedelta(days=warmup_days)).date()
+                    end_dt = sector_weights_monthly.index.max().date()
 
-                price_mat = um.get_price_matrix(
-                    price_loader=mds,
-                    tickers=tickers,
-                    start=str(start_dt),
-                    end=str(end_dt),
-                    field=None,
-                    interval="1d",
-                    local_only=bool(args.__dict__.get("local_only", False)),
-                )
-                # Align to entire date range and compute vol
-                price_mat = price_mat.reindex(pd.date_range(price_mat.index.min(), price_mat.index.max(), freq="D")).ffill()
-                eng = SignalEngine(prices=price_mat, sector_map=sector_map)
-                stock_vol = eng.compute_volatility(window=vol_window)
+                    # Use columns present in stock_scores as our universe tickers
+                    tickers = [t.strip().upper() for t in stock_scores.columns]
+
+                    price_mat = um.get_price_matrix(
+                        price_loader=mds,
+                        tickers=tickers,
+                        start=str(start_dt),
+                        end=str(end_dt),
+                        field=None,
+                        interval="1d",
+                        local_only=bool(args.__dict__.get("local_only", False)),
+                    )
+                    # Align to entire date range and compute vol
+                    price_mat = price_mat.reindex(pd.date_range(price_mat.index.min(), price_mat.index.max(), freq="D")).ffill()
+                    eng = SignalEngine(prices=price_mat, sector_map=sector_map)
+                    stock_vol = eng.compute_volatility(window=vol_window)
             except Exception as e:
-                logger.warning("Failed to compute stock vol for inverse-vol weighting (%s); falling back to equal-weight", e)
+                logger.warning("Failed to compute/load stock vol for inverse-vol weighting (%s); falling back to equal-weight", e)
                 weighting_mode = "equal"
                 stock_vol = None
 
