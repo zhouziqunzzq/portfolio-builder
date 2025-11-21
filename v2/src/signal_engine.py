@@ -157,6 +157,8 @@ class SignalEngine:
             return self._compute_trend_score_full(
                 ticker, start, end, interval, **params
             )
+        elif signal == "beta":
+            return self._compute_beta_full(ticker, start, end, interval, **params)
         else:
             raise ValueError(f"Unknown signal: {signal}")
 
@@ -272,3 +274,74 @@ class SignalEngine:
         trend_score.name = f"trend_score_{fast_window}_{slow_window}"
 
         return trend_score
+
+    def _compute_beta_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 63,
+        benchmark: str = "SPY",
+        price_col: str = "Close",
+    ) -> pd.Series:
+        """
+        Rolling beta of `ticker` vs `benchmark` using log returns.
+
+        Definition:
+            beta_t = Cov(R_asset, R_benchmark) / Var(R_benchmark)
+        where Cov and Var are computed over a rolling window of length `window`.
+
+        Parameters:
+            ticker:    asset whose beta you want
+            benchmark: reference index/ETF (default: SPY)
+            window:    lookback window in bars (default: 63)
+        """
+        extra = window + 5
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        # Fetch both asset and benchmark prices
+        df_asset = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        df_bench = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+
+        if df_asset.empty or df_bench.empty:
+            return pd.Series(dtype=float)
+
+        pa = df_asset[price_col].astype(float)
+        pm = df_bench[price_col].astype(float)
+
+        # Log returns
+        ra = np.log(pa / pa.shift(1))
+        rm = np.log(pm / pm.shift(1))
+
+        # Align on common dates
+        rets = pd.concat(
+            [
+                ra.rename("ra"),
+                rm.rename("rm"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+
+        if rets.empty:
+            return pd.Series(dtype=float)
+
+        # Rolling covariance & variance
+        cov = rets["ra"].rolling(window=window).cov(rets["rm"])
+        var_m = rets["rm"].rolling(window=window).var()
+
+        beta = cov / var_m
+        beta.name = f"beta_{benchmark}_{window}"
+
+        return beta
