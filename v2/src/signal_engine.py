@@ -93,10 +93,10 @@ class SignalEngine:
         """
         Get a full time series for a given (ticker, signal, params) over [start, end].
 
-        Behavior:
-        - Look in cache for (ticker, interval, signal, params)
-        - On cache miss, compute signal over the *full available range* implied by start/end
-          (or more if your computation needs more lookback), store it, then slice.
+        - Cache key is (ticker, interval, signal, params).
+        - If cached series fully covers [start, end] *up to a small calendar margin*
+          (to account for weekends/holidays), we slice & return.
+        - Otherwise we extend the cached range to the union and update the cache.
         """
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
@@ -109,12 +109,42 @@ class SignalEngine:
         )
 
         cached = self.store.get(key)
-        if cached is not None:
-            # Fast path: cached series, just slice
-            print(f"[SignalEngine] CACHE HIT: {key}")
-            return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
+        if cached is not None and not cached.empty:
+            cached_start = cached.index.min()
+            cached_end = cached.index.max()
 
-        # Cache miss: compute the full series
+            # For daily/weekly/monthly data, give ourselves a calendar margin
+            if interval in ("1d", "1wk", "1mo"):
+                margin = pd.Timedelta(days=7)
+            else:
+                margin = pd.Timedelta(0)
+
+            effective_start = cached_start - margin
+            effective_end = cached_end + margin
+
+            # Do we already effectively cover the requested window?
+            if start_dt >= effective_start and end_dt <= effective_end:
+                # Full coverage: fast path
+                print(f"[SignalEngine] CACHE HIT: {key}")
+                return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
+
+            # Partial coverage: extend range (recompute over union)
+            new_start = min(start_dt, cached_start)
+            new_end = max(end_dt, cached_end)
+
+            print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}")
+            series = self._compute_signal_full(
+                ticker=ticker,
+                signal=signal,
+                start=new_start,
+                end=new_end,
+                interval=interval,
+                **params,
+            )
+            self.store.set(key, series)
+            return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
+
+        # Cache miss: compute the full series for requested range
         print(f"[SignalEngine] CACHE MISS: {key}")
         series = self._compute_signal_full(
             ticker=ticker,
@@ -125,7 +155,6 @@ class SignalEngine:
             **params,
         )
 
-        # Store & slice
         self.store.set(key, series)
         return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
