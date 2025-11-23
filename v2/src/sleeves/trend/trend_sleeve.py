@@ -10,6 +10,8 @@ import pandas as pd
 from src.universe_manager import UniverseManager
 from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
+from src.vec_signal_engine import VectorizedSignalEngine
+from src.utils.stats import winsorized_zscore, sector_mean_snapshot, sector_mean_matrix
 from .trend_config import TrendConfig
 
 
@@ -37,11 +39,13 @@ class TrendSleeve:
         universe: UniverseManager,
         mds: MarketDataStore,
         signals: SignalEngine,
+        vec_engine: Optional[VectorizedSignalEngine] = None,
         config: Optional[TrendConfig] = None,
     ) -> None:
         self.um = universe
         self.mds = mds
         self.signals = signals
+        self.vec_engine = vec_engine
         self.config = config or TrendConfig()
         self.state = TrendState()
 
@@ -101,7 +105,7 @@ class TrendSleeve:
         if sector_weights.isna().all() or sector_weights.sum() <= 0:
             return {}
 
-        # 5) Allocate sector â stocks
+        # 5) Allocate sector -> stocks
         stock_weights = self._allocate_to_stocks(scored, sector_weights)
         if not stock_weights:
             return {}
@@ -309,7 +313,7 @@ class TrendSleeve:
 
         df["momentum_score"] = momentum_score
 
-        # volatility score (lower vol â higher score)
+        # volatility score (lower vol -> higher score)
         vol_z = self._zscore_series(df["vol"])
         df["vol_score"] = -vol_z
 
@@ -323,24 +327,19 @@ class TrendSleeve:
     # ------------------------------------------------------------------
 
     def _compute_sector_scores(self, scored: pd.DataFrame) -> pd.Series:
+        """
+        Single-date sector scores from a stock_score column.
+
+        scored: DataFrame indexed by ticker, must contain 'stock_score'.
+        """
         smap = self.um.sector_map or {}
-        # filter only valid stocks
-        valid = {
-            t: smap[t]
-            for t in scored.index
-            if t in smap
-            and isinstance(smap[t], str)
-            and smap[t].strip() not in ("", "Unknown")
-        }
-        if not valid:
+        if "stock_score" not in scored.columns or scored.empty:
             return pd.Series(dtype=float)
 
-        sector_series = pd.Series(valid)
-        sector_scores = (
-            scored.loc[valid.keys(), "stock_score"].groupby(sector_series).mean()
+        return sector_mean_snapshot(
+            stock_scores=scored["stock_score"],
+            sector_map=smap,
         )
-        sector_scores.name = "sector_score"
-        return sector_scores
 
     def _softmax(self, scores: pd.Series) -> pd.Series:
         cfg = self.config
@@ -415,7 +414,7 @@ class TrendSleeve:
         return smoothed
 
     # ------------------------------------------------------------------
-    # Allocate sector â stocks
+    # Allocate sector -> stocks
     # ------------------------------------------------------------------
 
     def _tickers_in_sector(self, sector: str, candidates: List[str]) -> List[str]:
@@ -478,6 +477,342 @@ class TrendSleeve:
                 final[t] = final.get(t, 0.0) + w_sec * float(w)
 
         return final
+
+    # --------------------------------------------------
+    # Vectorized Implementations
+    # --------------------------------------------------
+    def _compute_stock_scores_vectorized(
+        self,
+        price_mat: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Fully vectorized stock score computation over ALL dates.
+
+        Produces a Date x Ticker matrix with:
+            - mom_{w}(t, ticker)
+            - vol(t, ticker)
+            - z_mom_{w}(t, ticker)
+            - momentum_score(t, ticker)
+            - vol_score(t, ticker)
+            - stock_score(t, ticker)
+
+        No liquidity filtering here.
+        """
+
+        cfg = self.config
+        VSE = self.vec_engine
+
+        # --------------------------------------------------------
+        # 1) Vectorized raw signals
+        # --------------------------------------------------------
+        mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
+        vol_mat = VSE.get_volatility(price_mat, window=cfg.vol_window)
+
+        # Shape: Date x Ticker
+        idx = price_mat.index
+        cols = price_mat.columns
+
+        out = pd.DataFrame(index=idx)  # we'll create a multi-level column DF later
+
+        # Build a dict: feature_name -> matrix
+        feature_mats = {}
+
+        # Momentum matrices
+        for w in cfg.mom_windows:
+            feature_mats[f"mom_{w}"] = mom_dict[w]
+
+        # Volatility matrix
+        feature_mats["vol"] = vol_mat
+
+        # --------------------------------------------------------
+        # 2) Z scoring (winsorized) *per date*, cross-sectionally
+        # --------------------------------------------------------
+        z_mats = {}
+
+        for w in cfg.mom_windows:
+            mat = feature_mats[f"mom_{w}"]
+            # apply rowwise z-scoring
+            z = mat.apply(winsorized_zscore, axis=1, clip=cfg.zscore_clip)
+            z_mats[f"z_mom_{w}"] = z
+
+        # Vol Z-score (rowwise)
+        z_vol = feature_mats["vol"].apply(
+            winsorized_zscore,
+            axis=1,
+            clip=cfg.zscore_clip,
+        )
+        z_mats["vol_score"] = -z_vol  # invert: lower vol â higher score
+
+        # --------------------------------------------------------
+        # 3) Composite scores
+        # --------------------------------------------------------
+        # Weighted momentum score
+        mom_part = None
+        for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
+            if mom_part is None:
+                mom_part = wt * z_mats[f"z_mom_{w}"]
+            else:
+                mom_part += wt * z_mats[f"z_mom_{w}"]
+
+        stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
+
+        # --------------------------------------------------------
+        # 4) Construct final output: keep only stock_score for sector scoring
+        # --------------------------------------------------------
+        stock_score_mat.name = "stock_score"
+
+        return stock_score_mat
+
+    def _compute_sector_scores_vectorized(
+        self,
+        stock_score_mat: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Vectorized sector scores over time.
+
+        Parameters
+        ----------
+        stock_score_mat : DataFrame
+            Date x Ticker matrix of stock scores (may contain NaNs where
+            a ticker is out-of-universe / illiquid on a given date).
+
+        Returns
+        -------
+        DataFrame
+            Date x Sector matrix of mean stock_score per sector.
+        """
+        smap = self.um.sector_map or {}
+        if stock_score_mat is None or stock_score_mat.empty:
+            return pd.DataFrame(index=getattr(stock_score_mat, "index", None))
+
+        return sector_mean_matrix(
+            stock_score_mat=stock_score_mat,
+            sector_map=smap,
+        )
+
+    def _compute_sector_weights_vectorized(
+        self,
+        sector_scores_mat: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Vectorized sector weights: Date x Sector matrix, with
+        per-day softmax/caps/top-k and forward beta-smoothing.
+
+        This is a *pure* function with respect to sleeve state:
+        it does not mutate or read self.state. Smoothing happens
+        along the time axis using sector_smoothing_beta.
+        """
+        if sector_scores_mat.empty:
+            return pd.DataFrame()
+
+        cfg = self.config
+        beta = getattr(cfg, "sector_smoothing_beta", 0.0) or 0.0
+
+        dates = sector_scores_mat.index
+        sectors = list(sector_scores_mat.columns)
+
+        weights_list = []
+        prev_smoothed: Optional[pd.Series] = None
+
+        for dt in dates:
+            scores_t = sector_scores_mat.loc[dt]
+
+            # Drop sectors with all-NaN scores on this date
+            scores_t = scores_t.dropna()
+            if scores_t.empty:
+                # Fallback: if absolutely no scores, either carry forward
+                # or use uniform weights over all sectors.
+                if prev_smoothed is not None:
+                    raw = prev_smoothed.copy()
+                else:
+                    raw = pd.Series(1.0 / len(sectors), index=sectors)
+            else:
+                # Compute raw weights from the non-NaN sectors
+                raw = self._compute_raw_sector_weights(scores_t)
+                # Expand to all sectors, missing ones default to 0
+                raw = raw.reindex(sectors).fillna(0.0)
+
+            # Smoothing
+            if prev_smoothed is None or beta <= 0.0:
+                smoothed = raw
+            else:
+                smoothed = (1.0 - beta) * prev_smoothed + beta * raw
+                total = smoothed.sum()
+                if total > 0:
+                    smoothed = smoothed / total
+                else:
+                    smoothed = raw
+
+            weights_list.append(smoothed)
+            prev_smoothed = smoothed
+
+        sector_weights_mat = pd.DataFrame(weights_list, index=dates, columns=sectors)
+        return sector_weights_mat
+
+        # ------------------------------------------------------------------
+
+    # Vectorized stock allocation (with liquidity mask)
+    # ------------------------------------------------------------------
+    def _allocate_to_stocks_vectorized(
+        self,
+        price_mat: pd.DataFrame,
+        stock_score_mat: pd.DataFrame,
+        sector_weights_mat: pd.DataFrame,
+        vol_mat: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        """
+        Vectorized stock allocation:
+            Inputs:
+                price_mat          : Date x Ticker (Close prices)
+                stock_score_mat    : Date x Ticker (stock_score per day)
+                sector_weights_mat : Date x Sector (sector weights per day)
+                vol_mat            : Date x Ticker (realized vol per day); if None, will be computed internally
+
+            Output:
+                Date x Ticker portfolio weights.
+
+        Mirrors the non-vectorized `_allocate_to_stocks`, but:
+          - applies a time-varying liquidity mask using ADV / median volume / price
+          - runs across all dates in a single pass
+        """
+        cfg = self.config
+        smap = self.um.sector_map or {}
+        VSE = self.vec_engine  # VectorizedSignalEngine
+
+        dates = stock_score_mat.index
+        tickers = stock_score_mat.columns.tolist()
+
+        # Result holder
+        out = pd.DataFrame(0.0, index=dates, columns=tickers)
+
+        # ============================================================
+        # 1) Build liquidity mask (Date x Ticker of bool)
+        # ============================================================
+        liq_mask: Optional[pd.DataFrame] = None
+
+        if getattr(cfg, "use_liquidity_filters", False):
+            liquidity_window = getattr(cfg, "liquidity_window", 20)
+            adv_window = getattr(cfg, "adv_window", 20)
+            median_volume_window = getattr(cfg, "median_volume_window", 20)
+            min_price = getattr(cfg, "min_price", None)
+            min_adv = getattr(cfg, "min_adv20", None)
+            min_medvol = getattr(cfg, "min_median_volume20", None)
+
+            # Fetch volume matrix via VSE
+            try:
+                volume_mat = VSE.get_field_matrix(
+                    tickers=tickers,
+                    start=price_mat.index.min(),
+                    end=price_mat.index.max(),
+                    field="Volume",
+                    interval="1d",
+                    local_only=getattr(self.mds, "local_only", False),
+                    auto_adjust=False,
+                    membership_aware=False,
+                    treat_unknown_as_always_member=True,
+                )
+            except Exception:
+                volume_mat = pd.DataFrame(index=price_mat.index, columns=tickers)
+
+            # Align to price_mat
+            volume_mat = volume_mat.reindex_like(price_mat)
+
+            # Dollar volume & rolling stats
+            dollar_vol = price_mat * volume_mat
+            adv_mat = dollar_vol.rolling(
+                adv_window, min_periods=max(5, cfg.adv_window // 2)
+            ).mean()
+            medvol_mat = volume_mat.rolling(
+                median_volume_window, min_periods=max(5, cfg.median_volume_window // 2)
+            ).median()
+
+            # Start with all True, then AND constraints in
+            liq_mask = pd.DataFrame(True, index=dates, columns=tickers)
+
+            if min_price is not None:
+                liq_mask &= price_mat >= float(min_price)
+            if min_adv is not None:
+                liq_mask &= adv_mat >= float(min_adv)
+            if min_medvol is not None:
+                liq_mask &= medvol_mat >= float(min_medvol)
+
+            liq_mask = liq_mask.fillna(False)
+
+        # ============================================================
+        # 2) Precompute sector -> ticker mapping
+        # ============================================================
+        from typing import Dict, List
+
+        sector_to_tickers: Dict[str, List[str]] = {}
+        for t in tickers:
+            sec = smap.get(t)
+            if isinstance(sec, str) and sec.strip() not in ("", "Unknown"):
+                sector_to_tickers.setdefault(sec, []).append(t)
+
+        # ============================================================
+        # 3) Per-day sector -> stock allocation
+        # ============================================================
+        if vol_mat is None:
+            vol_mat = VSE.get_volatility(
+                price_mat,
+                window=cfg.vol_window,
+            )
+        for dt in dates:
+            scores_t = stock_score_mat.loc[dt]
+            vols_t = vol_mat.loc[dt]
+            sector_w_t = sector_weights_mat.loc[dt]
+
+            # Per-day liquidity eligibility
+            eligible_tickers = None
+            if liq_mask is not None:
+                eligible_tickers = liq_mask.loc[dt]
+
+            for sector, w_sec in sector_w_t.items():
+                if w_sec <= 0 or pd.isna(w_sec):
+                    continue
+
+                candidates = sector_to_tickers.get(sector)
+                if not candidates:
+                    continue
+
+                # Apply liquidity mask if present
+                if eligible_tickers is not None:
+                    candidates = [
+                        t for t in candidates if bool(eligible_tickers.get(t, False))
+                    ]
+                if not candidates:
+                    continue
+
+                # Top-k by stock_score within sector
+                s = scores_t[candidates].dropna()
+                if s.empty:
+                    continue
+                top = s.nlargest(cfg.top_k_per_sector).index.tolist()
+
+                # Intra-sector weights
+                if cfg.weighting_mode == "inverse-vol":
+                    v = vols_t[top].astype(float)
+                    v = v.replace({0.0: np.nan})
+                    inv = 1.0 / v
+                    inv = inv.replace({np.inf: np.nan}).dropna()
+                    if inv.empty:
+                        intra = pd.Series(1.0 / len(top), index=top)
+                    else:
+                        intra = inv / inv.sum()
+                else:
+                    # equal-weight
+                    intra = pd.Series(1.0 / len(top), index=top)
+
+                # Aggregate into final matrix
+                out.loc[dt, intra.index] += w_sec * intra
+
+        # ============================================================
+        # 4) Normalize per-day (ensure weights sum to 1)
+        # ============================================================
+        row_sums = out.sum(axis=1).replace(0.0, np.nan)
+        out = out.div(row_sums, axis=0).fillna(0.0)
+
+        return out
 
     # ------------------------------------------------------------------
     # Utility

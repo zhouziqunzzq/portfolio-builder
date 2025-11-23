@@ -178,7 +178,7 @@ class MarketDataStore:
             raise NotImplementedError("Only yfinance source currently supported")
 
         print(
-            f"[MarketDataStore] Fetching online: {ticker} {start.date()} â {end.date()} {interval}"
+            f"[MarketDataStore] Fetching online: {ticker} {start.date()} -> {end.date()} {interval}"
         )
 
         df = yf.download(
