@@ -21,12 +21,26 @@ class MarketDataStore:
         data_root: str,
         source: str = "yfinance",
         local_only: bool = False,
+        use_memory_cache: bool = False,
     ):
+        """
+        Args:
+            data_root: root directory for price cache (parquet files).
+            source: data provider (currently only 'yfinance' is supported).
+            local_only: if True, never attempt online fetches; only use local cache.
+            use_memory_cache: if True, keep per-(ticker, interval) OHLCV DataFrames
+                              in memory so repeated calls avoid disk reads.
+        """
         self.data_root = Path(data_root)
         self.source = source
         self.data_root.mkdir(parents=True, exist_ok=True)
         # If True, overrides online fetching for individual calls.
         self.local_only = local_only
+
+        # In-memory cache of already-loaded OHLCV data.
+        # Key: (ticker_upper, interval) -> pd.DataFrame
+        self.use_memory_cache = bool(use_memory_cache)
+        self._memory_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     # ---------- public API ----------
 
@@ -63,6 +77,13 @@ class MarketDataStore:
         return df_full.loc[(df_full.index >= start_dt) & (df_full.index <= end_dt)]
 
     def has_cached(self, ticker: str, interval: str = "1d") -> bool:
+        """
+        Return True if we have any cached data for (ticker, interval),
+        either in memory (if enabled) or on disk.
+        """
+        key = self._cache_key(ticker, interval)
+        if self.use_memory_cache and key in self._memory_cache:
+            return True
         return self._data_path(ticker, interval).exists()
 
     def get_cached_coverage(self, ticker: str, interval: str = "1d"):
@@ -72,6 +93,9 @@ class MarketDataStore:
         return df.index.min(), df.index.max()
 
     # ---------- internal helpers ----------
+
+    def _cache_key(self, ticker: str, interval: str) -> tuple[str, str]:
+        return (ticker.upper(), interval)
 
     def _ticker_dir(self, ticker: str, interval: str) -> Path:
         return self.data_root / "ohlcv" / interval / ticker.upper()
@@ -83,25 +107,59 @@ class MarketDataStore:
         return self._ticker_dir(ticker, interval) / "meta.json"
 
     def _load_cached_df(self, ticker: str, interval: str) -> pd.DataFrame | None:
+        """
+        Load OHLCV for (ticker, interval) from in-memory cache (if enabled) or disk.
+
+        NOTE: The cache does not distinguish auto_adjust variants; behavior is
+        consistent with the existing implementation which stores a single
+        adjusted/unadjusted variant in the parquet.
+        """
+        key = self._cache_key(ticker, interval)
+
+        # First, try in-memory cache
+        if self.use_memory_cache and key in self._memory_cache:
+            df = self._memory_cache[key]
+            # We assume df is already sorted & DateTimeIndex
+            # Print a lighter log than disk loads to avoid noise if desired
+            print(f"[MarketDataStore] Memory cache hit: {ticker} {interval}")
+            return df
+
+        # Fallback to disk
         path = self._data_path(ticker, interval)
         if not path.exists():
             return None
+
         df = pd.read_parquet(path)
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
         print(f"[MarketDataStore] Loaded cached data: {ticker} {interval}")
+
+        # Populate memory cache for future calls
+        if self.use_memory_cache:
+            self._memory_cache[key] = df
+
         return df
 
     def _save_cached_df(self, ticker: str, interval: str, df: pd.DataFrame) -> None:
+        """
+        Save OHLCV to disk and, if enabled, update in-memory cache.
+        """
         tdir = self._ticker_dir(ticker, interval)
         tdir.mkdir(parents=True, exist_ok=True)
-        df.sort_index().to_parquet(self._data_path(ticker, interval))
+
+        df_sorted = df.sort_index()
+        df_sorted.to_parquet(self._data_path(ticker, interval))
+
+        # Update memory cache
+        if self.use_memory_cache:
+            key = self._cache_key(ticker, interval)
+            self._memory_cache[key] = df_sorted
 
         meta = {
             "ticker": ticker.upper(),
             "interval": interval,
-            "start": df.index.min().strftime("%Y-%m-%d"),
-            "end": df.index.max().strftime("%Y-%m-%d"),
+            "start": df_sorted.index.min().strftime("%Y-%m-%d"),
+            "end": df_sorted.index.max().strftime("%Y-%m-%d"),
             "last_updated": datetime.utcnow().isoformat() + "Z",
             "source": self.source,
         }
@@ -120,7 +178,7 @@ class MarketDataStore:
             raise NotImplementedError("Only yfinance source currently supported")
 
         print(
-            f"[MarketDataStore] Fetching online: {ticker} {start.date()} → {end.date()} {interval}"
+            f"[MarketDataStore] Fetching online: {ticker} {start.date()} â {end.date()} {interval}"
         )
 
         df = yf.download(
@@ -166,7 +224,12 @@ class MarketDataStore:
         auto_adjust: bool,
         local_only: bool,
     ) -> pd.DataFrame:
+        """
+        Ensure that cached data covers [start, end] for (ticker, interval).
+        May fetch missing segments online (unless local_only).
+        """
         df_cached = self._load_cached_df(ticker, interval)
+
         # If running in local-only mode, never attempt to fetch online.
         if local_only:
             if df_cached is None:
