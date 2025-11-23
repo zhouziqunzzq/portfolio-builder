@@ -1,0 +1,354 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Optional, Sequence, Dict
+
+from datetime import datetime
+import numpy as np
+import pandas as pd
+
+from src.universe_manager import UniverseManager
+from src.market_data_store import MarketDataStore
+
+
+@dataclass
+class VectorizedSignalEngine:
+    """
+    Vectorized signal engine for cross-sectional (many-ticker) work.
+
+    Responsibilities:
+      - Build price matrices (Date x Ticker) from MarketDataStore
+      - Optionally make those matrices membership-aware using S&P500 membership
+        from UniverseManager, to reduce survivorship bias
+      - Serve as the basis for vectorized momentum / vol / stock-score, etc.
+    """
+
+    universe: UniverseManager
+    mds: MarketDataStore
+
+    # --- core matrix builders -------------------------------------------------
+
+    def get_field_matrix(
+        self,
+        tickers: Optional[Iterable[str]],
+        start: datetime | str,
+        end: datetime | str,
+        field: str = "Close",
+        interval: str = "1d",
+        local_only: bool = False,
+        auto_adjust: bool = True,
+        membership_aware: bool = True,
+        treat_unknown_as_always_member: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Build a field matrix: Date x Ticker.
+
+        Parameters
+        ----------
+        tickers:
+            Iterable of tickers to include. If None:
+              - try universe.tickers
+              - else fall back to universe.sector_map keys
+        start, end:
+            Calendar start/end (will be converted to Timestamp).
+        field:
+            OHLCV field to use; must be a column in MarketDataStore.get_ohlcv
+            result (e.g. "Close", "Adjclose").
+        interval:
+            Bar interval ("1d", "1wk", ...).
+        local_only:
+            Passed through to MarketDataStore.get_ohlcv.
+        auto_adjust:
+            Passed through to MarketDataStore.get_ohlcv.
+        membership_aware:
+            If True, apply S&P500 membership mask for *known* index tickers.
+        treat_unknown_as_always_member:
+            Only used when membership_aware=True.
+            If True:
+              - SP500 names are masked by membership (time-varying).
+              - Unknown / non-index names (GLD, BND, etc.) are treated
+                as 'always member' (mask = True on all dates).
+            If False:
+              - Unknown tickers are dropped entirely from the matrix.
+        """
+        start_dt = pd.to_datetime(start)
+        end_dt = pd.to_datetime(end)
+
+        # -----------------------------
+        # Resolve tickers
+        # -----------------------------
+        if tickers is None:
+            # Prefer explicit universe.tickers if available
+            universe_tickers = getattr(self.universe, "tickers", None)
+            if universe_tickers is not None:
+                tickers = list(universe_tickers)
+            else:
+                # Fallback to sector_map keys
+                smap = getattr(self.universe, "sector_map", {}) or {}
+                tickers = list(smap.keys())
+
+        tickers = [t.upper() for t in tickers]
+        if not tickers:
+            return pd.DataFrame()
+
+        # -----------------------------
+        # Build membership mask (optional)
+        # -----------------------------
+        mem_mask: Optional[pd.DataFrame] = None
+        # known_index_tickers: Sequence[str] = []
+        # unknown_tickers: Sequence[str] = []
+
+        if membership_aware:
+            try:
+                mem_mask = self.universe.membership_mask(
+                    start=start_dt.strftime("%Y-%m-%d"),
+                    end=end_dt.strftime("%Y-%m-%d"),
+                )
+            except Exception:
+                mem_mask = None
+
+            if mem_mask is not None and not mem_mask.empty:
+                mem_mask.index = pd.to_datetime(mem_mask.index)
+                mem_mask = mem_mask.sort_index()
+
+                # Restrict membership matrix to the requested tickers
+                mem_mask = mem_mask.reindex(columns=tickers)
+
+                # known_index_tickers = [t for t in tickers if t in mem_mask.columns]
+                # unknown_tickers = [t for t in tickers if t not in mem_mask.columns]
+            else:
+                # If membership fails, fall back to non-membership-aware behavior
+                mem_mask = None
+                # known_index_tickers = []
+                # unknown_tickers = tickers
+        # else:
+        #     unknown_tickers = tickers
+
+        # -----------------------------
+        # Fetch per-ticker price series
+        # -----------------------------
+        price_dict: Dict[str, pd.Series] = {}
+
+        for t in tickers:
+            try:
+                df = self.mds.get_ohlcv(
+                    ticker=t,
+                    start=start_dt,
+                    end=end_dt,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    local_only=local_only,
+                )
+                if df is None or df.empty:
+                    continue
+
+                if field not in df.columns:
+                    # Try some reasonable fallbacks
+                    if field.lower() == "close" and "Close" in df.columns:
+                        col = "Close"
+                    elif field.lower() == "adjclose" and "Adjclose" in df.columns:
+                        col = "Adjclose"
+                    else:
+                        # Just skip this ticker if desired field not present
+                        continue
+                else:
+                    col = field
+
+                s = df[col].astype(float)
+                s.name = t
+                price_dict[t] = s
+            except Exception:
+                continue
+
+        if not price_dict:
+            return pd.DataFrame()
+
+        # Combine into a single matrix, align on union of dates
+        price_mat = pd.concat(price_dict.values(), axis=1)
+        price_mat.index = pd.to_datetime(price_mat.index)
+        price_mat = price_mat.sort_index()
+        price_mat = price_mat.reindex(
+            index=pd.date_range(
+                start=price_mat.index.min(),
+                end=price_mat.index.max(),
+                freq="B",
+            )
+        )
+
+        # Keep only our requested tickers (in canonical order)
+        price_mat = price_mat.reindex(columns=tickers)
+
+        # -----------------------------
+        # Apply membership mask if requested
+        # -----------------------------
+        if membership_aware:
+            # membership_mask: [Date x Ticker] of bools (True = in index)
+            mem_mask = self.universe.membership_mask(start=start_dt, end=end_dt)
+            # Align dates to price matrix
+            mem_mask = mem_mask.reindex(index=price_mat.index)
+            # Align columns to price matrix, keep unknown tickers as NaN for now
+            mem_mask = mem_mask.reindex(columns=price_mat.columns)
+
+            if treat_unknown_as_always_member:
+                # Unknown tickers => all-NaN column, treat as always in
+                mem_mask = mem_mask.fillna(True)
+            else:
+                # Unknown tickers => out of universe
+                mem_mask = mem_mask.fillna(False)
+
+            # Apply membership mask: where False -> set price to NaN
+            price_mat = price_mat.where(mem_mask)
+
+        return price_mat
+
+    # Simple helper that uses membership-aware SP500-only prices by default
+    def get_field_matrix_sp500(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        field: str = "Close",
+        interval: str = "1d",
+        local_only: bool = False,
+        auto_adjust: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Convenience wrapper: use the universe's SP500 membership as-of each date,
+        drop non-SP500 tickers, and apply time-varying membership mask.
+        """
+        return self.get_field_matrix(
+            tickers=None,
+            start=start,
+            end=end,
+            field=field,
+            interval=interval,
+            local_only=local_only,
+            auto_adjust=auto_adjust,
+            membership_aware=True,
+            treat_unknown_as_always_member=False,
+        )
+
+    def get_price_matrix(self, *args, **kwargs):
+        """
+        Convenience wrapper around get_field_matrix with field="Close".
+        """
+        if "field" not in kwargs:
+            kwargs["field"] = "Close"
+        return self.get_field_matrix(*args, **kwargs)
+
+    def get_price_matrix_sp500(self, *args, **kwargs):
+        """
+        Convenience wrapper around get_field_matrix_sp500 with field="Close".
+        """
+        if "field" not in kwargs:
+            kwargs["field"] = "Close"
+        return self.get_field_matrix_sp500(*args, **kwargs)
+
+    # ======================================================================
+    #  VECTORIZED API STUBS (to be implemented gradually)
+    # ======================================================================
+
+    # -----------------------------------------------------------
+    # Get daily return matrix
+    # -----------------------------------------------------------
+    def get_returns(
+        self,
+        price_mat: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Compute daily return matrix (same shape as price_mat).
+        """
+        if price_mat.empty:
+            return price_mat
+        return price_mat.pct_change(fill_method=None).fillna(0.0)
+
+    # -----------------------------------------------------------
+    # Multi-horizon vectorized momentum
+    # -----------------------------------------------------------
+    def get_momentum(
+        self,
+        price_mat: pd.DataFrame,
+        lookbacks: Sequence[int],
+    ) -> Dict[int, pd.DataFrame]:
+        """
+        Vectorized cross-sectional time-series momentum.
+
+        Returns
+        -------
+        dict: window -> momentum matrix (Date x Ticker)
+        """
+        mom_dict: Dict[int, pd.DataFrame] = {}
+
+        if price_mat.empty:
+            for w in lookbacks:
+                mom_dict[w] = pd.DataFrame(index=price_mat.index)
+            return mom_dict
+
+        for w in lookbacks:
+            mom = price_mat / price_mat.shift(w) - 1.0
+            mom_dict[w] = mom
+
+        return mom_dict
+
+    # -----------------------------------------------------------
+    # Vectorized realized volatility
+    # -----------------------------------------------------------
+    def get_volatility(
+        self,
+        price_mat: pd.DataFrame,
+        window: int = 20,
+        annualize: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Vectorized rolling realized volatility (Date x Ticker).
+        """
+        if price_mat.empty:
+            return price_mat
+
+        returns = price_mat.pct_change(fill_method=None)
+        vol = returns.rolling(window).std()
+
+        if annualize:
+            vol *= np.sqrt(252)
+
+        return vol
+
+    # -----------------------------------------------------------
+    # Composite stock score (momentum + vol)
+    # -----------------------------------------------------------
+    def get_stock_scores(
+        self,
+        momentum_dict: Dict[int, pd.DataFrame],
+        vol_mat: pd.DataFrame,
+        mom_weights: Sequence[float],
+        vol_penalty: float,
+    ) -> pd.DataFrame:
+        """
+        Placeholder for vectorized scoring:
+            stock_score = sum_i (weight_i * zscore(momentum_i))
+                          + (-vol_penalty) * zscore(vol)
+        """
+        # Stub implementation - real version built when wiring TrendSleeve V2
+        all_dfs = list(momentum_dict.values()) + [vol_mat]
+        index = vol_mat.index if vol_mat is not None else None
+
+        return pd.DataFrame(index=index)
+        # (Full implementation added later)
+
+    # -----------------------------------------------------------
+    # Convenience for slicing large precomputed matrices
+    # -----------------------------------------------------------
+    @staticmethod
+    def slice_by_date(
+        mat: pd.DataFrame,
+        as_of: datetime | str,
+        history: int | None = None,
+    ) -> pd.DataFrame:
+        """
+        Slice matrix up to as_of.
+        Optionally keep only the last `history` days.
+        """
+        as_of = pd.to_datetime(as_of)
+        out = mat.loc[mat.index <= as_of]
+        if history is not None and history > 0:
+            out = out.tail(history)
+        return out

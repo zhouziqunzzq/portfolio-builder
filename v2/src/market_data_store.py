@@ -121,7 +121,7 @@ class MarketDataStore:
             df = self._memory_cache[key]
             # We assume df is already sorted & DateTimeIndex
             # Print a lighter log than disk loads to avoid noise if desired
-            print(f"[MarketDataStore] Memory cache hit: {ticker} {interval}")
+            # print(f"[MarketDataStore] Memory cache hit: {ticker} {interval}")
             return df
 
         # Fallback to disk
@@ -132,7 +132,7 @@ class MarketDataStore:
         df = pd.read_parquet(path)
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
-        print(f"[MarketDataStore] Loaded cached data: {ticker} {interval}")
+        # print(f"[MarketDataStore] Loaded cached data: {ticker} {interval}")
 
         # Populate memory cache for future calls
         if self.use_memory_cache:

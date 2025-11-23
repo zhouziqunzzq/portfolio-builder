@@ -125,14 +125,14 @@ class SignalEngine:
             # Do we already effectively cover the requested window?
             if start_dt >= effective_start and end_dt <= effective_end:
                 # Full coverage: fast path
-                print(f"[SignalEngine] CACHE HIT: {key}")
+                # print(f"[SignalEngine] CACHE HIT: {key}")
                 return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
 
             # Partial coverage: extend range (recompute over union)
             new_start = min(start_dt, cached_start)
             new_end = max(end_dt, cached_end)
 
-            print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}")
+            # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}")
             series = self._compute_signal_full(
                 ticker=ticker,
                 signal=signal,
@@ -145,7 +145,7 @@ class SignalEngine:
             return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
         # Cache miss: compute the full series for requested range
-        print(f"[SignalEngine] CACHE MISS: {key}")
+        # print(f"[SignalEngine] CACHE MISS: {key}")
         series = self._compute_signal_full(
             ticker=ticker,
             signal=signal,
