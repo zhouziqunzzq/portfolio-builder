@@ -188,6 +188,14 @@ class SignalEngine:
             )
         elif signal == "beta":
             return self._compute_beta_full(ticker, start, end, interval, **params)
+        elif signal == "adv":
+            return self._compute_adv_full(ticker, start, end, interval, **params)
+        elif signal == "median_volume":
+            return self._compute_median_volume_full(
+                ticker, start, end, interval, **params
+            )
+        elif signal == "last_price":
+            return self._compute_last_price_full(ticker, start, end, interval, **params)
         else:
             raise ValueError(f"Unknown signal: {signal}")
 
@@ -374,3 +382,98 @@ class SignalEngine:
         beta.name = f"beta_{benchmark}_{window}"
 
         return beta
+
+    # ----------------------------------------------------------------------
+    # Liquidity signals
+    # ----------------------------------------------------------------------
+
+    def _compute_adv_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        price_col: str = "Close",
+        volume_col: str = "Volume",
+    ) -> pd.Series:
+        """
+        ADV = rolling mean of (Close * Volume)
+
+        Returns: Series indexed by date, name = "adv_{window}".
+        """
+
+        extra = window + 5
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df or volume_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        vol = df[volume_col].astype(float)
+
+        adv = (price * vol).rolling(window=window).mean()
+        adv.name = f"adv_{window}"
+        return adv
+
+    def _compute_median_volume_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        volume_col: str = "Volume",
+    ) -> pd.Series:
+        """
+        20-day median volume (or configurable window).
+        """
+
+        extra = window + 5
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or volume_col not in df:
+            return pd.Series(dtype=float)
+
+        vol = df[volume_col].astype(float)
+        mv = vol.rolling(window=window).median()
+        mv.name = f"median_vol_{window}"
+        return mv
+
+    def _compute_last_price_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        price_col: str = "Close",
+    ) -> pd.Series:
+        """
+        Useful for liquidity filters (avoid penny stocks, etc.)
+        Simple pass-through of adjusted close.
+        """
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        price.name = "last_price"
+        return price

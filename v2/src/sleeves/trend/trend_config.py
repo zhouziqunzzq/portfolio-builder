@@ -9,79 +9,66 @@ class TrendConfig:
     """
     Config for the stock-based Trend Sleeve (Momentum V2-style).
 
-    This is intentionally very close to the Momentum V1.5 production defaults:
-
-    - Universe: S&P 500 (handled by UniverseManager)
-    - Signals:
-        * multi-horizon momentum (63, 126, 252)
-        * realized volatility (20d)
-        * stock_score = momentum_score - vol_penalty * vol_score
-    - Sectors:
-        * sector scores = mean(stock_score) per sector
-        * sector weights via softmax + caps/floors + smoothing + top-k
-        * trend filter on SPY (200d SMA) for risk-on / risk-off equity fraction
-    - Stocks:
-        * top_k_per_sector = 2
-        * equal-weight or inverse-vol within each sector
+    Adds:
+      - Liquidity filters (ADV, median volume, price)
+      - Z-score winsorization
     """
 
     # ------------------------------------------------------------------
-    # Signals / stock scoring (from V1.5 "signals" section)
+    # Signals / stock scoring
     # ------------------------------------------------------------------
     mom_windows: List[int] = field(default_factory=lambda: [63, 126, 252])
     mom_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
     vol_window: int = 20
-
-    # In V1.5: stock_score â momentum_score - vol_penalty * vol
-    # Weâll implement this as:
-    #   stock_score = momentum_score + (-vol_penalty) * vol_zscore
-    vol_penalty: float = 0.5
+    vol_penalty: float = 0.5  # negative contribution from volatility
 
     # ------------------------------------------------------------------
-    # Sector weighting (from V1.5 "sectors" section / SectorWeightEngine)
+    # Liquidity filters (new)
     # ------------------------------------------------------------------
-    # Softmax sharpness for sector scores
-    sector_softmax_alpha: float = 1.0  # sectors.smoothing_alpha
+    use_liquidity_filters: bool = True
 
-    # Per-sector min/max weights BEFORE top-k truncation
-    sector_w_min: float = 0.0  # sectors.weights.w_min
-    sector_w_max: float = 0.30  # sectors.weights.w_max
+    # Windows for liquidity statistics (ADV, median volume)
+    liquidity_window: int = 20  # convenience primary window
+    adv_window: int = 20  # used by ADV signal
+    median_volume_window: int = 20  # used by median volume signal
 
-    # Smoothing factor for sector weights (0 = stick, 1 = jump)
-    sector_smoothing_beta: float = 0.3  # sectors.smoothing_beta
+    # Hard minimums required for eligibility
+    min_adv20: float = 5_000_000.0  # USD
+    min_median_volume20: int = 50_000  # shares
+    min_price: float = 0.5  # dollars
 
-    # Keep only top-K sectors at each rebalance (others zeroed, then renormalized)
-    sector_top_k: int = 5  # sectors.top_k_sectors
+    # Z-score winsorization / clipping
+    zscore_clip: float = 3.0  # clip all z-scores to [-3, +3]
 
-    # Trend filter on benchmark (risk-on / risk-off scaling)
+    # ------------------------------------------------------------------
+    # Sector weighting
+    # ------------------------------------------------------------------
+    sector_softmax_alpha: float = 1.0
+    sector_w_min: float = 0.0
+    sector_w_max: float = 0.30
+    sector_smoothing_beta: float = 0.3
+    sector_top_k: int = 5
+
+    # Trend filter on benchmark for risk-on/risk-off scaling
     trend_filter_enabled: bool = True
-    trend_benchmark: str = "SPY"  # sectors.trend_filter.benchmark
-    trend_window: int = 200  # sectors.trend_filter.window
-
-    # Equity fraction in risk-on vs risk-off (remaining becomes implicit cash)
-    risk_on_equity_frac: float = 1.0  # sectors.risk_on_equity_frac
-    risk_off_equity_frac: float = 0.7  # sectors.risk_off_equity_frac
+    trend_benchmark: str = "SPY"
+    trend_window: int = 200
+    risk_on_equity_frac: float = 1.0
+    risk_off_equity_frac: float = 0.7
 
     # ------------------------------------------------------------------
-    # Stock selection within each sector (from V1.5 "stocks" section)
+    # Stock selection within each sector
     # ------------------------------------------------------------------
-    # Number of stocks to pick per sector at each rebalance
-    top_k_per_sector: int = 2  # stocks.top_k_per_sector
-
-    # How to allocate weight within each sector (equal-weight or inverse-vol)
+    top_k_per_sector: int = 2
     weighting_mode: str = "equal"  # "equal" | "inverse-vol"
 
     # ------------------------------------------------------------------
-    # Rebalancing (sleeve-level; global scheduler may override)
+    # Rebalancing (may be overridden by global scheduler)
     # ------------------------------------------------------------------
-    # pandas offset alias ("M" ~ month-end); V1.5 used monthly rebalancing.
     rebalance_freq: str = "M"
 
+    # ------------------------------------------------------------------
     # Regime-based gating for the Trend sleeve
-    # If True, the sleeve can be turned completely OFF under certain regimes
+    # ------------------------------------------------------------------
     use_regime_gating: bool = True
-
-    # Regimes (by name) under which this sleeve should be fully disabled.
-    # Comparison is case-insensitive; MultiSleeveAllocator passes the primary
-    # regime as a lowercase string ("bull", "bear", "crisis", etc.)
     gated_off_regimes: Tuple[str, ...] = ("crisis", "bear")

@@ -27,6 +27,7 @@ class TrendSleeve:
       - Uses S&P 500 membership as-of date
       - Sector-aware scoring & smoothing
       - Momentum + volatility composite stock scoring
+      - Liquidity filters (ADV / median volume / price)
       - Top-k per sector selection
       - Pure-stock sleeve (no ETFs for now)
     """
@@ -62,16 +63,16 @@ class TrendSleeve:
         as_of = pd.to_datetime(as_of)
         start_for_signals = pd.to_datetime(start_for_signals)
 
-        # ---------- Regime-based gating ----------
         cfg = self.config
         regime_key = (regime or "").lower()
 
+        # ---------- Regime-based gating ----------
         if cfg.use_regime_gating:
             gated_off = {r.lower() for r in cfg.gated_off_regimes}
             if regime_key in gated_off:
-                # Sleeve is turned completely OFF in these regimes
-                self.state.last_rebalance = as_of
-                self.state.last_weights = {}
+                # Sleeve is turned completely OFF in these regimes.
+                # We *don't* update smoothing state here; next active call
+                # will treat it as a fresh start or a long gap.
                 return {}
 
         # ---------- Normal trend sleeve logic below ----------
@@ -81,7 +82,7 @@ class TrendSleeve:
         if not universe:
             return {}
 
-        # 2) Compute signals
+        # 2) Compute signals (with liquidity filters)
         sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
         if sigs.empty:
             return {}
@@ -114,7 +115,7 @@ class TrendSleeve:
         return stock_weights
 
     # ------------------------------------------------------------------
-    # TIME-AWARE UNIVERSE (NEW)
+    # TIME-AWARE UNIVERSE
     # ------------------------------------------------------------------
 
     def _get_trend_universe(
@@ -131,7 +132,7 @@ class TrendSleeve:
 
         if as_of is not None:
             as_of_dt = pd.to_datetime(as_of).normalize()
-
+            # membership_mask returns [date x ticker] bool DataFrame
             mask = self.um.membership_mask(
                 start=as_of_dt.strftime("%Y-%m-%d"),
                 end=as_of_dt.strftime("%Y-%m-%d"),
@@ -154,7 +155,7 @@ class TrendSleeve:
         return sorted(set(core))
 
     # ------------------------------------------------------------------
-    # Signal computation
+    # Signal computation (with liquidity filters)
     # ------------------------------------------------------------------
 
     def _compute_signals_snapshot(
@@ -163,15 +164,74 @@ class TrendSleeve:
         start: pd.Timestamp,
         end: pd.Timestamp,
     ) -> pd.DataFrame:
+        """
+        For each ticker, compute:
+          - multi-horizon momentum (mom_{w})
+          - realized volatility (vol)
+          - liquidity metrics: adv, median_volume, last_price
 
+        Apply hard liquidity filters:
+          - last_price >= cfg.min_price
+          - adv >= cfg.min_adv
+          - median_volume >= cfg.min_median_volume
+
+        Only tickers passing all filters are kept.
+        """
         cfg = self.config
         rows = []
+
+        # Pull thresholds & windows (with graceful defaults if missing)
+        adv_window = getattr(cfg, "adv_window", 20)
+        mv_window = getattr(cfg, "median_volume_window", 20)
+        min_adv = getattr(cfg, "min_adv", None)
+        min_median_vol = getattr(cfg, "min_median_volume", None)
+        min_price = getattr(cfg, "min_price", None)
 
         for t in tickers:
             try:
                 row = {"ticker": t}
 
-                # multi-horizon momentum
+                # --- Liquidity metrics ---
+                adv = self.signals.get_series(
+                    t,
+                    "adv",
+                    start=start,
+                    end=end,
+                    window=adv_window,
+                )
+                mv = self.signals.get_series(
+                    t,
+                    "median_volume",
+                    start=start,
+                    end=end,
+                    window=mv_window,
+                )
+                px = self.signals.get_series(
+                    t,
+                    "last_price",
+                    start=start,
+                    end=end,
+                )
+
+                adv_val = adv.iloc[-1] if not adv.empty else np.nan
+                mv_val = mv.iloc[-1] if not mv.empty else np.nan
+                px_val = px.iloc[-1] if not px.empty else np.nan
+
+                # Hard liquidity filters (if thresholds provided)
+                if min_price is not None and (np.isnan(px_val) or px_val < min_price):
+                    continue
+                if min_adv is not None and (np.isnan(adv_val) or adv_val < min_adv):
+                    continue
+                if min_median_vol is not None and (
+                    np.isnan(mv_val) or mv_val < min_median_vol
+                ):
+                    continue
+
+                row["adv"] = adv_val
+                row["median_volume"] = mv_val
+                row["last_price"] = px_val
+
+                # --- Multi-horizon momentum ---
                 for w in cfg.mom_windows:
                     mom = self.signals.get_series(
                         t,
@@ -182,7 +242,7 @@ class TrendSleeve:
                     )
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
 
-                # realized volatility
+                # --- Realized volatility ---
                 vol = self.signals.get_series(
                     t,
                     "vol",
@@ -191,32 +251,47 @@ class TrendSleeve:
                     window=cfg.vol_window,
                 )
                 row["vol"] = vol.iloc[-1] if not vol.empty else np.nan
+
                 rows.append(row)
 
             except Exception:
+                # For robustness: skip this ticker if anything fails
                 continue
 
         if not rows:
             return pd.DataFrame()
 
         df = pd.DataFrame(rows).set_index("ticker")
-        mom_cols = [f"mom_{w}" for w in cfg.mom_windows]
 
-        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=mom_cols + ["vol"])
+        mom_cols = [f"mom_{w}" for w in cfg.mom_windows]
+        keep_cols = mom_cols + ["vol"]
+
+        # Drop rows missing key signal inputs
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=keep_cols, how="any")
         return df
 
     # ------------------------------------------------------------------
-    # Stock scoring
+    # Stock scoring (with winsorized z-scores)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _zscore_series(s: pd.Series) -> pd.Series:
+    def _zscore_series(self, s: pd.Series) -> pd.Series:
+        """
+        Standard z-score with optional winsorization based on cfg.zscore_clip.
+        """
+        cfg = self.config
         s = s.astype(float)
         mean = s.mean()
         std = s.std()
         if std is None or std == 0 or np.isnan(std):
-            return pd.Series(0.0, index=s.index)
-        return (s - mean) / std
+            z = pd.Series(0.0, index=s.index)
+        else:
+            z = (s - mean) / std
+
+        zclip = getattr(cfg, "zscore_clip", None)
+        if zclip is not None and zclip > 0:
+            z = z.clip(lower=-zclip, upper=zclip)
+
+        return z
 
     def _compute_stock_scores(self, sigs: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config
@@ -238,6 +313,7 @@ class TrendSleeve:
         vol_z = self._zscore_series(df["vol"])
         df["vol_score"] = -vol_z
 
+        # stock_score = momentum_score + vol_penalty * vol_score
         df["stock_score"] = df["momentum_score"] + cfg.vol_penalty * df["vol_score"]
 
         return df
@@ -286,7 +362,10 @@ class TrendSleeve:
         cfg = self.config
         k = cfg.sector_top_k
         if k is None or k >= len(w):
-            return w / w.sum()
+            total = w.sum()
+            if total > 0:
+                return w / total
+            return pd.Series(1.0 / len(w), index=w.index)
 
         keep = w.nlargest(k).index
         w2 = w.copy()
@@ -374,6 +453,7 @@ class TrendSleeve:
             w = (inv / inv.sum()).reindex(tickers).fillna(0.0)
             return w
 
+        # equal-weight
         return pd.Series(1.0 / len(tickers), index=tickers)
 
     def _allocate_to_stocks(
@@ -382,7 +462,7 @@ class TrendSleeve:
         sector_weights: pd.Series,
     ) -> Dict[str, float]:
 
-        final = {}
+        final: Dict[str, float] = {}
 
         for sector, w_sec in sector_weights.items():
             if w_sec <= 0 or pd.isna(w_sec):
