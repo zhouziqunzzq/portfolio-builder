@@ -22,7 +22,8 @@ from src.signal_engine import SignalEngine
 from src.regime_engine import RegimeEngine
 from src.universe_manager import UniverseManager
 from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
-from src.allocator.multi_sleeve_allocator import MultiSleeveAllocator, MultiSleeveConfig
+from src.allocator.multi_sleeve_allocator import MultiSleeveAllocator
+from src.allocator.multi_sleeve_config import MultiSleeveConfig
 
 
 def build_runtime():
@@ -42,7 +43,8 @@ def build_runtime():
     mds = MarketDataStore(
         data_root="data/prices",
         source="yfinance",
-        local_only=False,
+        local_only=True,
+        use_memory_cache=True,
     )
 
     # ---- SignalEngine ----
