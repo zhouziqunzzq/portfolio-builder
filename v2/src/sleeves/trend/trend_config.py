@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 
 
 @dataclass
@@ -76,3 +76,12 @@ class TrendConfig:
     # ------------------------------------------------------------------
     # pandas offset alias ("M" ~ month-end); V1.5 used monthly rebalancing.
     rebalance_freq: str = "M"
+
+    # Regime-based gating for the Trend sleeve
+    # If True, the sleeve can be turned completely OFF under certain regimes
+    use_regime_gating: bool = True
+
+    # Regimes (by name) under which this sleeve should be fully disabled.
+    # Comparison is case-insensitive; MultiSleeveAllocator passes the primary
+    # regime as a lowercase string ("bull", "bear", "crisis", etc.)
+    gated_off_regimes: Tuple[str, ...] = ("crisis", "bear")

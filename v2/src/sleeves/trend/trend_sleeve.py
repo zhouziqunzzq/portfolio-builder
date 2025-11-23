@@ -62,6 +62,20 @@ class TrendSleeve:
         as_of = pd.to_datetime(as_of)
         start_for_signals = pd.to_datetime(start_for_signals)
 
+        # ---------- Regime-based gating ----------
+        cfg = self.config
+        regime_key = (regime or "").lower()
+
+        if cfg.use_regime_gating:
+            gated_off = {r.lower() for r in cfg.gated_off_regimes}
+            if regime_key in gated_off:
+                # Sleeve is turned completely OFF in these regimes
+                self.state.last_rebalance = as_of
+                self.state.last_weights = {}
+                return {}
+
+        # ---------- Normal trend sleeve logic below ----------
+
         # 1) TIME-AWARE UNIVERSE
         universe = self._get_trend_universe(as_of)
         if not universe:
