@@ -1,15 +1,14 @@
 """
-Real integration test for MultiSleeveAllocator using:
+Real integration test for MultiSleeveAllocator with both:
 
-- MarketDataStore (yfinance)
-- SignalEngine
-- RegimeEngine
-- DefensiveSleeve
-- MultiSleeveAllocator (with score-based regime blending)
+    - TrendSleeve (NEW)
+    - DefensiveSleeve
 
-Run from v2 root:
-
-    (.venv) python3 test_multi_sleeve_allocator.py
+The run includes:
+    - MarketDataStore (yfinance w/ memory cache)
+    - SignalEngine
+    - RegimeEngine
+    - MultiSleeveAllocator (score-blending)
 """
 
 from pathlib import Path
@@ -21,14 +20,19 @@ from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
 from src.regime_engine import RegimeEngine
 from src.universe_manager import UniverseManager
+
+from src.sleeves.trend.trend_sleeve import TrendSleeve
 from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
+
 from src.allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from src.allocator.multi_sleeve_config import MultiSleeveConfig
 
 
+# --------------------------------------------------------------------
+# Build runtime context
+# --------------------------------------------------------------------
 def build_runtime():
-    # ---- UniverseManager ----
-    # Adjust membership_csv path if your file is named differently.
+    # ==== Universe ====
     membership_csv = Path("data/sp500_membership.csv")
     sectors_yaml = Path("config/sectors.yml")
 
@@ -38,56 +42,64 @@ def build_runtime():
         local_only=False,
     )
 
-    # ---- MarketDataStore ----
-    # Adjust data_root if needed
+    # ==== Market Data ====
     mds = MarketDataStore(
         data_root="data/prices",
         source="yfinance",
-        local_only=True,
-        use_memory_cache=True,
+        local_only=True,  # Set to False if you want live fetches
+        use_memory_cache=True,  # IMPORTANT: avoid repeated disk loads
     )
 
-    # ---- SignalEngine ----
+    # ==== Signals ====
     signals = SignalEngine(mds)
 
-    # ---- RegimeEngine ----
-    # Adjust constructor args if your RegimeEngine signature differs
+    # ==== Regime Engine ====
     regime_engine = RegimeEngine(
         signals=signals,
-        config=None,  # use default config
+        config=None,
     )
 
-    # ---- Defensive Sleeve ----
+    # ==== Sleeves ====
     defensive = DefensiveSleeve(
         universe=um,
         mds=mds,
         signals=signals,
-        config=None,  # use default config
+        config=None,
     )
 
-    # ---- Multi-sleeve config & allocator ----
-    # For now, only the defensive sleeve is wired. All regimes map to defensive: 1.0
+    trend = TrendSleeve(
+        universe=um,
+        mds=mds,
+        signals=signals,
+        config=None,
+    )
+
+    # ==== Multi-sleeve allocator ====
     ms_config = MultiSleeveConfig()
 
     allocator = MultiSleeveAllocator(
         regime_engine=regime_engine,
-        sleeves={"defensive": defensive},
+        sleeves={
+            "trend": trend,
+            "defensive": defensive,
+        },
         config=ms_config,
     )
 
     return allocator
 
 
+# --------------------------------------------------------------------
+# Run snapshot
+# --------------------------------------------------------------------
 def run_snapshot(allocator: MultiSleeveAllocator, as_of: str):
     as_of_ts = pd.to_datetime(as_of)
-
     weights = allocator.generate_global_target_weights(as_of_ts)
 
     print("\n" + "=" * 60)
     print(f"Global portfolio as of {as_of_ts.date()}")
     print("=" * 60)
 
-    # Regime context
     primary = allocator.last_primary_regime
     scores = allocator.last_regime_scores or {}
 
@@ -99,26 +111,21 @@ def run_snapshot(allocator: MultiSleeveAllocator, as_of: str):
     else:
         print("Regime scores: <none> (fallback to primary regime only)")
 
-    # Weights
-    if not weights:
-        print("No weights returned (empty portfolio).")
-        return
-
-    print("\nTop weights:")
+    print("\nTop 20 weights:")
     for t, w in sorted(weights.items(), key=lambda x: -x[1])[:20]:
         print(f"  {t:6s} : {w:.4f}")
 
     print(f"\nSum of weights = {sum(weights.values()):.6f}")
 
 
+# --------------------------------------------------------------------
 def main():
     allocator = build_runtime()
 
-    # Test a couple of dates that should hit different regimes / environments
     dates = [
-        "2020-03-31",  # Covid crash / high vol
-        "2022-06-30",  # 2022 bear market
-        "2024-12-31",  # Recent-ish date
+        "2020-03-31",
+        "2022-06-30",
+        "2025-11-14",
     ]
 
     for d in dates:
