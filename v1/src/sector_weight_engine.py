@@ -24,17 +24,20 @@ class SectorWeightEngine:
     - smoothing/hysteresis
     - trend-based risk-on/risk-off scaling
     """
-    sector_scores: pd.DataFrame           # index: Date, columns: sectors
-    benchmark_prices: pd.Series          # index: Date, benchmark (SPY / ^GSPC) close prices
 
-    alpha: float = 1.0                   # softmax sharpness
-    w_min: float = 0.03                  # min sector weight
-    w_max: float = 0.30                  # max sector weight
-    beta: float = 0.3                    # smoothing factor (0=stick, 1=jump)
-    trend_window: int = 200              # SMA window for trend filter
-    risk_on_equity_frac: float = 1.0     # equity fraction in risk-on
-    risk_off_equity_frac: float = 0.7    # equity fraction in risk-off
-    top_k_sectors: Optional[int] = None  # keep only top-k sectors each rebalance (others zeroed, then renormalize)
+    sector_scores: pd.DataFrame  # index: Date, columns: sectors
+    benchmark_prices: pd.Series  # index: Date, benchmark (SPY / ^GSPC) close prices
+
+    alpha: float = 1.0  # softmax sharpness
+    w_min: float = 0.03  # min sector weight
+    w_max: float = 0.30  # max sector weight
+    beta: float = 0.3  # smoothing factor (0=stick, 1=jump)
+    trend_window: int = 200  # SMA window for trend filter
+    risk_on_equity_frac: float = 1.0  # equity fraction in risk-on
+    risk_off_equity_frac: float = 0.7  # equity fraction in risk-off
+    top_k_sectors: Optional[int] = (
+        None  # keep only top-k sectors each rebalance (others zeroed, then renormalize)
+    )
 
     def __post_init__(self):
         # Align benchmark index to sector_scores index
@@ -43,9 +46,7 @@ class SectorWeightEngine:
 
         # Reindex benchmark to the sector_scores index (forward/backfill if needed)
         self.benchmark_prices = (
-            self.benchmark_prices.reindex(self.sector_scores.index)
-                                 .ffill()
-                                 .bfill()
+            self.benchmark_prices.reindex(self.sector_scores.index).ffill().bfill()
         )
 
         # Ensure no negative or weird alpha values
@@ -60,7 +61,11 @@ class SectorWeightEngine:
 
         # Resolve default for top_k_sectors to number of sectors
         n_sectors = len(self.sector_scores.columns)
-        if self.top_k_sectors is None or int(self.top_k_sectors) <= 0 or int(self.top_k_sectors) > n_sectors:
+        if (
+            self.top_k_sectors is None
+            or int(self.top_k_sectors) <= 0
+            or int(self.top_k_sectors) > n_sectors
+        ):
             self.top_k_sectors = n_sectors
 
     # ------------------------------------------------------------
@@ -145,7 +150,11 @@ class SectorWeightEngine:
         k = int(self.top_k_sectors or len(w))
         if k >= len(w) or k <= 0:
             total = float(w.sum())
-            return (w / total) if total > 0 else pd.Series(1.0 / len(w), index=w.index, dtype=float)
+            return (
+                (w / total)
+                if total > 0
+                else pd.Series(1.0 / len(w), index=w.index, dtype=float)
+            )
 
         keep_idx = w.nlargest(k).index
         w2 = w.copy()
@@ -197,10 +206,11 @@ class SectorWeightEngine:
             else:
                 equity_frac = self.risk_off_equity_frac
 
-            w_final = w_selected * equity_frac   # remaining 1 - equity_frac = implicit cash
+            w_final = (
+                w_selected * equity_frac
+            )  # remaining 1 - equity_frac = implicit cash
 
             weights.loc[dt] = w_final
             prev_weights = w_smoothed
 
         return weights
-

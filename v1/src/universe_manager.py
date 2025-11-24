@@ -24,7 +24,12 @@ class UniverseManager:
     step-by-step without breaking the pipeline.
     """
 
-    def __init__(self, membership_csv: Path, sectors_yaml: Optional[Path] = None, local_only: bool = False):
+    def __init__(
+        self,
+        membership_csv: Path,
+        sectors_yaml: Optional[Path] = None,
+        local_only: bool = False,
+    ):
         self.log = logging.getLogger(self.__class__.__name__)
         self.membership_csv = membership_csv
         self.sectors_yaml = sectors_yaml
@@ -44,7 +49,9 @@ class UniverseManager:
             - Sector names are optionally normalized via sectors.yml if provided.
         """
         if self.local_only:
-            raise RuntimeError("Local-only mode: build_current_constituents requires network access (Wikipedia)")
+            raise RuntimeError(
+                "Local-only mode: build_current_constituents requires network access (Wikipedia)"
+            )
 
         import time
         import re
@@ -79,11 +86,14 @@ class UniverseManager:
             except Exception as e:
                 last_exc = e
                 self.log.warning("Wikipedia fetch attempt %s failed: %s", i + 1, e)
-                time.sleep(backoff ** i)
+                time.sleep(backoff**i)
         if html is None:
-            raise RuntimeError(f"Failed to fetch S&P 500 page after {attempts} attempts: {last_exc}")
+            raise RuntimeError(
+                f"Failed to fetch S&P 500 page after {attempts} attempts: {last_exc}"
+            )
 
         from io import StringIO
+
         tables = pd.read_html(StringIO(html))
         target = None
         for t in tables:
@@ -92,7 +102,9 @@ class UniverseManager:
                 target = t
                 break
         if target is None:
-            raise RuntimeError("Could not locate S&P 500 constituents table on Wikipedia")
+            raise RuntimeError(
+                "Could not locate S&P 500 constituents table on Wikipedia"
+            )
 
         df = target[["Symbol", "Security", "GICS Sector"]].copy()
         df.columns = ["ticker", "name", "sector"]
@@ -107,7 +119,9 @@ class UniverseManager:
         df = df.drop_duplicates(subset=["ticker"]).reset_index(drop=True)
         after = len(df)
         if after < before:
-            self.log.info("Dropped %d duplicate tickers from Wikipedia list", before - after)
+            self.log.info(
+                "Dropped %d duplicate tickers from Wikipedia list", before - after
+            )
 
         # Apply sector normalization if mapping provided
         df = self.apply_unified_sector_mapping(df)
@@ -132,14 +146,14 @@ class UniverseManager:
               remain Unknown at this step.
         """
         if self.local_only:
-            raise RuntimeError("Local-only mode: build_historical_membership requires network access (GitHub dataset)")
+            raise RuntimeError(
+                "Local-only mode: build_historical_membership requires network access (GitHub dataset)"
+            )
 
         import io
         import requests
 
-        TICKER_START_END_URL = (
-            "https://raw.githubusercontent.com/fja05680/sp500/master/sp500_ticker_start_end.csv"
-        )
+        TICKER_START_END_URL = "https://raw.githubusercontent.com/fja05680/sp500/master/sp500_ticker_start_end.csv"
 
         self.log.info("Downloading historical membership from %s", TICKER_START_END_URL)
         resp = requests.get(TICKER_START_END_URL, timeout=30)
@@ -161,11 +175,13 @@ class UniverseManager:
         def _norm(sym: str) -> str:
             return str(sym).strip().upper().replace(".", "-")
 
-        df_hist = df_hist.rename(columns={
-            symbol_col: "ticker",
-            start_col: "date_added",
-            **({end_col: "date_removed"} if end_col else {}),
-        })
+        df_hist = df_hist.rename(
+            columns={
+                symbol_col: "ticker",
+                start_col: "date_added",
+                **({end_col: "date_removed"} if end_col else {}),
+            }
+        )
 
         if "date_removed" not in df_hist.columns:
             df_hist["date_removed"] = pd.NaT
@@ -178,7 +194,9 @@ class UniverseManager:
         try:
             cur = self.build_current_constituents()[["ticker", "name", "sector"]]
         except Exception as e:
-            self.log.warning("Failed to fetch current constituents for sector merge: %s", e)
+            self.log.warning(
+                "Failed to fetch current constituents for sector merge: %s", e
+            )
             cur = pd.DataFrame(columns=["ticker", "name", "sector"])
 
         df = df_hist.merge(cur, on="ticker", how="left")
@@ -191,9 +209,11 @@ class UniverseManager:
         df = self.apply_unified_sector_mapping(df)
 
         # Keep a clean column set and sort
-        df = df[["ticker", "date_added", "date_removed", "name", "sector"]].sort_values(
-            ["date_added", "ticker"]
-        ).reset_index(drop=True)
+        df = (
+            df[["ticker", "date_added", "date_removed", "name", "sector"]]
+            .sort_values(["date_added", "ticker"])
+            .reset_index(drop=True)
+        )
 
         self.log.info("Built historical membership", extra={"rows": len(df)})
         return df
@@ -224,12 +244,16 @@ class UniverseManager:
             try:
                 import yfinance as yf  # type: ignore
             except Exception as e:
-                self.log.warning("yfinance import failed; skipping Yahoo Finance enrichment: %s", e)
+                self.log.warning(
+                    "yfinance import failed; skipping Yahoo Finance enrichment: %s", e
+                )
                 yf = None  # type: ignore
             try:
                 import requests  # type: ignore
             except Exception as e:
-                self.log.warning("requests import failed; skipping Wikipedia enrichment: %s", e)
+                self.log.warning(
+                    "requests import failed; skipping Wikipedia enrichment: %s", e
+                )
                 requests = None  # type: ignore
         try:
             import yaml  # type: ignore
@@ -339,15 +363,23 @@ class UniverseManager:
                 resp.raise_for_status()
                 data = resp.json() or {}
                 extract = str(data.get("extract", "")).lower()
-                if any(w in extract for w in ["software", "technology", "semiconductor"]):
+                if any(
+                    w in extract for w in ["software", "technology", "semiconductor"]
+                ):
                     return "Information Technology"
                 if any(w in extract for w in ["bank", "financial"]):
                     return "Financials"
-                if any(w in extract for w in ["pharmaceutical", "biotechnology", "healthcare"]):
+                if any(
+                    w in extract
+                    for w in ["pharmaceutical", "biotechnology", "healthcare"]
+                ):
                     return "Health Care"
                 if any(w in extract for w in ["oil", "gas", "energy"]):
                     return "Energy"
-                if any(w in extract for w in ["telecommunications", "communication", "media"]):
+                if any(
+                    w in extract
+                    for w in ["telecommunications", "communication", "media"]
+                ):
                     return "Communication Services"
                 if "retail" in extract:
                     return "Consumer Discretionary"
@@ -366,13 +398,19 @@ class UniverseManager:
             return None
 
         # Build symbol sets
-        out["ticker"] = out["ticker"].astype(str).str.upper().str.replace(".", "-", regex=False)
+        out["ticker"] = (
+            out["ticker"].astype(str).str.upper().str.replace(".", "-", regex=False)
+        )
         out["sector"] = out["sector"].fillna("Unknown")
 
-        is_unknown = out["sector"].isin(unknown_labels) | (out["sector"].astype(str).str.strip() == "")
+        is_unknown = out["sector"].isin(unknown_labels) | (
+            out["sector"].astype(str).str.strip() == ""
+        )
         unknown_syms = sorted(out.loc[is_unknown, "ticker"].dropna().unique().tolist())
 
-        self.log.info("Sector enrichment: %d tickers with unknown sector", len(unknown_syms))
+        self.log.info(
+            "Sector enrichment: %d tickers with unknown sector", len(unknown_syms)
+        )
 
         enriched: dict[str, str] = {}
 
@@ -393,7 +431,10 @@ class UniverseManager:
         if remaining and session is not None:
             # Map symbol -> name for wiki probing
             name_by_symbol = (
-                out[["ticker", "name"]].drop_duplicates().set_index("ticker")["name"].to_dict()
+                out[["ticker", "name"]]
+                .drop_duplicates()
+                .set_index("ticker")["name"]
+                .to_dict()
             )
             for sym in remaining:
                 nm = name_by_symbol.get(sym, "")
@@ -408,7 +449,10 @@ class UniverseManager:
         still = [s for s in unknown_syms if s not in enriched]
         if still:
             name_by_symbol = (
-                out[["ticker", "name"]].drop_duplicates().set_index("ticker")["name"].to_dict()
+                out[["ticker", "name"]]
+                .drop_duplicates()
+                .set_index("ticker")["name"]
+                .to_dict()
             )
             for sym in still:
                 guess = infer_sector_from_name(name_by_symbol.get(sym, ""))
@@ -453,9 +497,13 @@ class UniverseManager:
                 "Utilities",
             }
         # First, fix unknowns
-        mask_unknown = out["sector"].isin(unknown_labels) | (out["sector"].astype(str).str.strip() == "")
+        mask_unknown = out["sector"].isin(unknown_labels) | (
+            out["sector"].astype(str).str.strip() == ""
+        )
         if mask_unknown.any():
-            out.loc[mask_unknown, "sector"] = out.loc[mask_unknown, "sector"].map(normalize_sector_heuristic)
+            out.loc[mask_unknown, "sector"] = out.loc[mask_unknown, "sector"].map(
+                normalize_sector_heuristic
+            )
         # Then, fix non-canonical leftovers using heuristic
         mask_noncanon = ~out["sector"].isin(canonical)
         if mask_noncanon.any():
@@ -466,8 +514,15 @@ class UniverseManager:
         out = self.apply_unified_sector_mapping(out)
 
         # Done
-        unknown_after = int((out["sector"].isin(unknown_labels) | (out["sector"].astype(str).str.strip() == "")).sum())
-        self.log.info("Sector enrichment complete: unknowns=%d / %d", unknown_after, len(out))
+        unknown_after = int(
+            (
+                out["sector"].isin(unknown_labels)
+                | (out["sector"].astype(str).str.strip() == "")
+            ).sum()
+        )
+        self.log.info(
+            "Sector enrichment complete: unknowns=%d / %d", unknown_after, len(out)
+        )
         return out
 
     def apply_unified_sector_mapping(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -478,6 +533,7 @@ class UniverseManager:
             self.log.warning("No sectors.yml provided; skipping sector normalization")
             return df
         import yaml
+
         mapping = yaml.safe_load(Path(self.sectors_yaml).read_text()) or {}
         aliases = {}
         for canonical, entry in mapping.get("sectors", {}).items():
@@ -502,6 +558,7 @@ class UniverseManager:
         if not self.sectors_yaml:
             return df
         import yaml
+
         mapping = yaml.safe_load(Path(self.sectors_yaml).read_text()) or {}
         unknowns = set(mapping.get("unknown_labels", []))
         if "sector" in df.columns:
@@ -518,7 +575,10 @@ class UniverseManager:
         if not self.membership_csv.exists():
             raise FileNotFoundError(f"Membership CSV not found: {self.membership_csv}")
         df = pd.read_csv(self.membership_csv)
-        self.log.info("Loaded membership CSV", extra={"path": str(self.membership_csv), "rows": len(df)})
+        self.log.info(
+            "Loaded membership CSV",
+            extra={"path": str(self.membership_csv), "rows": len(df)},
+        )
         return df
 
     # ---- Interfaces for consumers ----
@@ -528,7 +588,15 @@ class UniverseManager:
         df = self.load_from_membership_csv()
         if "ticker" not in df.columns:
             raise ValueError("membership CSV must contain 'ticker' column")
-        tickers = sorted(df["ticker"].dropna().astype(str).str.upper().str.replace(".", "-", regex=False).unique().tolist())
+        tickers = sorted(
+            df["ticker"]
+            .dropna()
+            .astype(str)
+            .str.upper()
+            .str.replace(".", "-", regex=False)
+            .unique()
+            .tolist()
+        )
         return tickers
 
     @property
@@ -537,12 +605,20 @@ class UniverseManager:
         try:
             mem_df = self.load_from_membership_csv()
             if {"ticker", "sector"}.issubset(mem_df.columns):
-                mem_df = mem_df[["ticker", "sector", "date_added"]].copy() if "date_added" in mem_df.columns else mem_df[["ticker", "sector"]].copy()
+                mem_df = (
+                    mem_df[["ticker", "sector", "date_added"]].copy()
+                    if "date_added" in mem_df.columns
+                    else mem_df[["ticker", "sector"]].copy()
+                )
                 if "date_added" in mem_df.columns:
-                    mem_df = mem_df.sort_values(["ticker", "date_added"]).drop_duplicates("ticker", keep="last")
+                    mem_df = mem_df.sort_values(
+                        ["ticker", "date_added"]
+                    ).drop_duplicates("ticker", keep="last")
                 else:
                     mem_df = mem_df.drop_duplicates("ticker", keep="last")
-                sector_map = {row["ticker"].upper(): row["sector"] for _, row in mem_df.iterrows()}
+                sector_map = {
+                    row["ticker"].upper(): row["sector"] for _, row in mem_df.iterrows()
+                }
             else:
                 sector_map = None
         except Exception:
@@ -568,7 +644,9 @@ class UniverseManager:
             df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).dt.normalize()
             mask = (
                 df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
-                .pivot_table(index="date", columns="ticker", values="in_sp500", fill_value=0)
+                .pivot_table(
+                    index="date", columns="ticker", values="in_sp500", fill_value=0
+                )
                 .astype(bool)
             )
             return mask
@@ -578,29 +656,49 @@ class UniverseManager:
             work = df.copy()
             work["date_added"] = pd.to_datetime(work["date_added"]).dt.normalize()
             if "date_removed" in work.columns:
-                work["date_removed"] = pd.to_datetime(work["date_removed"]).dt.normalize()
+                work["date_removed"] = pd.to_datetime(
+                    work["date_removed"]
+                ).dt.normalize()
             else:
                 work["date_removed"] = pd.NaT
 
             # Build events: +1 at added, -1 at removed + 1 day (to include removal date)
-            ev_add = work[["ticker", "date_added"]].rename(columns={"date_added": "date"})
+            ev_add = work[["ticker", "date_added"]].rename(
+                columns={"date_added": "date"}
+            )
             ev_add["delta"] = 1
-            ev_rem = work[["ticker", "date_removed"]].dropna().rename(columns={"date_removed": "date"})
+            ev_rem = (
+                work[["ticker", "date_removed"]]
+                .dropna()
+                .rename(columns={"date_removed": "date"})
+            )
             if not ev_rem.empty:
                 ev_rem["date"] = ev_rem["date"] + pd.Timedelta(days=1)
                 ev_rem["delta"] = -1
 
-            events = pd.concat([ev_add, ev_rem], ignore_index=True) if not ev_rem.empty else ev_add
+            events = (
+                pd.concat([ev_add, ev_rem], ignore_index=True)
+                if not ev_rem.empty
+                else ev_add
+            )
             # Keep only events that can affect [start, end]
             right_bound = end_dt + pd.Timedelta(days=1)
             events = events[(events["date"] <= right_bound)]
 
             # Pivot to [date x ticker] deltas
-            deltas = events.pivot_table(index="date", columns="ticker", values="delta", aggfunc="sum", fill_value=0)
+            deltas = events.pivot_table(
+                index="date",
+                columns="ticker",
+                values="delta",
+                aggfunc="sum",
+                fill_value=0,
+            )
 
             # Compute initial active state at start_dt from ranges that began before start_dt
             # active at start if: date_added <= start_dt and (date_removed is NaT or date_removed >= start_dt)
-            cond = (work["date_added"] <= start_dt) & (work["date_removed"].isna() | (work["date_removed"] >= start_dt))
+            cond = (work["date_added"] <= start_dt) & (
+                work["date_removed"].isna() | (work["date_removed"] >= start_dt)
+            )
             initial_active = cond.groupby(work["ticker"]).any()
             # Convert to int (1 for active else 0)
             initial_active = initial_active.astype(int)
@@ -616,7 +714,9 @@ class UniverseManager:
             mask = active > 0
             return mask
 
-        raise ValueError("membership CSV must contain either daily [date,ticker,in_sp500] or range [ticker,date_added(,date_removed)] schema")
+        raise ValueError(
+            "membership CSV must contain either daily [date,ticker,in_sp500] or range [ticker,date_added(,date_removed)] schema"
+        )
 
     def get_price_matrix(
         self,
@@ -647,11 +747,18 @@ class UniverseManager:
                 fall outside membership dates are set to NaN.
             local_only: If set, overrides instance local_only for this call.
         """
+
         def _fetch_one(sym: str) -> Optional[pd.Series]:
             try:
                 if hasattr(price_loader, "get_ohlcv"):
                     # Pass through local_only if supported by the loader
-                    kwargs = dict(ticker=sym, start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+                    kwargs = dict(
+                        ticker=sym,
+                        start=start,
+                        end=end,
+                        interval=interval,
+                        auto_adjust=auto_adjust,
+                    )
                     try:
                         if local_only is None:
                             # Fall back to instance default
@@ -664,7 +771,9 @@ class UniverseManager:
                 elif hasattr(price_loader, "load_ohlcv"):
                     ohlcv = price_loader.load_ohlcv(sym, start=start, end=end)
                 else:
-                    raise AttributeError("price_loader must provide get_ohlcv or load_ohlcv")
+                    raise AttributeError(
+                        "price_loader must provide get_ohlcv or load_ohlcv"
+                    )
 
                 if ohlcv is None or len(ohlcv) == 0:
                     return None
@@ -693,7 +802,7 @@ class UniverseManager:
             # Union of members active any time in window
             # Note: window includes non-trading days!
             mask = self.membership_mask(start=start, end=end)
-        
+
         # Default to all tickers if none provided
         if tickers is None:
             tickers = self.tickers
@@ -711,7 +820,7 @@ class UniverseManager:
         if out.empty:
             return out
         # Restrict to requested window and sort
-        out = out.loc[pd.to_datetime(start): pd.to_datetime(end)].sort_index()
+        out = out.loc[pd.to_datetime(start) : pd.to_datetime(end)].sort_index()
         # Apply membership mask if requested
         if auto_apply_membership_mask:
             out = out.where(mask, other=pd.NA)

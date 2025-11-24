@@ -15,6 +15,7 @@ class PortfolioBacktester:
     - prices: Date x Ticker (Close)
     - weights: Date x Ticker (target weights on those dates)
     """
+
     prices: pd.DataFrame
     weights: pd.DataFrame
     trading_days_per_year: int = 252
@@ -37,11 +38,7 @@ class PortfolioBacktester:
 
         # Align date index: use prices index as master
         self.prices = self.prices.sort_index()
-        self.weights = (
-            self.weights.reindex(self.prices.index)
-                        .ffill()
-                        .fillna(0.0)
-        )
+        self.weights = self.weights.reindex(self.prices.index).ffill().fillna(0.0)
 
     # ------------------------------------------------------------
     # Core calculations

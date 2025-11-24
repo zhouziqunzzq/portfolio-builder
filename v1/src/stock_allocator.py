@@ -23,14 +23,17 @@ class StockAllocator:
     - selecting top-k per sector
     - allocating sector weight across those stocks (equal or inverse-vol)
     """
-    sector_weights: pd.DataFrame           # index: Date, columns: sectors
-    stock_scores: pd.DataFrame            # index: Date, columns: tickers
-    sector_map: Dict[str, str]            # ticker -> sector
 
-    stock_vol: Optional[pd.DataFrame] = None  # index: Date, columns: tickers (for inverse-vol)
+    sector_weights: pd.DataFrame  # index: Date, columns: sectors
+    stock_scores: pd.DataFrame  # index: Date, columns: tickers
+    sector_map: Dict[str, str]  # ticker -> sector
+
+    stock_vol: Optional[pd.DataFrame] = (
+        None  # index: Date, columns: tickers (for inverse-vol)
+    )
     top_k: int = 2
-    weighting_mode: str = "equal"         # "equal" or "inverse_vol"
-    preserve_cash: bool = True            # if True, don't force weights to sum to 1 (keep cash)
+    weighting_mode: str = "equal"  # "equal" or "inverse_vol"
+    preserve_cash: bool = True  # if True, don't force weights to sum to 1 (keep cash)
 
     def __post_init__(self):
         # Normalize ticker cases
@@ -44,15 +47,9 @@ class StockAllocator:
         self.sector_map = {t.upper(): s for t, s in self.sector_map.items()}
 
         # Align date index: we will use sector_weights.index as master
-        self.stock_scores = (
-            self.stock_scores.reindex(self.sector_weights.index)
-                            .ffill()
-        )
+        self.stock_scores = self.stock_scores.reindex(self.sector_weights.index).ffill()
         if self.stock_vol is not None:
-            self.stock_vol = (
-                self.stock_vol.reindex(self.sector_weights.index)
-                              .ffill()
-            )
+            self.stock_vol = self.stock_vol.reindex(self.sector_weights.index).ffill()
 
     # ------------------------------------------------------------
     # Helpers
@@ -168,4 +165,3 @@ class StockAllocator:
             prev_row = w_row
 
         return stock_weights
-

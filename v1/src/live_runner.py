@@ -13,34 +13,89 @@ from .universe_manager import UniverseManager
 from .market_data_store import MarketDataStore
 from .sector_weight_engine import SectorWeightEngine
 from .stock_allocator import StockAllocator
- 
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Momentum V1.5 Production Runner")
     p.add_argument("--date", default="today", help="Run date (YYYY-MM-DD) or 'today'")
-    p.add_argument("--strategy", default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"), help="Path to strategy.yml")
-    p.add_argument("--sectors", default=str(Path(__file__).resolve().parents[1] / "config" / "sectors.yml"), help="Path to sectors.yml")
-    p.add_argument("--local-only", action="store_true", help="Disable network calls and use only local caches/artifacts")
+    p.add_argument(
+        "--strategy",
+        default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"),
+        help="Path to strategy.yml",
+    )
+    p.add_argument(
+        "--sectors",
+        default=str(Path(__file__).resolve().parents[1] / "config" / "sectors.yml"),
+        help="Path to sectors.yml",
+    )
+    p.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Disable network calls and use only local caches/artifacts",
+    )
 
     # Main pipeline actions
-    p.add_argument("--regen-universe", action="store_true", help="Rebuild universe artifacts: current constituents snapshot, historical membership, sector enrichment")
-    p.add_argument("--update-prices", action="store_true", help="Update OHLCV cache for tickers and compute SPY trend status")
+    p.add_argument(
+        "--regen-universe",
+        action="store_true",
+        help="Rebuild universe artifacts: current constituents snapshot, historical membership, sector enrichment",
+    )
+    p.add_argument(
+        "--update-prices",
+        action="store_true",
+        help="Update OHLCV cache for tickers and compute SPY trend status",
+    )
     p.add_argument("--rebalance", action="store_true", help="Force a rebalance run")
-    p.add_argument("--rebalance-start", default=None, help="Explicit start date YYYY-MM-DD for rebalance; overrides --signal-start during rebalance")
+    p.add_argument(
+        "--rebalance-start",
+        default=None,
+        help="Explicit start date YYYY-MM-DD for rebalance; overrides --signal-start during rebalance",
+    )
 
     # Single-step actions that can be run independently
-    p.add_argument("--compute-signals", action="store_true", help="Compute stock scores and sector scores using SignalEngine over window-union membership")
-    p.add_argument("--signal-start", default=None, help="Explicit start date YYYY-MM-DD for signal window; overrides automatic lookback")
-    p.add_argument("--compute-sector-weights", action="store_true", help="Compute sector weights from sector scores and benchmark using SectorWeightEngine")
-    p.add_argument("--compute-stock-weights", action="store_true", help="Allocate sector weights to stocks using StockAllocator")
-    p.add_argument("--dump-membership-mask", action="store_true", help="Dump membership mask CSV/Parquet under output_root/masks for archival")
+    p.add_argument(
+        "--compute-signals",
+        action="store_true",
+        help="Compute stock scores and sector scores using SignalEngine over window-union membership",
+    )
+    p.add_argument(
+        "--signal-start",
+        default=None,
+        help="Explicit start date YYYY-MM-DD for signal window; overrides automatic lookback",
+    )
+    p.add_argument(
+        "--compute-sector-weights",
+        action="store_true",
+        help="Compute sector weights from sector scores and benchmark using SectorWeightEngine",
+    )
+    p.add_argument(
+        "--compute-stock-weights",
+        action="store_true",
+        help="Allocate sector weights to stocks using StockAllocator",
+    )
+    p.add_argument(
+        "--dump-membership-mask",
+        action="store_true",
+        help="Dump membership mask CSV/Parquet under output_root/masks for archival",
+    )
 
     # Debugging options
-    p.add_argument("--mask-summary", action="store_true", help="Print a brief summary of the membership mask for a recent window")
-    p.add_argument("--mask-start", default=None, help="Optional start date YYYY-MM-DD for mask summary (defaults to run_date - 30 days)")
-    p.add_argument("--mask-end", default=None, help="Optional end date YYYY-MM-DD for mask summary (defaults to run_date)")
-  
-    
+    p.add_argument(
+        "--mask-summary",
+        action="store_true",
+        help="Print a brief summary of the membership mask for a recent window",
+    )
+    p.add_argument(
+        "--mask-start",
+        default=None,
+        help="Optional start date YYYY-MM-DD for mask summary (defaults to run_date - 30 days)",
+    )
+    p.add_argument(
+        "--mask-end",
+        default=None,
+        help="Optional end date YYYY-MM-DD for mask summary (defaults to run_date)",
+    )
+
     return p.parse_args()
 
 
@@ -66,14 +121,26 @@ def regenerate_universe(um: UniverseManager, cfg, logger) -> None:
         else:
             if getattr(cfg.universe, "filter_unknown_sectors", False):
                 cur_df = um.filter_unknown_sectors(cur_df)
-            fname_cur = getattr(cfg.universe, "current_constituents_filename", "current_constituents.csv")
+            fname_cur = getattr(
+                cfg.universe,
+                "current_constituents_filename",
+                "current_constituents.csv",
+            )
             cur_out = (cfg.output_root_path / fname_cur).resolve()
             cur_out.parent.mkdir(parents=True, exist_ok=True)
             cur_df.to_csv(cur_out, index=False)
-            sector_counts = cur_df.get("sector").value_counts().to_dict() if "sector" in cur_df.columns else {}
+            sector_counts = (
+                cur_df.get("sector").value_counts().to_dict()
+                if "sector" in cur_df.columns
+                else {}
+            )
             logger.info(
                 "Saved current constituents snapshot",
-                extra={"rows": len(cur_df), "path": str(cur_out), "sector_counts": sector_counts},
+                extra={
+                    "rows": len(cur_df),
+                    "path": str(cur_out),
+                    "sector_counts": sector_counts,
+                },
             )
     except Exception as e:
         logger.exception("Failed step: current constituents snapshot: %s", e)
@@ -87,12 +154,16 @@ def regenerate_universe(um: UniverseManager, cfg, logger) -> None:
 
         unknown_before = 0
         if "sector" in hist_raw.columns:
-            unknown_before = int((hist_raw["sector"].astype(str).str.strip() == "Unknown").sum())
+            unknown_before = int(
+                (hist_raw["sector"].astype(str).str.strip() == "Unknown").sum()
+            )
 
         hist_enriched = um.enrich_sectors(hist_raw)
         unknown_after = 0
         if "sector" in hist_enriched.columns:
-            unknown_after = int((hist_enriched["sector"].astype(str).str.strip() == "Unknown").sum())
+            unknown_after = int(
+                (hist_enriched["sector"].astype(str).str.strip() == "Unknown").sum()
+            )
 
         # Optional filtering
         if getattr(cfg.universe, "filter_unknown_sectors", False):
@@ -112,13 +183,17 @@ def regenerate_universe(um: UniverseManager, cfg, logger) -> None:
         if raw_fn:
             raw_path = target_path.parent / raw_fn
         else:
-            raw_path = target_path.with_name(target_path.stem + "_raw" + target_path.suffix)
+            raw_path = target_path.with_name(
+                target_path.stem + "_raw" + target_path.suffix
+            )
         hist_raw.to_csv(raw_path, index=False)
 
         if enr_fn:
             enriched_path = target_path.parent / enr_fn
         else:
-            enriched_path = target_path.with_name(target_path.stem + "_enriched" + target_path.suffix)
+            enriched_path = target_path.with_name(
+                target_path.stem + "_enriched" + target_path.suffix
+            )
         hist_enriched.to_csv(enriched_path, index=False)
 
         logger.info(
@@ -134,14 +209,24 @@ def regenerate_universe(um: UniverseManager, cfg, logger) -> None:
         )
         # Auto dump membership mask snapshot after regeneration
         try:
-            dump_membership_mask(args=argparse.Namespace(mask_start=None, mask_end=None), um=um, cfg=cfg, logger=logger, run_dt=datetime.utcnow().date())
+            dump_membership_mask(
+                args=argparse.Namespace(mask_start=None, mask_end=None),
+                um=um,
+                cfg=cfg,
+                logger=logger,
+                run_dt=datetime.utcnow().date(),
+            )
         except Exception as e:
-            logger.warning("Auto dump of membership mask failed after regeneration: %s", e)
+            logger.warning(
+                "Auto dump of membership mask failed after regeneration: %s", e
+            )
     except Exception as e:
         logger.exception("Failed step: historical membership/enrichment: %s", e)
 
 
-def summarize_membership_mask(args: argparse.Namespace, um: UniverseManager, logger) -> None:
+def summarize_membership_mask(
+    args: argparse.Namespace, um: UniverseManager, logger
+) -> None:
     """Print a brief membership mask summary for a requested window.
 
     Uses --mask-start / --mask-end if provided; otherwise defaults to the last 30 days
@@ -207,7 +292,7 @@ def dump_membership_mask(
                     dr = dr.fillna(pd.Timestamp(run_dt))
                     end_dt = dr.max().date()
                 else:
-                    end_dt = (run_dt or datetime.utcnow().date())
+                    end_dt = run_dt or datetime.utcnow().date()
             else:
                 raise ValueError("Unsupported membership CSV schema for mask dump")
 
@@ -222,7 +307,11 @@ def dump_membership_mask(
         try:
             mask.astype(bool).to_parquet(pq_path)
         except Exception as e:
-            logger.warning("Parquet save failed for membership mask (%s); CSV written at %s", e, csv_path)
+            logger.warning(
+                "Parquet save failed for membership mask (%s); CSV written at %s",
+                e,
+                csv_path,
+            )
         logger.info(
             "Membership mask dumped",
             extra={
@@ -245,10 +334,13 @@ def update_prices_and_trend(
     logger,
     run_dt: date,
 ) -> None:
-    """Update OHLCV cache for selected tickers and log benchmark trend status.
-    """
+    """Update OHLCV cache for selected tickers and log benchmark trend status."""
     # Determine lookback window to cover momentum/vol/trend warmups
-    trend_window = int(cfg.sectors.trend_filter.get("window", 200)) if cfg.sectors.trend_filter else 200
+    trend_window = (
+        int(cfg.sectors.trend_filter.get("window", 200))
+        if cfg.sectors.trend_filter
+        else 200
+    )
     momentum_max = max(cfg.signals.momentum_windows)
     vol_window = int(cfg.signals.vol_window)
     warmup = int(cfg.strategy.warmup_days)
@@ -261,7 +353,11 @@ def update_prices_and_trend(
     tickers = um.tickers
 
     # Always include benchmark
-    benchmark = cfg.sectors.trend_filter.get("benchmark", "SPY") if cfg.sectors.trend_filter else "SPY"
+    benchmark = (
+        cfg.sectors.trend_filter.get("benchmark", "SPY")
+        if cfg.sectors.trend_filter
+        else "SPY"
+    )
     if benchmark not in tickers:
         tickers.append(benchmark)
 
@@ -297,21 +393,39 @@ def update_prices_and_trend(
             local_only=bool(args.__dict__.get("local_only", False)),
         )
         if df_bench is not None and not df_bench.empty:
-            price_col = "Adjclose" if "Adjclose" in df_bench.columns else ("Close" if "Close" in df_bench.columns else None)
+            price_col = (
+                "Adjclose"
+                if "Adjclose" in df_bench.columns
+                else ("Close" if "Close" in df_bench.columns else None)
+            )
             if price_col:
                 sma = df_bench[price_col].rolling(trend_window).mean()
-                trend_on = bool(df_bench[price_col].iloc[-1] > sma.iloc[-1]) if len(sma.dropna()) > 0 else False
+                trend_on = (
+                    bool(df_bench[price_col].iloc[-1] > sma.iloc[-1])
+                    if len(sma.dropna()) > 0
+                    else False
+                )
                 last_price_val = df_bench[price_col].iloc[-1]
-                last_price = float(last_price_val) if last_price_val is not None and not pd.isna(last_price_val) else None
+                last_price = (
+                    float(last_price_val)
+                    if last_price_val is not None and not pd.isna(last_price_val)
+                    else None
+                )
                 sma_val = sma.iloc[-1] if len(sma) else None
-                last_sma = float(sma_val) if sma_val is not None and not pd.isna(sma_val) else None
+                last_sma = (
+                    float(sma_val)
+                    if sma_val is not None and not pd.isna(sma_val)
+                    else None
+                )
                 last_price_str = f"{last_price:.2f}" if last_price is not None else "NA"
                 last_sma_str = f"{last_sma:.2f}" if last_sma is not None else "NA"
                 logger.info(
                     f"Trend status: benchmark={benchmark} window={trend_window} last_price={last_price_str} last_sma={last_sma_str} trend_on={trend_on}"
                 )
             else:
-                logger.warning("Benchmark %s missing price columns for trend calc", benchmark)
+                logger.warning(
+                    "Benchmark %s missing price columns for trend calc", benchmark
+                )
         else:
             logger.warning("No data for benchmark %s to compute trend", benchmark)
     except Exception as e:
@@ -328,24 +442,40 @@ def compute_signals_step(
 ) -> None:
     """Compute stock and sector signals and save artifacts."""
     try:
-        momentum_windows = list(getattr(cfg.signals, "momentum_windows", [63, 126, 252]))
+        momentum_windows = list(
+            getattr(cfg.signals, "momentum_windows", [63, 126, 252])
+        )
         vol_window = int(getattr(cfg.signals, "vol_window", 20))
         # Prefer 'vol_weight' if present; else fall back to 'vol_penalty'
-        vol_weight = float(getattr(cfg.signals, "vol_weight", getattr(cfg.signals, "vol_penalty", 1.0)))
+        vol_weight = float(
+            getattr(cfg.signals, "vol_weight", getattr(cfg.signals, "vol_penalty", 1.0))
+        )
         mom_weights = getattr(cfg.signals, "momentum_weights", None)
         warmup = int(getattr(cfg.strategy, "warmup_days", 30))
 
         momentum_max = max(momentum_windows) if momentum_windows else 63
         if getattr(args, "signal_start", None):
             try:
-                start_dt_candidate = datetime.strptime(str(args.signal_start), "%Y-%m-%d").date()
+                start_dt_candidate = datetime.strptime(
+                    str(args.signal_start), "%Y-%m-%d"
+                ).date()
                 if start_dt_candidate >= run_dt:
-                    logger.warning("--signal-start %s is not before run date %s; using run_date - 1 day", start_dt_candidate, run_dt)
+                    logger.warning(
+                        "--signal-start %s is not before run date %s; using run_date - 1 day",
+                        start_dt_candidate,
+                        run_dt,
+                    )
                     start_dt_candidate = run_dt - timedelta(days=1)
                 start_dt = start_dt_candidate
-                logger.info("Signal start override applied", extra={"signal_start": str(start_dt)})
+                logger.info(
+                    "Signal start override applied",
+                    extra={"signal_start": str(start_dt)},
+                )
             except Exception:
-                logger.warning("Invalid --signal-start=%s (expected YYYY-MM-DD); falling back to automatic lookback", args.signal_start)
+                logger.warning(
+                    "Invalid --signal-start=%s (expected YYYY-MM-DD); falling back to automatic lookback",
+                    args.signal_start,
+                )
                 days_back = max(warmup, momentum_max + vol_window + 10, 120)
                 start_dt = run_dt - timedelta(days=days_back)
         else:
@@ -395,7 +525,9 @@ def compute_signals_step(
 
         # Also compute and save sector scores alongside stock scores
         try:
-            sector_scores = eng.compute_sector_scores_from_stock_scores(stock_score, sector_map or {})
+            sector_scores = eng.compute_sector_scores_from_stock_scores(
+                stock_score, sector_map or {}
+            )
             ss_dir = (cfg.output_root_path / "signals").resolve()
             ss_dir.mkdir(parents=True, exist_ok=True)
             ss_fname = f"sector_scores_{end_dt.strftime('%Y-%m-%d')}"
@@ -405,7 +537,11 @@ def compute_signals_step(
             try:
                 sector_scores.to_parquet(ss_pq)
             except Exception as e:
-                logger.warning("Parquet save failed for sector scores (%s); CSV written at %s", e, ss_csv)
+                logger.warning(
+                    "Parquet save failed for sector scores (%s); CSV written at %s",
+                    e,
+                    ss_csv,
+                )
             logger.info(
                 f"Sector scores computed: sectors={sector_scores.shape[1]} dates=[{sector_scores.index.min().date()}..{sector_scores.index.max().date()}] saved={ss_csv.name}"
             )
@@ -423,10 +559,15 @@ def compute_signals_step(
             except Exception:
                 # Fallback to CSV if parquet save fails
                 stock_vol.to_csv(sv_csv)
-            logger.info("Saved stock volatility matrix: %s", sv_pq.name if sv_pq.exists() else sv_csv.name)
+            logger.info(
+                "Saved stock volatility matrix: %s",
+                sv_pq.name if sv_pq.exists() else sv_csv.name,
+            )
         except Exception as e:
-            logger.warning("Failed to compute/save stock volatility (%s); continuing", e)
-        
+            logger.warning(
+                "Failed to compute/save stock volatility (%s); continuing", e
+            )
+
     except Exception as e:
         logger.exception("Signal computation failed: %s", e)
 
@@ -442,7 +583,10 @@ def compute_sector_weights_step(
         sig_dir = (cfg.output_root_path / "signals").resolve()
         stock_files = sorted(sig_dir.glob("sector_scores_*.csv"))
         if not stock_files:
-            logger.warning("No sector_scores_*.csv found under %s; run --compute-signals first", sig_dir)
+            logger.warning(
+                "No sector_scores_*.csv found under %s; run --compute-signals first",
+                sig_dir,
+            )
             return
 
         latest = stock_files[-1]
@@ -452,18 +596,42 @@ def compute_sector_weights_step(
         # Determine window and benchmark
         start_dt = sector_scores.index.min().date()
         end_dt = sector_scores.index.max().date()
-        trend_window = int(cfg.sectors.trend_filter.get("window", 200)) if cfg.sectors.trend_filter else 200
-        benchmark = cfg.sectors.trend_filter.get("benchmark", "SPY") if cfg.sectors.trend_filter else "SPY"
+        trend_window = (
+            int(cfg.sectors.trend_filter.get("window", 200))
+            if cfg.sectors.trend_filter
+            else 200
+        )
+        benchmark = (
+            cfg.sectors.trend_filter.get("benchmark", "SPY")
+            if cfg.sectors.trend_filter
+            else "SPY"
+        )
 
         # Load benchmark prices
-        df_bench = mds.get_ohlcv(benchmark, start=str(start_dt), end=str(end_dt), interval="1d", auto_adjust=True, local_only=bool(args.__dict__.get("local_only", False)))
+        df_bench = mds.get_ohlcv(
+            benchmark,
+            start=str(start_dt),
+            end=str(end_dt),
+            interval="1d",
+            auto_adjust=True,
+            local_only=bool(args.__dict__.get("local_only", False)),
+        )
         if df_bench is None or df_bench.empty:
-            logger.warning("No benchmark data for %s; cannot compute sector weights", benchmark)
+            logger.warning(
+                "No benchmark data for %s; cannot compute sector weights", benchmark
+            )
             return
 
-        price_col = "Adjclose" if "Adjclose" in df_bench.columns else ("Close" if "Close" in df_bench.columns else None)
+        price_col = (
+            "Adjclose"
+            if "Adjclose" in df_bench.columns
+            else ("Close" if "Close" in df_bench.columns else None)
+        )
         if not price_col:
-            logger.warning("Benchmark %s missing Close columns; cannot compute sector weights", benchmark)
+            logger.warning(
+                "Benchmark %s missing Close columns; cannot compute sector weights",
+                benchmark,
+            )
             return
 
         spy_series = df_bench[price_col].reindex(sector_scores.index).ffill().bfill()
@@ -500,7 +668,11 @@ def compute_sector_weights_step(
         try:
             sector_weights_daily.to_parquet(daily_pq)
         except Exception as e:
-            logger.warning("Parquet save failed for daily weights (%s); CSV written at %s", e, daily_csv)
+            logger.warning(
+                "Parquet save failed for daily weights (%s); CSV written at %s",
+                e,
+                daily_csv,
+            )
 
         # Monthly weights: last business day per month (use 'ME' for month-end to avoid deprecated 'M')
         sector_weights_monthly = sector_weights_daily.resample("ME").last()
@@ -510,7 +682,11 @@ def compute_sector_weights_step(
         try:
             sector_weights_monthly.to_parquet(monthly_pq)
         except Exception as e:
-            logger.warning("Parquet save failed for monthly weights (%s); CSV written at %s", e, monthly_csv)
+            logger.warning(
+                "Parquet save failed for monthly weights (%s); CSV written at %s",
+                e,
+                monthly_csv,
+            )
 
         logger.info(
             f"Sector weights computed: daily_rows={sector_weights_daily.shape[0]} sectors={sector_weights_daily.shape[1]} saved_daily={daily_csv.name} saved_monthly={monthly_csv.name}"
@@ -536,10 +712,16 @@ def compute_stock_weights_step(
         stock_scores_files = sorted(signals_dir.glob("stock_scores_*.csv"))
 
         if not monthly_weights:
-            logger.warning("No sector_weights_monthly_*.csv found under %s; run --compute-sector-weights first", weights_dir)
+            logger.warning(
+                "No sector_weights_monthly_*.csv found under %s; run --compute-sector-weights first",
+                weights_dir,
+            )
             return
         if not stock_scores_files:
-            logger.warning("No stock_scores_*.csv found under %s; run --compute-signals first", signals_dir)
+            logger.warning(
+                "No stock_scores_*.csv found under %s; run --compute-signals first",
+                signals_dir,
+            )
             return
 
         w_latest = monthly_weights[-1]
@@ -550,14 +732,18 @@ def compute_stock_weights_step(
 
         # Try to load matching daily sector weights for the same stem
         stem = w_latest.stem.replace("sector_weights_monthly_", "")
-        daily_sector_path = (weights_dir / f"sector_weights_daily_{stem}.csv")
+        daily_sector_path = weights_dir / f"sector_weights_daily_{stem}.csv"
         sector_weights_daily = None
         if daily_sector_path.exists():
             try:
                 sector_weights_daily = pd.read_csv(daily_sector_path, index_col=0)
                 sector_weights_daily.index = pd.to_datetime(sector_weights_daily.index)
             except Exception as e:
-                logger.warning("Failed to load daily sector weights %s (%s)", daily_sector_path.name, e)
+                logger.warning(
+                    "Failed to load daily sector weights %s (%s)",
+                    daily_sector_path.name,
+                    e,
+                )
 
         stock_scores = pd.read_csv(s_latest, index_col=0)
         stock_scores.index = pd.to_datetime(stock_scores.index)
@@ -566,37 +752,52 @@ def compute_stock_weights_step(
 
         # Optional: compute stock vol for inverse-vol weighting if requested
         weighting_mode_cfg = getattr(cfg.stocks, "weighting", "equal-weight")
-        weighting_mode = "equal" if weighting_mode_cfg == "equal-weight" else "inverse_vol"
+        weighting_mode = (
+            "equal" if weighting_mode_cfg == "equal-weight" else "inverse_vol"
+        )
 
         stock_vol = None
         if weighting_mode == "inverse_vol":
             try:
                 # Attempt to load cached stock volatility computed during the signals step
                 stem = s_latest.stem.replace("stock_scores_", "")
-                sv_pq = (signals_dir / f"stock_vol_{stem}.parquet")
-                sv_csv = (signals_dir / f"stock_vol_{stem}.csv")
+                sv_pq = signals_dir / f"stock_vol_{stem}.parquet"
+                sv_csv = signals_dir / f"stock_vol_{stem}.csv"
                 if sv_pq.exists():
                     try:
                         stock_vol = pd.read_parquet(sv_pq)
                         stock_vol.index = pd.to_datetime(stock_vol.index)
-                        logger.info("Loaded cached stock volatility from %s", sv_pq.name)
+                        logger.info(
+                            "Loaded cached stock volatility from %s", sv_pq.name
+                        )
                     except Exception as e:
-                        logger.warning("Failed to read cached parquet stock_vol (%s); will attempt CSV or recompute", e)
+                        logger.warning(
+                            "Failed to read cached parquet stock_vol (%s); will attempt CSV or recompute",
+                            e,
+                        )
                         stock_vol = None
                 if stock_vol is None and sv_csv.exists():
                     try:
                         stock_vol = pd.read_csv(sv_csv, index_col=0)
                         stock_vol.index = pd.to_datetime(stock_vol.index)
-                        logger.info("Loaded cached stock volatility from %s", sv_csv.name)
+                        logger.info(
+                            "Loaded cached stock volatility from %s", sv_csv.name
+                        )
                     except Exception as e:
-                        logger.warning("Failed to read cached CSV stock_vol (%s); will recompute", e)
+                        logger.warning(
+                            "Failed to read cached CSV stock_vol (%s); will recompute",
+                            e,
+                        )
                         stock_vol = None
 
                 if stock_vol is None:
                     # Determine window from config and load prices for the needed range (+warmup)
                     vol_window = int(getattr(cfg.signals, "vol_window", 20))
                     warmup_days = max(30, vol_window + 10)
-                    start_dt = (sector_weights_monthly.index.min() - pd.Timedelta(days=warmup_days)).date()
+                    start_dt = (
+                        sector_weights_monthly.index.min()
+                        - pd.Timedelta(days=warmup_days)
+                    ).date()
                     end_dt = sector_weights_monthly.index.max().date()
 
                     # Use columns present in stock_scores as our universe tickers
@@ -612,11 +813,18 @@ def compute_stock_weights_step(
                         local_only=bool(args.__dict__.get("local_only", False)),
                     )
                     # Align to entire date range and compute vol
-                    price_mat = price_mat.reindex(pd.date_range(price_mat.index.min(), price_mat.index.max(), freq="D")).ffill()
+                    price_mat = price_mat.reindex(
+                        pd.date_range(
+                            price_mat.index.min(), price_mat.index.max(), freq="D"
+                        )
+                    ).ffill()
                     eng = SignalEngine(prices=price_mat, sector_map=sector_map)
                     stock_vol = eng.compute_volatility(window=vol_window)
             except Exception as e:
-                logger.warning("Failed to compute/load stock vol for inverse-vol weighting (%s); falling back to equal-weight", e)
+                logger.warning(
+                    "Failed to compute/load stock vol for inverse-vol weighting (%s); falling back to equal-weight",
+                    e,
+                )
                 weighting_mode = "equal"
                 stock_vol = None
 
@@ -640,7 +848,11 @@ def compute_stock_weights_step(
         try:
             stock_weights_monthly.to_parquet(sw_pq)
         except Exception as e:
-            logger.warning("Parquet save failed for stock weights (%s); CSV written at %s", e, sw_csv)
+            logger.warning(
+                "Parquet save failed for stock weights (%s); CSV written at %s",
+                e,
+                sw_csv,
+            )
 
         # Some quick stats
         total_cash = 1.0 - stock_weights_monthly.sum(axis=1)
@@ -669,7 +881,11 @@ def compute_stock_weights_step(
                 try:
                     stock_weights_daily.to_parquet(swd_pq)
                 except Exception as e:
-                    logger.warning("Parquet save failed for daily stock weights (%s); CSV written at %s", e, swd_csv)
+                    logger.warning(
+                        "Parquet save failed for daily stock weights (%s); CSV written at %s",
+                        e,
+                        swd_csv,
+                    )
 
                 logger.info(
                     f"Daily stock weights computed: days={stock_weights_daily.shape[0]} tickers={stock_weights_daily.shape[1]} saved={swd_csv.name}"
@@ -690,7 +906,9 @@ def rebalance_pipeline(
 ) -> None:
     """Rebalance orchestration: signals -> sector weights -> stock weights."""
     # Determine effective start date override
-    effective_start = getattr(args, "rebalance_start", None) or getattr(args, "signal_start", None)
+    effective_start = getattr(args, "rebalance_start", None) or getattr(
+        args, "signal_start", None
+    )
     # Log the start date at the beginning of rebalance
     logger.info(
         "Rebalance starting",
@@ -706,14 +924,14 @@ def rebalance_pipeline(
         setattr(args, "signal_start", getattr(args, "rebalance_start"))
 
     try:
-        compute_signals_step(args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt)
+        compute_signals_step(
+            args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt
+        )
     finally:
         # Restore original signal_start
         setattr(args, "signal_start", original_signal_start)
     compute_sector_weights_step(args=args, cfg=cfg, mds=mds, logger=logger)
     compute_stock_weights_step(args=args, cfg=cfg, um=um, mds=mds, logger=logger)
-
-
 
 
 def main() -> int:
@@ -724,13 +942,28 @@ def main() -> int:
 
     cfg = load_app_config(strategy_yaml)
 
-    logger = configure_logging(cfg.output_root_path, level=cfg.runtime.log_level, log_to_file=cfg.runtime.save.get("logs", True))
-    logger.info("Starting LiveRunner", extra={"date": str(args.date), "rebalance": args.rebalance, "regen_universe": args.__dict__.get("regen_universe")})
+    logger = configure_logging(
+        cfg.output_root_path,
+        level=cfg.runtime.log_level,
+        log_to_file=cfg.runtime.save.get("logs", True),
+    )
+    logger.info(
+        "Starting LiveRunner",
+        extra={
+            "date": str(args.date),
+            "rebalance": args.rebalance,
+            "regen_universe": args.__dict__.get("regen_universe"),
+        },
+    )
 
     run_dt = resolve_run_date(args.date)
 
     # Universe Manager
-    um = UniverseManager(membership_csv=cfg.membership_csv_path, sectors_yaml=sectors_yaml, local_only=bool(args.__dict__.get("local_only", False)))
+    um = UniverseManager(
+        membership_csv=cfg.membership_csv_path,
+        sectors_yaml=sectors_yaml,
+        local_only=bool(args.__dict__.get("local_only", False)),
+    )
 
     if args.__dict__.get("regen_universe"):
         regenerate_universe(um=um, cfg=cfg, logger=logger)
@@ -744,11 +977,15 @@ def main() -> int:
 
     # Optional: update prices and compute SPY trend
     if args.__dict__.get("update_prices"):
-        update_prices_and_trend(args=args, um=um, mds=mds, cfg=cfg, logger=logger, run_dt=run_dt)
+        update_prices_and_trend(
+            args=args, um=um, mds=mds, cfg=cfg, logger=logger, run_dt=run_dt
+        )
 
     # Compute signals via SignalEngine using window-union membership
     if args.__dict__.get("compute_signals"):
-        compute_signals_step(args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt)
+        compute_signals_step(
+            args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt
+        )
 
     # Compute sector weights using SectorWeightEngine
     if args.__dict__.get("compute_sector_weights"):
@@ -764,7 +1001,9 @@ def main() -> int:
 
     # Full rebalance pipeline
     if args.__dict__.get("rebalance"):
-        rebalance_pipeline(args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt)
+        rebalance_pipeline(
+            args=args, cfg=cfg, um=um, mds=mds, logger=logger, run_dt=run_dt
+        )
 
     # Printing of portfolio has moved to the dedicated explorer (production/explore_portfolio.py)
 

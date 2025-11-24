@@ -20,10 +20,26 @@ class RebalanceConfig:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Interactive Rebalance Helper")
-    p.add_argument("--strategy", default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"), help="Path to strategy.yml")
-    p.add_argument("--frequency", choices=["monthly", "daily"], default="monthly", help="Weights frequency to use")
-    p.add_argument("--as-of", default="latest", help="Date to use (YYYY-MM-DD) or 'latest'")
-    p.add_argument("--top", type=int, default=20, help="Top N stocks to display in summary (printing only)")
+    p.add_argument(
+        "--strategy",
+        default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"),
+        help="Path to strategy.yml",
+    )
+    p.add_argument(
+        "--frequency",
+        choices=["monthly", "daily"],
+        default="monthly",
+        help="Weights frequency to use",
+    )
+    p.add_argument(
+        "--as-of", default="latest", help="Date to use (YYYY-MM-DD) or 'latest'"
+    )
+    p.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Top N stocks to display in summary (printing only)",
+    )
     return p.parse_args()
 
 
@@ -41,7 +57,9 @@ def _weights_globs(freq: str) -> Tuple[str, str]:
     return ("sector_weights_monthly_*.csv", "stock_weights_monthly_*.csv")
 
 
-def _pick_asof_index(idx: pd.DatetimeIndex, as_of: Optional[pd.Timestamp]) -> Optional[pd.Timestamp]:
+def _pick_asof_index(
+    idx: pd.DatetimeIndex, as_of: Optional[pd.Timestamp]
+) -> Optional[pd.Timestamp]:
     if idx.empty:
         return None
     if as_of is None:
@@ -61,7 +79,9 @@ def _format_ccy(x: float) -> str:
     return f"${x:,.2f}"
 
 
-def _print_series(logger, header: str, s: pd.Series, top: Optional[int] = None, cash: float = 0.0) -> None:
+def _print_series(
+    logger, header: str, s: pd.Series, top: Optional[int] = None, cash: float = 0.0
+) -> None:
     logger.info(header)
     if s.empty and cash <= 0.0:
         logger.info("(empty)")
@@ -109,8 +129,12 @@ def _load_weights(cfg, frequency: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _prompt_positions(logger) -> Tuple[Dict[str, float], float]:
-    logger.info("Enter current stock positions one per line as: TICKER amount_in_dollars")
-    logger.info("Type 'done' on a new line to finish. Press Enter on an empty line to skip.")
+    logger.info(
+        "Enter current stock positions one per line as: TICKER amount_in_dollars"
+    )
+    logger.info(
+        "Type 'done' on a new line to finish. Press Enter on an empty line to skip."
+    )
     positions: Dict[str, float] = {}
     while True:
         try:
@@ -125,7 +149,9 @@ def _prompt_positions(logger) -> Tuple[Dict[str, float], float]:
             break
         parts = [p for p in line.replace(",", " ").split() if p]
         if len(parts) < 2:
-            print("  Expect: TICKER amount (e.g., AAPL 12345). Try again or type 'done'.")
+            print(
+                "  Expect: TICKER amount (e.g., AAPL 12345). Try again or type 'done'."
+            )
             continue
         ticker, amt_str = parts[0].upper(), parts[1]
         try:
@@ -149,7 +175,11 @@ def _prompt_positions(logger) -> Tuple[Dict[str, float], float]:
 def main() -> int:
     args = parse_args()
     cfg = load_app_config(Path(args.strategy).resolve())
-    logger = configure_logging(cfg.output_root_path, level=cfg.runtime.log_level, log_to_file=cfg.runtime.save.get("logs", True))
+    logger = configure_logging(
+        cfg.output_root_path,
+        level=cfg.runtime.log_level,
+        log_to_file=cfg.runtime.save.get("logs", True),
+    )
 
     frequency = args.frequency
     as_of = _parse_date(args.as_of)
@@ -228,8 +258,13 @@ def main() -> int:
 
     # Output plan
     logger.info("=== Execution Plan ===")
-    logger.info("Current equity: %s | Target cash: %s | Projected end cash: %s | Cash diff: %s",
-                _format_ccy(current_equity), _format_ccy(target_cash), _format_ccy(end_cash), _format_ccy(cash_gap))
+    logger.info(
+        "Current equity: %s | Target cash: %s | Projected end cash: %s | Cash diff: %s",
+        _format_ccy(current_equity),
+        _format_ccy(target_cash),
+        _format_ccy(end_cash),
+        _format_ccy(cash_gap),
+    )
 
     if buys:
         logger.info("-- Buys (dollar amounts) --")
@@ -248,13 +283,25 @@ def main() -> int:
     # Also print target positions for convenience
     logger.info("=== Target Positions (dollars) ===")
     for t, v in row_stk.items():
-        logger.info("TGT  %-10s %s  (w=%s)", t, _format_ccy(float(v) * current_equity), _format_pct(float(v)))
+        logger.info(
+            "TGT  %-10s %s  (w=%s)",
+            t,
+            _format_ccy(float(v) * current_equity),
+            _format_pct(float(v)),
+        )
     if cash_w > 0:
-        logger.info("TGT  %-10s %s  (w=%s)", "CASH", _format_ccy(target_cash), _format_pct(float(cash_w)))
+        logger.info(
+            "TGT  %-10s %s  (w=%s)",
+            "CASH",
+            _format_ccy(target_cash),
+            _format_pct(float(cash_w)),
+        )
 
     # Footer note
     if abs(cash_gap) > 0.01:
-        logger.info("Note: Cash diff is non-zero due to rounding or missing tickers; adjust trades as needed to hit target cash.")
+        logger.info(
+            "Note: Cash diff is non-zero due to rounding or missing tickers; adjust trades as needed to hit target cash."
+        )
 
     return 0
 

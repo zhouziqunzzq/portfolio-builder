@@ -21,37 +21,123 @@ class AnalyzerConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Portfolio Analyzer: explore portfolio allocations across time")
-    p.add_argument("--strategy", default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"), help="Path to strategy.yml")
-    p.add_argument("--frequency", choices=["monthly", "daily"], default="monthly", help="Weights frequency to analyze")
-    p.add_argument("--as-of", default="latest", help="Date to snapshot (YYYY-MM-DD) or 'latest'")
-    p.add_argument("--start", default=None, help="Optional start date YYYY-MM-DD for time-series summaries")
-    p.add_argument("--end", default=None, help="Optional end date YYYY-MM-DD for time-series summaries")
-    p.add_argument("--top", type=int, default=20, help="Top N items to show for holdings output")
+    p = argparse.ArgumentParser(
+        description="Portfolio Analyzer: explore portfolio allocations across time"
+    )
+    p.add_argument(
+        "--strategy",
+        default=str(Path(__file__).resolve().parents[1] / "config" / "strategy.yml"),
+        help="Path to strategy.yml",
+    )
+    p.add_argument(
+        "--frequency",
+        choices=["monthly", "daily"],
+        default="monthly",
+        help="Weights frequency to analyze",
+    )
+    p.add_argument(
+        "--as-of", default="latest", help="Date to snapshot (YYYY-MM-DD) or 'latest'"
+    )
+    p.add_argument(
+        "--start",
+        default=None,
+        help="Optional start date YYYY-MM-DD for time-series summaries",
+    )
+    p.add_argument(
+        "--end",
+        default=None,
+        help="Optional end date YYYY-MM-DD for time-series summaries",
+    )
+    p.add_argument(
+        "--top", type=int, default=20, help="Top N items to show for holdings output"
+    )
 
     # Actions
-    p.add_argument("--list-dates", action="store_true", help="List available dates for selected frequency")
-    p.add_argument("--print-sectors", action="store_true", help="Print sector allocation snapshot for --as-of date")
-    p.add_argument("--print-holdings", action="store_true", help="Print stock allocation snapshot for --as-of date")
-    p.add_argument("--summary", action="store_true", help="Print brief time-series summary (positions, cash) for the selected range")
+    p.add_argument(
+        "--list-dates",
+        action="store_true",
+        help="List available dates for selected frequency",
+    )
+    p.add_argument(
+        "--print-sectors",
+        action="store_true",
+        help="Print sector allocation snapshot for --as-of date",
+    )
+    p.add_argument(
+        "--print-holdings",
+        action="store_true",
+        help="Print stock allocation snapshot for --as-of date",
+    )
+    p.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print brief time-series summary (positions, cash) for the selected range",
+    )
 
     # Plotting options
-    p.add_argument("--plot-stacked", action="store_true", help="Generate stacked area plot for top-N holdings + Others + Cash")
-    p.add_argument("--stacked-top", type=int, default=15, help="Top N tickers to include (stacked area)")
-    p.add_argument("--stacked-downsample", default=None, help="Optional pandas offset alias to resample daily data (e.g., 'W-FRI')")
+    p.add_argument(
+        "--plot-stacked",
+        action="store_true",
+        help="Generate stacked area plot for top-N holdings + Others + Cash",
+    )
+    p.add_argument(
+        "--stacked-top",
+        type=int,
+        default=15,
+        help="Top N tickers to include (stacked area)",
+    )
+    p.add_argument(
+        "--stacked-downsample",
+        default=None,
+        help="Optional pandas offset alias to resample daily data (e.g., 'W-FRI')",
+    )
 
-    p.add_argument("--plot-heatmap", action="store_true", help="Generate heatmap of weights for top-N tickers")
-    p.add_argument("--heatmap-top", type=int, default=40, help="Top N tickers to include in heatmap")
-    p.add_argument("--heatmap-cmap", default="viridis", help="Matplotlib/Seaborn colormap for heatmap")
+    p.add_argument(
+        "--plot-heatmap",
+        action="store_true",
+        help="Generate heatmap of weights for top-N tickers",
+    )
+    p.add_argument(
+        "--heatmap-top",
+        type=int,
+        default=40,
+        help="Top N tickers to include in heatmap",
+    )
+    p.add_argument(
+        "--heatmap-cmap",
+        default="viridis",
+        help="Matplotlib/Seaborn colormap for heatmap",
+    )
 
-    p.add_argument("--plot-bump", action="store_true", help="Generate bump chart of rank trajectories for top-K tickers")
-    p.add_argument("--bump-top-k", type=int, default=10, help="Top K tickers to show in rank bump chart")
+    p.add_argument(
+        "--plot-bump",
+        action="store_true",
+        help="Generate bump chart of rank trajectories for top-K tickers",
+    )
+    p.add_argument(
+        "--bump-top-k",
+        type=int,
+        default=10,
+        help="Top K tickers to show in rank bump chart",
+    )
 
-    p.add_argument("--show", action="store_true", help="Display plots interactively in addition to saving to disk")
+    p.add_argument(
+        "--show",
+        action="store_true",
+        help="Display plots interactively in addition to saving to disk",
+    )
 
     # Specific tickers timeseries plot
-    p.add_argument("--plot-tickers", action="store_true", help="Plot weight time series for specified tickers (comma-separated via --tickers)")
-    p.add_argument("--tickers", default=None, help="Comma-separated list of tickers to plot (e.g. AAPL,MSFT,GOOGL)")
+    p.add_argument(
+        "--plot-tickers",
+        action="store_true",
+        help="Plot weight time series for specified tickers (comma-separated via --tickers)",
+    )
+    p.add_argument(
+        "--tickers",
+        default=None,
+        help="Comma-separated list of tickers to plot (e.g. AAPL,MSFT,GOOGL)",
+    )
 
     return p.parse_args()
 
@@ -70,7 +156,9 @@ def _weights_globs(freq: str) -> Tuple[str, str]:
     return ("sector_weights_monthly_*.csv", "stock_weights_monthly_*.csv")
 
 
-def _pick_asof_index(idx: pd.DatetimeIndex, as_of: Optional[pd.Timestamp]) -> Optional[pd.Timestamp]:
+def _pick_asof_index(
+    idx: pd.DatetimeIndex, as_of: Optional[pd.Timestamp]
+) -> Optional[pd.Timestamp]:
     if idx.empty:
         return None
     if as_of is None:
@@ -116,21 +204,27 @@ def load_weights(cfg, frequency: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 def _import_matplotlib(logger):
     try:
         import matplotlib.pyplot as plt  # type: ignore
+
         return plt
     except Exception as e:
-        logger.error("Matplotlib is required for plotting. Please install matplotlib. (%s)", e)
+        logger.error(
+            "Matplotlib is required for plotting. Please install matplotlib. (%s)", e
+        )
         return None
 
 
 def _import_seaborn():
     try:
         import seaborn as sns  # type: ignore
+
         return sns
     except Exception:
         return None
 
 
-def _pick_top_tickers(df: pd.DataFrame, top_n: int = 20, method: str = "avg") -> List[str]:
+def _pick_top_tickers(
+    df: pd.DataFrame, top_n: int = 20, method: str = "avg"
+) -> List[str]:
     W = df.fillna(0.0)
     agg = W.mean() if method == "avg" else W.max()
     return list(agg.sort_values(ascending=False).head(top_n).index)
@@ -164,7 +258,15 @@ def _ensure_plots_dir(cfg) -> Path:
     return out
 
 
-def plot_stacked_topn(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int = 15, downsample: Optional[str] = None, show: bool = False) -> Optional[Path]:
+def plot_stacked_topn(
+    logger,
+    cfg,
+    df: pd.DataFrame,
+    frequency: str,
+    top_n: int = 15,
+    downsample: Optional[str] = None,
+    show: bool = False,
+) -> Optional[Path]:
     plt = _import_matplotlib(logger)
     if plt is None:
         return None
@@ -184,6 +286,7 @@ def plot_stacked_topn(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int 
     # Make x-axis tick density a bit higher than default
     try:
         from matplotlib import dates as mdates  # type: ignore
+
         if len(Y.index) > 0:
             # Bi-annual ticks (every 6 months) for both monthly and daily
             locator = mdates.MonthLocator(interval=6)
@@ -207,7 +310,15 @@ def plot_stacked_topn(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int 
     return out_path
 
 
-def plot_heatmap(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int = 40, cmap: str = "viridis", show: bool = False) -> Optional[Path]:
+def plot_heatmap(
+    logger,
+    cfg,
+    df: pd.DataFrame,
+    frequency: str,
+    top_n: int = 40,
+    cmap: str = "viridis",
+    show: bool = False,
+) -> Optional[Path]:
     plt = _import_matplotlib(logger)
     sns = _import_seaborn()
     if plt is None:
@@ -220,7 +331,10 @@ def plot_heatmap(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int = 40,
     mat = df[top].fillna(0.0).T
     # Convert datetime columns to date-only strings BEFORE plotting so seaborn doesn't include time
     try:
-        mat.columns = [c.strftime("%Y-%m-%d") if isinstance(c, pd.Timestamp) else str(c) for c in mat.columns]
+        mat.columns = [
+            c.strftime("%Y-%m-%d") if isinstance(c, pd.Timestamp) else str(c)
+            for c in mat.columns
+        ]
     except Exception:
         mat.columns = [str(c) for c in mat.columns]
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -247,7 +361,9 @@ def plot_heatmap(logger, cfg, df: pd.DataFrame, frequency: str, top_n: int = 40,
     return out_path
 
 
-def plot_bump_ranks(logger, cfg, df: pd.DataFrame, frequency: str, top_k: int = 10, show: bool = False) -> Optional[Path]:
+def plot_bump_ranks(
+    logger, cfg, df: pd.DataFrame, frequency: str, top_k: int = 10, show: bool = False
+) -> Optional[Path]:
     plt = _import_matplotlib(logger)
     if plt is None:
         return None
@@ -265,6 +381,7 @@ def plot_bump_ranks(logger, cfg, df: pd.DataFrame, frequency: str, top_k: int = 
     # Make x-axis tick density a bit higher than default
     try:
         from matplotlib import dates as mdates  # type: ignore
+
         if len(R.index) > 0:
             # Bi-annual ticks (every 6 months)
             locator = mdates.MonthLocator(interval=6)
@@ -328,6 +445,7 @@ def plot_tickers_timeseries(
     # Set bi-annual ticks on x-axis
     try:
         from matplotlib import dates as mdates  # type: ignore
+
         if len(W.index) > 0:
             locator = mdates.MonthLocator(interval=6)
             formatter = mdates.DateFormatter("%Y-%m")
@@ -346,7 +464,11 @@ def plot_tickers_timeseries(
     if show:
         plt.show()
     plt.close(fig)
-    logger.info("Saved tickers timeseries plot: %s (tickers=%s)", out_path.name, ",".join(tickers))
+    logger.info(
+        "Saved tickers timeseries plot: %s (tickers=%s)",
+        out_path.name,
+        ",".join(tickers),
+    )
     return out_path
 
 
@@ -354,7 +476,9 @@ def _format_pct(x: float) -> str:
     return f"{x*100.0:6.2f}%"
 
 
-def _print_series(logger, header: str, s: pd.Series, top: Optional[int] = None, cash: float = 0.0) -> None:
+def _print_series(
+    logger, header: str, s: pd.Series, top: Optional[int] = None, cash: float = 0.0
+) -> None:
     logger.info(header)
     if s.empty and cash <= 0.0:
         logger.info("(empty)")
@@ -379,15 +503,31 @@ def _timeseries_summary(logger, df: pd.DataFrame, label: str) -> None:
     positions = (df.fillna(0.0) > 0).sum(axis=1)
     cash = 1.0 - df.fillna(0.0).sum(axis=1)
     logger.info("=== %s summary ===", label)
-    logger.info("dates: %s .. %s", str(df.index.min().date()), str(df.index.max().date()))
-    logger.info("avg positions: %.1f | min: %d | max: %d", float(positions.mean()), int(positions.min()), int(positions.max()))
-    logger.info("avg cash: %s | min: %s | max: %s", _format_pct(float(cash.mean())), _format_pct(float(cash.min())), _format_pct(float(cash.max())))
+    logger.info(
+        "dates: %s .. %s", str(df.index.min().date()), str(df.index.max().date())
+    )
+    logger.info(
+        "avg positions: %.1f | min: %d | max: %d",
+        float(positions.mean()),
+        int(positions.min()),
+        int(positions.max()),
+    )
+    logger.info(
+        "avg cash: %s | min: %s | max: %s",
+        _format_pct(float(cash.mean())),
+        _format_pct(float(cash.min())),
+        _format_pct(float(cash.max())),
+    )
 
 
 def main() -> int:
     args = parse_args()
     cfg = load_app_config(Path(args.strategy).resolve())
-    logger = configure_logging(cfg.output_root_path, level=cfg.runtime.log_level, log_to_file=cfg.runtime.save.get("logs", True))
+    logger = configure_logging(
+        cfg.output_root_path,
+        level=cfg.runtime.log_level,
+        log_to_file=cfg.runtime.save.get("logs", True),
+    )
 
     frequency = args.frequency
     as_of = _parse_date(args.as_of)
@@ -399,11 +539,19 @@ def main() -> int:
     # List dates
     if args.list_dates:
         if not sec_df.empty:
-            logger.info("Sector dates (%s): %s", frequency, ", ".join(d.strftime("%Y-%m-%d") for d in sec_df.index))
+            logger.info(
+                "Sector dates (%s): %s",
+                frequency,
+                ", ".join(d.strftime("%Y-%m-%d") for d in sec_df.index),
+            )
         else:
             logger.info("No sector weights found for %s", frequency)
         if not stk_df.empty:
-            logger.info("Stock dates (%s): %s", frequency, ", ".join(d.strftime("%Y-%m-%d") for d in stk_df.index))
+            logger.info(
+                "Stock dates (%s): %s",
+                frequency,
+                ", ".join(d.strftime("%Y-%m-%d") for d in stk_df.index),
+            )
         else:
             logger.info("No stock weights found for %s", frequency)
 
@@ -416,7 +564,13 @@ def main() -> int:
             row = sec_df.loc[dt].fillna(0.0)
             s = row[row > 0].sort_values(ascending=False)
             cash = _compute_cash(row)
-            _print_series(logger, f"=== Sector allocation ({frequency.upper()} as of {dt.date()}) ===", s, None, cash)
+            _print_series(
+                logger,
+                f"=== Sector allocation ({frequency.upper()} as of {dt.date()}) ===",
+                s,
+                None,
+                cash,
+            )
 
     if args.print_holdings and not stk_df.empty:
         dt = _pick_asof_index(stk_df.index, as_of)
@@ -426,7 +580,13 @@ def main() -> int:
             row = stk_df.loc[dt].fillna(0.0)
             s = row[row > 0].sort_values(ascending=False)
             cash = _compute_cash(row)
-            _print_series(logger, f"=== Stock allocation ({frequency.upper()} as of {dt.date()}) ===", s, int(args.top), cash)
+            _print_series(
+                logger,
+                f"=== Stock allocation ({frequency.upper()} as of {dt.date()}) ===",
+                s,
+                int(args.top),
+                cash,
+            )
 
     # Summary over an interval
     if args.summary:
@@ -441,19 +601,33 @@ def main() -> int:
         _timeseries_summary(logger, stk_df, f"Stocks ({frequency})")
 
     # If no explicit actions chosen, default to printing both snapshots at latest
-    if not any([args.list_dates, args.print_sectors, args.print_holdings, args.summary]):
+    if not any(
+        [args.list_dates, args.print_sectors, args.print_holdings, args.summary]
+    ):
         dt_s = _pick_asof_index(sec_df.index, None) if not sec_df.empty else None
         if dt_s is not None:
             row = sec_df.loc[dt_s].fillna(0.0)
             s = row[row > 0].sort_values(ascending=False)
             cash = _compute_cash(row)
-            _print_series(logger, f"=== Sector allocation ({frequency.upper()} as of {dt_s.date()}) ===", s, None, cash)
+            _print_series(
+                logger,
+                f"=== Sector allocation ({frequency.upper()} as of {dt_s.date()}) ===",
+                s,
+                None,
+                cash,
+            )
         dt_h = _pick_asof_index(stk_df.index, None) if not stk_df.empty else None
         if dt_h is not None:
             row = stk_df.loc[dt_h].fillna(0.0)
             s = row[row > 0].sort_values(ascending=False)
             cash = _compute_cash(row)
-            _print_series(logger, f"=== Stock allocation ({frequency.upper()} as of {dt_h.date()}) ===", s, int(args.top), cash)
+            _print_series(
+                logger,
+                f"=== Stock allocation ({frequency.upper()} as of {dt_h.date()}) ===",
+                s,
+                int(args.top),
+                cash,
+            )
 
     # Plotting actions
     if args.plot_stacked and not stk_df.empty:

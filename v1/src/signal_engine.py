@@ -23,7 +23,8 @@ class SignalEngine:
     Compute price-based signals (momentum, volatility, composite scores)
     for a universe of stocks, optionally grouped by sector.
     """
-    prices: pd.DataFrame                # index: Date, columns: tickers
+
+    prices: pd.DataFrame  # index: Date, columns: tickers
     sector_map: Optional[Dict[str, str]] = None
 
     def __post_init__(self):
@@ -35,8 +36,7 @@ class SignalEngine:
             self.sector_map = {k.upper(): v for k, v in self.sector_map.items()}
             # Keep sector_map only for tickers present in prices
             self.sector_map = {
-                t: s for t, s in self.sector_map.items()
-                if t in self.prices.columns
+                t: s for t, s in self.sector_map.items() if t in self.prices.columns
             }
 
     # ------------------------------------------------------------------
@@ -45,7 +45,7 @@ class SignalEngine:
     @classmethod
     def from_universe(
         cls,
-        universe,      # type: UniverseManager
+        universe,  # type: UniverseManager
         start,
         end,
         field: str = "Close",
@@ -101,7 +101,7 @@ class SignalEngine:
             result[cols] = z
 
         return result
-    
+
     def _zscore_across_universe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Z-score each column per date across ALL tickers (no sector grouping).
@@ -221,7 +221,7 @@ class SignalEngine:
         # allow some sectors to have higher mean scores
 
         return stock_score
-    
+
     def compute_sector_scores_from_stock_scores(
         self,
         stock_score: pd.DataFrame,
@@ -233,7 +233,10 @@ class SignalEngine:
         """
         # Build a small helper DataFrame: cols=tickers, row: sector label
         sectors = pd.Series(
-            {ticker: sector_map.get(ticker.upper(), None) for ticker in stock_score.columns},
+            {
+                ticker: sector_map.get(ticker.upper(), None)
+                for ticker in stock_score.columns
+            },
             name="sector",
         )
 
@@ -251,4 +254,3 @@ class SignalEngine:
         sector_scores = stacked.T.groupby(level=0).mean().T
 
         return sector_scores
-

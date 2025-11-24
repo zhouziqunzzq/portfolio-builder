@@ -110,8 +110,10 @@ class MarketDataStore:
     ) -> pd.DataFrame:
         if self.source != "yfinance":
             raise NotImplementedError("Only yfinance source currently supported")
-        
-        print(f"[MarketDataStore] Fetching online: {ticker} {start.date()} → {end.date()} {interval}")
+
+        print(
+            f"[MarketDataStore] Fetching online: {ticker} {start.date()} → {end.date()} {interval}"
+        )
 
         df = yf.download(
             tickers=ticker,
@@ -203,4 +205,3 @@ class MarketDataStore:
 
         self._save_cached_df(ticker, interval, df_combined)
         return df_combined
-
