@@ -48,6 +48,7 @@ class TrendSleeve:
         self.vec_engine = vec_engine
         self.config = config or TrendConfig()
         self.state = TrendState()
+        self.precomputed_weights_mat: Optional[pd.DataFrame] = None
 
         self._approx_rebalance_days = self._infer_approx_rebalance_days(
             self.config.rebalance_freq
@@ -77,6 +78,19 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
+                return {}
+
+        # ---------- Cached vectorized weights (if precomputed) ----------
+        # If precompute() was called, we can directly return weights for this date
+        # without re-running the single-date pipeline. We still performed regime gating above.
+        if self.precomputed_weights_mat is not None and not self.precomputed_weights_mat.empty:
+            date_key = as_of.normalize()
+            if date_key in self.precomputed_weights_mat.index:
+                row = self.precomputed_weights_mat.loc[date_key]
+                weights = {t: float(w) for t, w in row.items() if w > 0}
+                total = sum(weights.values())
+                if total > 0:
+                    return {t: w / total for t, w in weights.items()}
                 return {}
 
         # ---------- Normal trend sleeve logic below ----------
@@ -510,9 +524,6 @@ class TrendSleeve:
 
         # Shape: Date x Ticker
         idx = price_mat.index
-        cols = price_mat.columns
-
-        out = pd.DataFrame(index=idx)  # we'll create a multi-level column DF later
 
         # Build a dict: feature_name -> matrix
         feature_mats = {}
@@ -541,7 +552,7 @@ class TrendSleeve:
             axis=1,
             clip=cfg.zscore_clip,
         )
-        z_mats["vol_score"] = -z_vol  # invert: lower vol â higher score
+        z_mats["vol_score"] = -z_vol  # invert: lower vol -> higher score
 
         # --------------------------------------------------------
         # 3) Composite scores
@@ -691,7 +702,7 @@ class TrendSleeve:
         liq_mask: Optional[pd.DataFrame] = None
 
         if getattr(cfg, "use_liquidity_filters", False):
-            liquidity_window = getattr(cfg, "liquidity_window", 20)
+            # liquidity_window = getattr(cfg, "liquidity_window", 20)
             adv_window = getattr(cfg, "adv_window", 20)
             median_volume_window = getattr(cfg, "median_volume_window", 20)
             min_price = getattr(cfg, "min_price", None)
@@ -741,8 +752,6 @@ class TrendSleeve:
         # ============================================================
         # 2) Precompute sector -> ticker mapping
         # ============================================================
-        from typing import Dict, List
-
         sector_to_tickers: Dict[str, List[str]] = {}
         for t in tickers:
             sec = smap.get(t)
@@ -813,6 +822,129 @@ class TrendSleeve:
         out = out.div(row_sums, axis=0).fillna(0.0)
 
         return out
+
+    # ------------------------------------------------------------------
+    # Precompute (vectorized end-to-end)
+    # ------------------------------------------------------------------
+    def precompute(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        rebalance_dates: Optional[List[datetime | str]] = None,
+        warmup_buffer: int = 30,
+    ) -> pd.DataFrame:
+        """
+        Vectorized precomputation of final stock weights over [start, end], using a
+        warmup period for signals. The warmup start date is:
+
+            warmup_start = start - (max(signal_windows) + warmup_buffer) days
+
+        Steps:
+          1) Build price matrix over [warmup_start, end]
+          2) Vectorized stock scores (Date x Ticker stock_score matrix)
+          3) Vectorized sector scores (Date x Sector)
+          4) Vectorized sector weights (smoothing applied across time)
+          5) Vectorized stock allocation (Date x Ticker weights)
+          6) Slice to [start, end]; optionally sample by provided rebalance dates
+
+        Caches result in `self.precomputed_weights_mat` and returns it.
+        """
+        if self.vec_engine is None:
+            raise ValueError("vec_engine is not set; cannot precompute.")
+
+        start_ts = pd.to_datetime(start)
+        end_ts = pd.to_datetime(end)
+        if end_ts < start_ts:
+            raise ValueError("end must be >= start")
+
+        cfg = self.config
+
+        # Determine warmup length from signal-related windows
+        window_candidates: List[int] = []
+        window_candidates.extend(getattr(cfg, "mom_windows", []) or [])
+        for attr_name in ["vol_window", "adv_window", "median_volume_window", "liquidity_window"]:
+            w_val = getattr(cfg, attr_name, None)
+            if isinstance(w_val, int) and w_val > 0:
+                window_candidates.append(w_val)
+        max_window = max(window_candidates) if window_candidates else 0
+        warmup_days = max_window + int(warmup_buffer)
+        warmup_start = start_ts - pd.Timedelta(days=warmup_days)
+
+        # --------------------------------------------------
+        # 1) Price matrix
+        # --------------------------------------------------
+        universe_all = self._get_trend_universe(end_ts)  # broad universe as of end
+        if not universe_all:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        price_mat = self.vec_engine.get_price_matrix(
+            tickers=universe_all,
+            start=warmup_start,
+            end=end_ts,
+            local_only=getattr(self.mds, "local_only", False),
+            membership_aware=True,
+            treat_unknown_as_always_member=True,
+        )
+
+        # Drop tickers with no data at all
+        price_mat = price_mat.dropna(axis=1, how="all")
+        if price_mat.empty:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        # --------------------------------------------------
+        # 2) Vectorized stock scores (Date x Ticker)
+        # --------------------------------------------------
+        stock_score_mat = self._compute_stock_scores_vectorized(price_mat)
+        if stock_score_mat.empty:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        # --------------------------------------------------
+        # 3) Vectorized sector scores (Date x Sector)
+        # --------------------------------------------------
+        sector_scores_mat = self._compute_sector_scores_vectorized(stock_score_mat)
+        if sector_scores_mat.empty:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        # --------------------------------------------------
+        # 4) Vectorized sector weights (Date x Sector)
+        # --------------------------------------------------
+        sector_weights_mat = self._compute_sector_weights_vectorized(sector_scores_mat)
+        if sector_weights_mat.empty:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        # --------------------------------------------------
+        # 5) Vectorized stock allocations (Date x Ticker)
+        # --------------------------------------------------
+        alloc_mat = self._allocate_to_stocks_vectorized(
+            price_mat=price_mat,
+            stock_score_mat=stock_score_mat,
+            sector_weights_mat=sector_weights_mat,
+        )
+        if alloc_mat.empty:
+            self.precomputed_weights_mat = pd.DataFrame()
+            return self.precomputed_weights_mat
+
+        # --------------------------------------------------
+        # 6) Slice to [start, end] (drop warmup portion)
+        # --------------------------------------------------
+        alloc_mat = alloc_mat.loc[(alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)]
+
+        # Optional sampling by rebalance schedule
+        if rebalance_dates:
+            target_dates = pd.to_datetime(rebalance_dates).normalize()
+            alloc_mat = alloc_mat[alloc_mat.index.isin(target_dates)]
+
+        self.precomputed_weights_mat = alloc_mat.copy()
+        return self.precomputed_weights_mat
+
+    # Convenience accessor
+    def get_precomputed_weights(self) -> Optional[pd.DataFrame]:
+        return self.precomputed_weights_mat
 
     # ------------------------------------------------------------------
     # Utility

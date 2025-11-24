@@ -29,7 +29,7 @@ def test_defensive_sleeve():
     um = UniverseManager(
         membership_csv=membership_csv,
         sectors_yaml=sectors_yaml,  # or point to your sectors.yml
-        local_only=False,  # allow fetching missing sectors if needed
+        local_only=True,
     )
 
     # -------------------------
@@ -38,7 +38,7 @@ def test_defensive_sleeve():
     mds = MarketDataStore(
         data_root=Path("./data/prices"),
         source="yfinance",
-        local_only=False,
+        local_only=True,
     )
 
     signals = SignalEngine(mds)
@@ -57,13 +57,13 @@ def test_defensive_sleeve():
     # -------------------------
     # 4) Run test date
     # -------------------------
-    as_of = pd.Timestamp("2025-08-31")
+    as_of = pd.Timestamp("2018-08-31")
     # as_of = pd.Timestamp("2022-06-30")
     start_for_signals = as_of - pd.Timedelta(days=500)  # enough history
 
     # Assume regime is "bull" (or "sideways" / "bear" depending on your config)
-    regime = "bull"
-    # regime = "bear"
+    # regime = "bull"
+    regime = "bear"
 
     weights = sleeve.generate_target_weights_for_date(
         as_of=as_of,

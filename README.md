@@ -2,19 +2,19 @@
 
 Lightweight toolkit to build and test a sector-rotating equity portfolio using local OHLCV caching, a static S&P 500 universe, signal calculations, and a sector weighting engine.
 
-### Components (production)
+### Components (v1 legacy)
 
-This repository ships a production-ready entrypoint under the `production/` directory. The
-`production/src/` package contains self-contained, inlined copies of the core implementation
-so production runners can import them without runtime path hacks.
+The original, production-oriented implementation now lives under the `v1/` directory. The
+`v1/src/` package contains self-contained, inlined copies of the core implementation so
+v1 runners can import them without runtime path hacks.
 
-- `production/src/market_data_store.py` — Local parquet cache for OHLCV via yfinance. Fetches missing ranges and keeps metadata.
-- `production/src/universe_manager.py` — Loads a universe from CSV (membership histories are stored under `production/data/`) and can build price matrices.
-- `production/src/signal_engine.py` — Computes momentum/volatility and aggregate stock/sector scores.
-- `production/src/sector_weight_engine.py` — Converts sector scores into bounded, smoothed portfolio weights with a trend filter.
-- `production/src/stock_allocator.py` — Allocates sector weights down to individual stock-level weights.
+- `v1/src/market_data_store.py` — Local parquet cache for OHLCV via yfinance. Fetches missing ranges and keeps metadata.
+- `v1/src/universe_manager.py` — Loads a universe from CSV (membership histories are stored under `v1/data/`) and can build price matrices.
+- `v1/src/signal_engine.py` — Computes momentum/volatility and aggregate stock/sector scores.
+- `v1/src/sector_weight_engine.py` — Converts sector scores into bounded, smoothed portfolio weights with a trend filter.
+- `v1/src/stock_allocator.py` — Allocates sector weights down to individual stock-level weights.
 
-Note: Some earlier development helper scripts (for example, a standalone `get_sp500.py` scraper) have been removed or moved into the production runners. If you relied on those, use the production runner flags (see "Production CLI Tools") or provide your own universe CSV under `production/data/current_constituents.csv` or `production/data/sp500_membership.csv`.
+Note: Some earlier development helper scripts (for example, a standalone `get_sp500.py` scraper) have been removed or moved into the v1 runners. If you relied on those, use the v1 runner flags (see "v1 CLI Tools") or provide your own universe CSV under `v1/data/current_constituents.csv` or `v1/data/sp500_membership.csv`.
 
 ### Data layout
 
@@ -22,7 +22,7 @@ Note: Some earlier development helper scripts (for example, a standalone `get_sp
 	- `data/ohlcv/1d/<TICKER>/data.parquet`
 	- `data/ohlcv/1d/<TICKER>/meta.json`
 - Universe CSV (input to `UniverseManager.from_csv`):
-	- Recommended path: `data/universe/sp500_constituents.csv`
+	- Recommended path (v1): `v1/data/universe/sp500_constituents.csv`
 
 Note: Some files/scripts may refer to `data/universies/` (typo). Prefer `data/universe/` and update references accordingly.
 
@@ -48,7 +48,7 @@ Why these packages?
 
 ### 2) Universe data
 
-This repo no longer exposes a top-level `get_sp500.py` helper. Universe membership and related CSVs are stored under `production/data/` (for example `production/data/current_constituents.csv` and `production/data/sp500_membership*.csv`).
+This repo no longer exposes a top-level `get_sp500.py` helper. Universe membership and related CSVs are stored under `v1/data/` (for example `v1/data/current_constituents.csv` and `v1/data/sp500_membership*.csv`).
 
 If you need to (re)generate a universe from Wikipedia or another source, either:
 
@@ -56,7 +56,7 @@ If you need to (re)generate a universe from Wikipedia or another source, either:
 - Use the production runner to regenerate the universe if your configuration supports it:
 
 ```bash
-python production/run_live.py --regenerate-universe
+python v1/run_live.py --regenerate-universe
 ```
 
 When creating a universe CSV manually, ensure tickers are normalized for yfinance (uppercase, replace `.` with `-`, e.g., `BRK.B` → `BRK-B`).
@@ -67,19 +67,19 @@ The production runners provide step-wise and full-pipeline execution. Common qui
 
 ```bash
 # Update prices and warm the parquet cache
-python production/run_live.py --update-prices
+python v1/run_live.py --update-prices
 
 # Compute signals
-python production/run_live.py --compute-signals
+python v1/run_live.py --compute-signals
 
 # Compute sector weights
-python production/run_live.py --compute-sector-weights
+python v1/run_live.py --compute-sector-weights
 
 # Compute stock weights
-python production/run_live.py --compute-stock-weights
+python v1/run_live.py --compute-stock-weights
 
 # Or run the full rebalance pipeline
-python production/run_live.py --rebalance
+python v1/run_live.py --rebalance
 ```
 
 First runs that update prices will be slower while the local parquet cache is populated.
@@ -117,33 +117,33 @@ Key flags (subset):
 
 ```bash
 # Regenerate universe (writes updated membership & dumps mask) then exit
-python3 production/run_live.py --regenerate-universe
+python3 v1/run_live.py --regenerate-universe
 
 # Update prices & trend data only
-python3 production/run_live.py --update-prices
+python3 v1/run_live.py --update-prices
 
 # Compute signals (requires prices)
-python3 production/run_live.py --compute-signals
+python3 v1/run_live.py --compute-signals
 
 # Compute sector weights (requires signals)
-python3 production/run_live.py --compute-sector-weights
+python3 v1/run_live.py --compute-sector-weights
 
 # Compute stock weights (requires sector weights)
-python3 production/run_live.py --compute-stock-weights
+python3 v1/run_live.py --compute-stock-weights
 
 # Full rebalance pipeline (signals → sector weights → stock weights)
-python3 production/run_live.py --rebalance
+python3 v1/run_live.py --rebalance
 
 # Start rebalance from a specific date (e.g., warm-start)
-python3 production/run_live.py --rebalance --rebalance-start 2023-01-01
+python3 v1/run_live.py --rebalance --rebalance-start 2023-01-01
 
 # Dump membership mask explicitly (also happens automatically after universe regeneration)
-python3 production/run_live.py --dump-membership-mask
+python3 v1/run_live.py --dump-membership-mask
 ```
 
 Artifacts are written under `output_root/` subfolders defined in `strategy.yml` (e.g., `prices/`, `signals/`, `weights/`, `masks/`, `plots/`, `logs/`).
 
-### 2. Backtest Runner (`production/run_backtest.py`)
+### 2. Backtest Runner (`v1/run_backtest.py`)
 
 Runs the portfolio backtester over a historical window using previously computed monthly (or daily) stock weights and prices, then optionally generates performance & allocation plots.
 
@@ -151,37 +151,37 @@ Common usage:
 
 ```bash
 # Basic backtest over a window
-python3 production/run_backtest.py --backtest-start 2015-01-01 --backtest-end 2024-12-31
+python3 v1/run_backtest.py --backtest-start 2015-01-01 --backtest-end 2024-12-31
 
 # Use only local cached data (skip any fetch logic inside helpers)
-python3 production/run_backtest.py --local-only --backtest-start 2018-01-01
+python3 v1/run_backtest.py --local-only --backtest-start 2018-01-01
 
 # Generate all plots and show them interactively
-python3 production/run_backtest.py --backtest-start 2015-01-01 --plot-all --show
+python3 v1/run_backtest.py --backtest-start 2015-01-01 --plot-all --show
 
 # Selectively plot equity + drawdown only (no interactive display)
-python3 production/run_backtest.py --backtest-start 2015-01-01 --plot-equity --plot-drawdown
+python3 v1/run_backtest.py --backtest-start 2015-01-01 --plot-equity --plot-drawdown
 ```
 
 Plot flags available (all save images under `plots/`):
 `--plot-equity`, `--plot-drawdown`, `--plot-annual`, `--plot-rolling`, `--plot-turnover`, `--plot-sectors`, or `--plot-all` (shortcut for all). Add `--show` to open interactive windows.
 
-### 3. Interactive Rebalance Helper (`production/run_rebalance.py`)
+### 3. Interactive Rebalance Helper (`v1/run_rebalance.py`)
 
 Guides manual trade sizing using current (latest or specified date) stock & sector weights. It prints allocations, prompts for current positions + cash, then outputs target dollar holdings and a buy/sell execution plan.
 
 ```bash
 # Use latest monthly weights (default frequency) interactively
-python3 production/run_rebalance.py
+python3 v1/run_rebalance.py
 
 # Use daily weights as of a specific date
-python3 production/run_rebalance.py --frequency daily --as-of 2024-12-31
+python3 v1/run_rebalance.py --frequency daily --as-of 2024-12-31
 
 # Show a larger top slice of stock weights in the summary (e.g., top 40)
-python3 production/run_rebalance.py --top 40
+python3 v1/run_rebalance.py --top 40
 
 # Override strategy file (if you maintain multiple configs)
-python3 production/run_rebalance.py --strategy production/config/strategy.yml
+python3 v1/run_rebalance.py --strategy v1/config/strategy.yml
 ```
 
 Workflow inside the helper:
@@ -191,7 +191,7 @@ Workflow inside the helper:
 4. Prompt: enter cash balance.
 5. Compute current equity; size target positions; derive buys & sells and cash reconciliation; print trade plan.
 
-### 4. Portfolio Analyzer (`production/explore_portfolio.py`)
+### 4. Portfolio Analyzer (`v1/explore_portfolio.py`)
 
 Explores saved historical allocations (sector & stock) and produces snapshots or plots.
 
@@ -199,28 +199,39 @@ Examples:
 
 ```bash
 # List allocation dates available
-python3 production/explore_portfolio.py --list-dates
+python3 v1/explore_portfolio.py --list-dates
 
 # Print summary for the latest date
-python3 production/explore_portfolio.py --snapshot
+python3 v1/explore_portfolio.py --snapshot
 
 # Print summary for a specific date
-python3 production/explore_portfolio.py --snapshot --as-of 2024-06-30
+python3 v1/explore_portfolio.py --snapshot --as-of 2024-06-30
 
 # Plot stacked sector allocation (saved to plots/)
-python3 production/explore_portfolio.py --plot-stacked
+python3 v1/explore_portfolio.py --plot-stacked
 
 # Plot allocation heatmap (dates vs sectors)
-python3 production/explore_portfolio.py --plot-heatmap
+python3 v1/explore_portfolio.py --plot-heatmap
 
 # Plot sector "bump" chart (rank evolution)
-python3 production/explore_portfolio.py --plot-bump
+python3 v1/explore_portfolio.py --plot-bump
 
 # Plot time series for selected tickers (comma-separated)
-python3 production/explore_portfolio.py --plot-tickers AAPL,MSFT,NVDA
+python3 v1/explore_portfolio.py --plot-tickers AAPL,MSFT,NVDA
 ```
 
 Add `--show` (if supported in your environment) to display plots interactively; otherwise they are saved under `plots/`.
+
+### v2 Overview
+
+An experimental `v2/` branch of the toolkit introduces:
+- Refactored configuration (simplified YAML + dataclasses)
+- Regime-aware multi-sleeve allocation (trend / defensive sleeves)
+- Vectorized precompute pipeline for faster historical weight generation
+- Cash preservation option in the multi-sleeve allocator
+- Enhanced plotting and coverage utilities (e.g., `v2/ensure_market_data.py`)
+
+Expect API differences between `v1` and `v2`; keep separate configs and do not mix modules across versions.
 
 ### General Tips
 

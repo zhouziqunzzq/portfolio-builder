@@ -23,10 +23,39 @@ class MultiSleeveConfig:
         "sideways",
     )
 
-    # Regime â sleeve â weight BEFORE normalization.
+    # If True: allow implicit cash by NOT normalizing global sleeve-combined
+    # equity weights up to 1.0 when their raw sum is <= 1.0. We still
+    # normalize (scale down) if the sum exceeds 1.0 (to avoid leverage).
+    preserve_cash_if_under_target: bool = False
+
+    # Regime -> sleeve -> weight BEFORE normalization.
     #
     # These represent *ideal* allocations for each sleeve under each regime.
     # MultiSleeveAllocator will blend these using regime scores.
+    # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
+    #     default_factory=lambda: {
+    #         "bull": {
+    #             "trend": 1.0,
+    #             "defensive": 0.2,
+    #         },
+    #         "correction": {
+    #             "trend": 0.5,
+    #             "defensive": 0.5,
+    #         },
+    #         "bear": {
+    #             "trend": 0.2,
+    #             "defensive": 1.0,
+    #         },
+    #         "crisis": {
+    #             "trend": 0.0,
+    #             "defensive": 1.0,
+    #         },
+    #         "sideways": {
+    #             "trend": 0.6,
+    #             "defensive": 0.6,
+    #         },
+    #     }
+    # )
     sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
             "bull": {
@@ -46,8 +75,8 @@ class MultiSleeveConfig:
                 "defensive": 1.0,
             },
             "sideways": {
-                "trend": 0.6,
-                "defensive": 0.6,
+                "trend": 0.5,
+                "defensive": 0.5,
             },
         }
     )

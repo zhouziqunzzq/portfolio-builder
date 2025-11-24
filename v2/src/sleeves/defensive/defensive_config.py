@@ -30,9 +30,9 @@ class DefensiveConfig:
         default_factory=lambda: [
             # aggregate + treasury + IG credit
             "BND",  # US aggregate bonds
-            "IEF",  # 7â10Y Treasuries
+            "IEF",  # 7~10Y Treasuries
             "TLT",  # 20Y+ Treasuries
-            "SHY",  # 1â3Y Treasuries
+            "SHY",  # 1~3Y Treasuries
             "LQD",  # IG corporates
         ]
     )
@@ -84,13 +84,13 @@ class DefensiveConfig:
     # (used inside each asset class; then combined with class-level allocations)
     w_mom_fast: float = 0.3
     w_mom_slow: float = 0.3
-    w_low_vol: float = 0.2
+    w_low_vol: float = 0.4
     w_low_beta: float = 0.2
 
     # -------------------------------
     # Portfolio construction
     # -------------------------------
-    top_k: int = 20
+    top_k: int = 10
     max_weight_per_name: float = 0.10
     # TODO: soft constraint; can enforce later
     max_weight_per_sector: float = 0.40
@@ -107,33 +107,33 @@ class DefensiveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "equity": 0.60,
-                "bond": 0.30,
-                "gold": 0.10,
+                "equity": 0.50,
+                "bond": 0.20,
+                "gold": 0.30,
             },
             # Uptrend but pullback / higher vol
             "correction": {
-                "equity": 0.40,
-                "bond": 0.40,
-                "gold": 0.20,
+                "equity": 0.20,
+                "bond": 0.30,
+                "gold": 0.50,
             },
             # Downtrend, elevated vol
             "bear": {
-                "equity": 0.20,
-                "bond": 0.60,
-                "gold": 0.20,
+                "equity": 0.10,
+                "bond": 0.20,
+                "gold": 0.70,
             },
             # Panic / crisis regime
             "crisis": {
                 "equity": 0.00,
-                "bond": 0.70,
-                "gold": 0.30,
+                "bond": 0.10,
+                "gold": 0.90,
             },
             # Choppy / sideways
             "sideways": {
-                "equity": 0.50,
+                "equity": 0.10,
                 "bond": 0.30,
-                "gold": 0.20,
+                "gold": 0.60,
             },
         }
     )

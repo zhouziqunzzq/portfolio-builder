@@ -12,6 +12,7 @@ import pandas as pd
 from src.universe_manager import UniverseManager
 from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
+from src.vec_signal_engine import VectorizedSignalEngine
 from src.regime_engine import RegimeEngine
 from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from src.sleeves.trend.trend_sleeve import TrendSleeve
@@ -81,8 +82,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--bid-ask-bps-per-side",
         type=float,
-        default=5.0,
-        help="Bid-ask spread cost per side, in bps (e.g. 5 = 5 bps each side â 10 bps round trip)",
+        default=0.0,
+        help="Bid-ask spread cost per side, in bps (e.g. 5 = 5 bps each side ~= 10 bps round trip)",
     )
     p.add_argument(
         "--rf-annual",
@@ -161,6 +162,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
 
     # Signals
     signals = SignalEngine(mds)
+    vec_engine = VectorizedSignalEngine(um, mds)
 
     # Regime engine
     regime_engine = RegimeEngine(
@@ -175,11 +177,11 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         signals=signals,
         config=None,  # default DefensiveConfig
     )
-
     trend = TrendSleeve(
         universe=um,
         mds=mds,
         signals=signals,
+        vec_engine=vec_engine,
         config=None,  # default TrendConfig
     )
 
@@ -216,7 +218,7 @@ def build_rebalance_schedule(
     end: pd.Timestamp,
 ) -> pd.DatetimeIndex:
     """
-    For V2 weâll use BUSINESS MONTH-END rebalancing.
+    For V2 we'll use BUSINESS MONTH-END rebalancing.
     """
     return pd.date_range(start=start, end=end, freq="BME")
 
@@ -279,6 +281,8 @@ def get_price_matrix_for_weights(
         end=end.strftime("%Y-%m-%d"),
         field="Close",
         interval="1d",
+        # !IMPORTANT - we need prices for all tickers (including non SP500 ones like GLD)
+        auto_apply_membership_mask=False, 
         local_only=bool(local_only),
     )
     return price_mat
@@ -577,6 +581,28 @@ def main() -> int:
         f"Running V2 backtest from {start_dt.date()} to {end_dt.date()} "
         f"(local_only={args.local_only})"
     )
+
+    # Build rebalance schedule early (business month-end) for precompute
+    rebalance_schedule = build_rebalance_schedule(start=start_dt, end=end_dt)
+    if rebalance_schedule.empty:
+        print("No rebalance dates in window; aborting.")
+        return 0
+
+    # Optional vectorized sleeve precompute to accelerate per-date calls.
+    # Only sleeves exposing a `precompute` method (e.g., TrendSleeve) will be used.
+    try:
+        print("[backtest_v2] Starting sleeve precompute phase...")
+        allocator.precompute(
+            start=start_dt,
+            end=end_dt,
+            rebalance_dates=list(rebalance_schedule),
+            warmup_buffer=30,
+        )
+        print("[backtest_v2] Sleeve precompute phase completed.")
+    except Exception as e:
+        print(
+            f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
+        )
 
     # 1) Generate monthly sleeve-based target weights
     monthly_weights = generate_monthly_weights(

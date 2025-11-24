@@ -180,7 +180,7 @@ class DefensiveSleeve:
         Steps:
         1) Assign asset class: equity / bond / gold
         2) Per-class: select top_k * class_alloc fraction
-        3) Weight by score Ã inverse-vol
+        3) Weight by score / inverse-vol
         4) Multiply by class allocation
         5) Normalize final vector
         """
@@ -215,7 +215,7 @@ class DefensiveSleeve:
 
             sub = sub.sort_values("score", ascending=False).head(k_class)
 
-            # ---- score Ã inverse-vol ----
+            # ---- score / inverse-vol ----
             raw = sub["score"] / sub["vol"]
             raw = raw.replace([np.inf, -np.inf], np.nan).fillna(0)
 

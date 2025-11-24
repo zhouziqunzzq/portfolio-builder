@@ -115,12 +115,18 @@ class MultiSleeveAllocator:
             for ticker, w in local_weights.items():
                 combined[ticker] = combined.get(ticker, 0.0) + alloc * w
 
-        # 4) Normalize global weights for safety
+        # 4) Normalize global weights for safety / optional cash preservation
         total = float(sum(combined.values()))
         if total <= 0:
             out: Dict[str, float] = {}
         else:
-            out = {t: w / total for t, w in combined.items()}
+            # If config allows preserving cash and total <= 1.0, do NOT scale up.
+            # This leaves leftover (1-total) as implicit cash.
+            if self.config.preserve_cash_if_under_target and total <= 1.0:
+                out = {t: float(w) for t, w in combined.items() if w > 0}
+            else:
+                # If total > 1.0 or cash preservation disabled, scale to 1.
+                out = {t: w / total for t, w in combined.items()}
 
         # store state
         self.last_as_of = as_of_ts
@@ -130,6 +136,74 @@ class MultiSleeveAllocator:
         self.last_portfolio = out
 
         return out
+
+    # ------------------------------------------------------------------
+    # Vectorized Precompute for All Sleeves
+    # ------------------------------------------------------------------
+    def precompute(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        rebalance_dates: Optional[list[datetime | str]] = None,
+        warmup_buffer: int = 30,
+    ) -> Dict[str, pd.DataFrame]:
+        """Precompute sleeve-level weight matrices over [start, end].
+
+        For each managed sleeve that exposes a `precompute` method with the
+        signature matching TrendSleeve / DefensiveSleeve expectations, we invoke
+        it and store the resulting Date x Ticker weight matrix.
+
+        Parameters
+        ----------
+        start, end : datetime | str
+            Target inclusive date range for final (post-warmup) weights.
+        rebalance_dates : list[datetime | str], optional
+            If provided, sleeves will sample their internal matrix to only
+            those dates.
+        warmup_buffer : int
+            Extra days added to max signal window during sleeve warmup.
+
+        Returns
+        -------
+        Dict[str, pd.DataFrame]
+            Mapping sleeve_name -> precomputed weight matrix.
+        """
+        start_ts = pd.to_datetime(start)
+        end_ts = pd.to_datetime(end)
+        if end_ts < start_ts:
+            raise ValueError("end must be >= start for precompute")
+
+        print(f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]")
+        if rebalance_dates is not None:
+            print(f"[MultiSleeveAllocator] Rebalance dates supplied: {len(rebalance_dates)}")
+
+        results: Dict[str, pd.DataFrame] = {}
+
+        for name, sleeve in self.sleeves.items():
+            if not hasattr(sleeve, "precompute"):
+                print(f"[MultiSleeveAllocator] Sleeve '{name}' has no precompute(); skipping.")
+                continue
+            print(f"[MultiSleeveAllocator] Precomputing sleeve '{name}' ...")
+            try:
+                wmat = sleeve.precompute(
+                    start=start_ts,
+                    end=end_ts,
+                    rebalance_dates=rebalance_dates,
+                    warmup_buffer=warmup_buffer,
+                )
+                if wmat is None or wmat.empty:
+                    print(f"[MultiSleeveAllocator] Sleeve '{name}' returned empty matrix.")
+                else:
+                    print(
+                        f"[MultiSleeveAllocator] Sleeve '{name}' weights shape: {wmat.shape} (dates={wmat.shape[0]}, tickers={wmat.shape[1]})"
+                    )
+                results[name] = wmat.copy() if wmat is not None else pd.DataFrame()
+            except Exception as e:
+                print(f"[MultiSleeveAllocator] Sleeve '{name}' precompute failed: {e}")
+                results[name] = pd.DataFrame()
+
+        print("[MultiSleeveAllocator] Precompute finished.")
+        return results
 
     # ------------------------------------------------------------------
     # Internal helpers
