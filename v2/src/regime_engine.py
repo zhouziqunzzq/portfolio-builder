@@ -134,7 +134,7 @@ class RegimeEngine:
         """
         Heuristic, interpretable scoring rules.
 
-        Each regime score is in [0, +â); we will normalize later.
+        Each regime score is in [0, +inf); we will normalize later.
         The shape is mostly piecewise-linear around intuitive thresholds.
         """
 
@@ -157,7 +157,7 @@ class RegimeEngine:
 
         # Correction: long-term uptrend but noticeable drawdown & higher vol
         corr_trend = ramp(trend, -0.2, 0.3)  # still not strongly negative
-        corr_dd = ramp(-dd_1y, 0.05, 0.20)  # 5â20% off highs
+        corr_dd = ramp(-dd_1y, 0.05, 0.20)  # 5~20% off highs
         corr_vol = ramp(vol_score, 0.0, 1.5)  # vol elevated but not panic
         corr_mom = ramp(mom, -0.05, 0.10)  # prefer >= 0, fade if very negative
 

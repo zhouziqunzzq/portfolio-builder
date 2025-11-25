@@ -20,9 +20,10 @@ if __name__ == "__main__":
     regime_engine = RegimeEngine(signals, RegimeConfig(benchmark="SPY"))
 
     # regimes = regime_engine.get_regime_frame("2015-01-01", "2025-01-01")
-    regimes = regime_engine.get_regime_frame("2000-01-01", "2025-11-20")
+    regimes = regime_engine.get_regime_frame("2000-01-01", "2025-11-21")
     print(regimes.head())
-    print(regimes[["bull", "bear", "crisis", "sideways", "primary_regime"]].tail())
+    print(regimes.tail())
+    print(regimes[["bull", "correction", "bear", "crisis", "sideways", "primary_regime"]].tail())
 
     # --- Quick plotting: stacked-area of regime scores (monthly aggregated) ---
     score_cols = [c for c in ["bull", "correction", "bear", "crisis", "sideways"] if c in regimes.columns]

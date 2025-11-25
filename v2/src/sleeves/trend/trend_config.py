@@ -50,6 +50,7 @@ class TrendConfig:
     sector_top_k: int = 5
 
     # Trend filter on benchmark for risk-on/risk-off scaling
+    # Note: this is currently NOT used; Imported from V1.5.
     trend_filter_enabled: bool = True
     trend_benchmark: str = "SPY"
     trend_window: int = 200

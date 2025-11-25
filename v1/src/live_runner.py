@@ -953,6 +953,14 @@ def main() -> int:
             "date": str(args.date),
             "rebalance": args.rebalance,
             "regen_universe": args.__dict__.get("regen_universe"),
+            "compute_signals": args.__dict__.get("compute_signals"),
+            "compute_sector_weights": args.__dict__.get("compute_sector_weights"),
+            "compute_stock_weights": args.__dict__.get("compute_stock_weights"),
+            "update_prices": args.__dict__.get("update_prices"),
+            "dump_membership_mask": args.__dict__.get("dump_membership_mask"),
+            "mask_summary": args.__dict__.get("mask_summary"),
+            "strategy_config": str(strategy_yaml),
+            "sectors_config": str(sectors_yaml),
         },
     )
 
