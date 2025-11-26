@@ -7,7 +7,17 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from .market_data_store import MarketDataStore  # adjust import to your layout
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parent
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from market_data_store import MarketDataStore
 
 
 # ---------- Signal cache key & params normalization ----------

@@ -69,42 +69,11 @@ class SignalEngine:
     # ------------------------------------------------------------------
     # Basic helpers
     # ------------------------------------------------------------------
-    def _zscore_within_sector(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Z-score each column within its sector, per date.
-        If no sector_map is provided, z-score across all tickers.
-        """
-        df = df.copy()
-        result = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
-
-        if not self.sector_map:
-            # Single cross-section (no sectors)
-            mean = df.mean(axis=1)
-            std = df.std(axis=1).replace(0, np.nan)
-            result = df.sub(mean, axis=0).div(std, axis=0)
-            return result
-
-        # Group tickers by sector
-        sector_to_tickers: Dict[str, list[str]] = {}
-        for ticker, sector in self.sector_map.items():
-            sector_to_tickers.setdefault(sector, []).append(ticker)
-
-        for sector, tickers in sector_to_tickers.items():
-            # Only keep tickers that exist in df
-            cols = [t for t in tickers if t in df.columns]
-            if not cols:
-                continue
-            sub = df[cols]
-            mean = sub.mean(axis=1)
-            std = sub.std(axis=1).replace(0, np.nan)
-            z = sub.sub(mean, axis=0).div(std, axis=0)
-            result[cols] = z
-
-        return result
-
     def _zscore_across_universe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Z-score each column per date across ALL tickers (no sector grouping).
+        Z-score each row (date) across ALL tickers (column) (no sector grouping).
+        
+        df: DataFrame[Date x Ticker]
         """
         mean = df.mean(axis=1)
         std = df.std(axis=1).replace(0, np.nan)
@@ -143,7 +112,7 @@ class SignalEngine:
         """
         Compute a composite momentum score by:
         1) computing raw momentum for each window in `windows`
-        2) z-scoring each window within sector, per date
+        2) z-scoring each window across the universe, per ticker (column-wise z-score)
         3) combining as weighted sum of z-scores
         """
         if weights is None:
@@ -181,7 +150,7 @@ class SignalEngine:
 
     def compute_vol_score(self, window: int = 20) -> pd.DataFrame:
         """
-        Z-scored volatility within sector, with sign flipped so that
+        Z-scored volatility cross-sector, with sign flipped so that
         lower vol => higher score.
         """
         vol = self.compute_volatility(window=window)

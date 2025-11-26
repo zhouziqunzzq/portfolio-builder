@@ -384,50 +384,64 @@ def update_prices_and_trend(
 
     # Compute benchmark trend status
     try:
-        df_bench = mds.get_ohlcv(
-            benchmark,
-            start=str(start_dt),
-            end=str(end_dt),
-            interval="1d",
-            auto_adjust=True,
-            local_only=bool(args.__dict__.get("local_only", False)),
+        # Respect trend_filter.enabled if present in config
+        trend_enabled = (
+            bool(cfg.sectors.trend_filter.get("enabled", True))
+            if cfg.sectors.trend_filter
+            else True
         )
-        if df_bench is not None and not df_bench.empty:
-            price_col = (
-                "Adjclose"
-                if "Adjclose" in df_bench.columns
-                else ("Close" if "Close" in df_bench.columns else None)
+        if not trend_enabled:
+            logger.info(
+                "Trend filter disabled; skipping trend computation",
+                extra={"benchmark": benchmark},
             )
-            if price_col:
-                sma = df_bench[price_col].rolling(trend_window).mean()
-                trend_on = (
-                    bool(df_bench[price_col].iloc[-1] > sma.iloc[-1])
-                    if len(sma.dropna()) > 0
-                    else False
-                )
-                last_price_val = df_bench[price_col].iloc[-1]
-                last_price = (
-                    float(last_price_val)
-                    if last_price_val is not None and not pd.isna(last_price_val)
-                    else None
-                )
-                sma_val = sma.iloc[-1] if len(sma) else None
-                last_sma = (
-                    float(sma_val)
-                    if sma_val is not None and not pd.isna(sma_val)
-                    else None
-                )
-                last_price_str = f"{last_price:.2f}" if last_price is not None else "NA"
-                last_sma_str = f"{last_sma:.2f}" if last_sma is not None else "NA"
-                logger.info(
-                    f"Trend status: benchmark={benchmark} window={trend_window} last_price={last_price_str} last_sma={last_sma_str} trend_on={trend_on}"
-                )
-            else:
-                logger.warning(
-                    "Benchmark %s missing price columns for trend calc", benchmark
-                )
         else:
-            logger.warning("No data for benchmark %s to compute trend", benchmark)
+            df_bench = mds.get_ohlcv(
+                benchmark,
+                start=str(start_dt),
+                end=str(end_dt),
+                interval="1d",
+                auto_adjust=True,
+                local_only=bool(args.__dict__.get("local_only", False)),
+            )
+            if df_bench is not None and not df_bench.empty:
+                price_col = (
+                    "Adjclose"
+                    if "Adjclose" in df_bench.columns
+                    else ("Close" if "Close" in df_bench.columns else None)
+                )
+                if price_col:
+                    sma = df_bench[price_col].rolling(trend_window).mean()
+                    trend_on = (
+                        bool(df_bench[price_col].iloc[-1] > sma.iloc[-1])
+                        if len(sma.dropna()) > 0
+                        else False
+                    )
+                    last_price_val = df_bench[price_col].iloc[-1]
+                    last_price = (
+                        float(last_price_val)
+                        if last_price_val is not None and not pd.isna(last_price_val)
+                        else None
+                    )
+                    sma_val = sma.iloc[-1] if len(sma) else None
+                    last_sma = (
+                        float(sma_val)
+                        if sma_val is not None and not pd.isna(sma_val)
+                        else None
+                    )
+                    last_price_str = (
+                        f"{last_price:.2f}" if last_price is not None else "NA"
+                    )
+                    last_sma_str = f"{last_sma:.2f}" if last_sma is not None else "NA"
+                    logger.info(
+                        f"Trend status: benchmark={benchmark} window={trend_window} last_price={last_price_str} last_sma={last_sma_str} trend_on={trend_on}"
+                    )
+                else:
+                    logger.warning(
+                        "Benchmark %s missing price columns for trend calc", benchmark
+                    )
+            else:
+                logger.warning("No data for benchmark %s to compute trend", benchmark)
     except Exception as e:
         logger.exception("Failed computing trend for %s: %s", benchmark, e)
 
@@ -476,10 +490,10 @@ def compute_signals_step(
                     "Invalid --signal-start=%s (expected YYYY-MM-DD); falling back to automatic lookback",
                     args.signal_start,
                 )
-                days_back = max(warmup, momentum_max + vol_window + 10, 120)
+                days_back = max(warmup, momentum_max + vol_window + 30, 120)
                 start_dt = run_dt - timedelta(days=days_back)
         else:
-            days_back = max(warmup, momentum_max + vol_window + 10, 120)
+            days_back = max(warmup, momentum_max + vol_window + 30, 120)
             start_dt = run_dt - timedelta(days=days_back)
         end_dt = run_dt
 
@@ -492,6 +506,8 @@ def compute_signals_step(
             interval="1d",
             local_only=bool(args.__dict__.get("local_only", False)),
         )
+        # Drop tickers with no data at all
+        price_mat = price_mat.dropna(axis=1, how="all")
         if price_mat.empty:
             logger.warning("No price data available for signals window; skipping")
             return
@@ -606,6 +622,11 @@ def compute_sector_weights_step(
             if cfg.sectors.trend_filter
             else "SPY"
         )
+        trend_enabled = (
+            bool(cfg.sectors.trend_filter.get("enabled", True))
+            if cfg.sectors.trend_filter
+            else True
+        )
 
         # Load benchmark prices
         df_bench = mds.get_ohlcv(
@@ -653,6 +674,7 @@ def compute_sector_weights_step(
             w_max=w_max,
             beta=beta,
             trend_window=trend_window,
+            trend_enabled=trend_enabled,
             risk_on_equity_frac=risk_on_frac,
             risk_off_equity_frac=risk_off_frac,
             top_k_sectors=top_k_sectors,

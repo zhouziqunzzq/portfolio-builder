@@ -25,7 +25,7 @@ class TrendConfig:
     # ------------------------------------------------------------------
     # Liquidity filters (new)
     # ------------------------------------------------------------------
-    use_liquidity_filters: bool = True
+    use_liquidity_filters: bool = False
 
     # Windows for liquidity statistics (ADV, median volume)
     liquidity_window: int = 20  # convenience primary window
@@ -38,6 +38,7 @@ class TrendConfig:
     min_price: float = 0.5  # dollars
 
     # Z-score winsorization / clipping
+    use_zscore_winsorization: bool = False
     zscore_clip: float = 3.0  # clip all z-scores to [-3, +3]
 
     # ------------------------------------------------------------------
@@ -50,8 +51,8 @@ class TrendConfig:
     sector_top_k: int = 5
 
     # Trend filter on benchmark for risk-on/risk-off scaling
-    # Note: this is currently NOT used; Imported from V1.5.
-    trend_filter_enabled: bool = True
+    # Note: this is currently NOT used; Imported from V1.5 for completeness.
+    trend_filter_enabled: bool = False
     trend_benchmark: str = "SPY"
     trend_window: int = 200
     risk_on_equity_frac: float = 1.0

@@ -9,16 +9,26 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from src.universe_manager import UniverseManager
-from src.market_data_store import MarketDataStore
-from src.signal_engine import SignalEngine
-from src.vec_signal_engine import VectorizedSignalEngine
-from src.regime_engine import RegimeEngine
-from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
-from src.sleeves.trend.trend_sleeve import TrendSleeve
-from src.allocator.multi_sleeve_allocator import MultiSleeveAllocator
-from src.allocator.multi_sleeve_config import MultiSleeveConfig
-from src.portfolio_backtester import PortfolioBacktester  # updated v2 version
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parent
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from universe_manager import UniverseManager
+from market_data_store import MarketDataStore
+from signal_engine import SignalEngine
+from vec_signal_engine import VectorizedSignalEngine
+from regime_engine import RegimeEngine
+from sleeves.defensive.defensive_sleeve import DefensiveSleeve
+from sleeves.trend.trend_sleeve import TrendSleeve
+from allocator.multi_sleeve_allocator import MultiSleeveAllocator
+from allocator.multi_sleeve_config import MultiSleeveConfig
+from portfolio_backtester import PortfolioBacktester  # updated v2 version
 
 
 # ---------------------------------------------------------------------
@@ -27,7 +37,7 @@ from src.portfolio_backtester import PortfolioBacktester  # updated v2 version
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Momentum V2 Backtest Runner")
+    p = argparse.ArgumentParser(description="Multi-Sleeve V2 Backtest Runner")
 
     # Paths
     p.add_argument(

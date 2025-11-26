@@ -26,7 +26,7 @@ class SectorWeightEngine:
     """
 
     sector_scores: pd.DataFrame  # index: Date, columns: sectors
-    benchmark_prices: pd.Series  # index: Date, benchmark (SPY / ^GSPC) close prices
+    benchmark_prices: Optional[pd.Series]  # index: Date, benchmark (SPY / ^GSPC) close prices
 
     alpha: float = 1.0  # softmax sharpness
     w_min: float = 0.03  # min sector weight
@@ -38,16 +38,19 @@ class SectorWeightEngine:
     top_k_sectors: Optional[int] = (
         None  # keep only top-k sectors each rebalance (others zeroed, then renormalize)
     )
+    trend_enabled: bool = True  # whether to apply trend filter (if False, always risk-on)
 
     def __post_init__(self):
         # Align benchmark index to sector_scores index
         self.sector_scores = self.sector_scores.sort_index()
-        self.benchmark_prices = self.benchmark_prices.sort_index()
+        if self.trend_enabled and self.benchmark_prices is not None:
+            self.benchmark_prices = self.benchmark_prices.sort_index()
 
         # Reindex benchmark to the sector_scores index (forward/backfill if needed)
-        self.benchmark_prices = (
-            self.benchmark_prices.reindex(self.sector_scores.index).ffill().bfill()
-        )
+        if self.trend_enabled and self.benchmark_prices is not None:
+            self.benchmark_prices = (
+                self.benchmark_prices.reindex(self.sector_scores.index).ffill().bfill()
+            )
 
         # Ensure no negative or weird alpha values
         if self.alpha <= 0:
@@ -77,6 +80,12 @@ class SectorWeightEngine:
         risk_on = price > SMA(trend_window)
         Returns Series[Date] ∈ {0, 1}.
         """
+        # If trend filter disabled, always return ON (1) so equity_frac == risk_on_equity_frac
+        if not getattr(self, "trend_enabled", True):
+            trend_state = pd.Series(1, index=self.sector_scores.index, dtype=int)
+            trend_state.name = "trend_state"
+            return trend_state
+
         sma = self.benchmark_prices.rolling(self.trend_window).mean()
         trend_state = (self.benchmark_prices > sma).astype(int)
         trend_state.name = "trend_state"
@@ -187,18 +196,32 @@ class SectorWeightEngine:
 
         for dt in index:
             scores_t = self.sector_scores.loc[dt]
+            w_selected = None
+            w_smoothed = None
 
-            # 1) softmax -> base weights
-            w_raw = self._softmax_weights(scores_t)
+            # Drop sectors with all-NaN scores on this date
+            scores_t = scores_t.dropna()
+            if scores_t.empty:
+                # Fallback: if absolutely no scores, either carry forward
+                # or use uniform weights over all sectors.
+                if prev_weights is not None:
+                    w_selected = prev_weights.copy()
+                    w_smoothed = w_selected
+                else:
+                    w_selected = pd.Series(1.0 / len(sectors), index=sectors)
+                    w_smoothed = w_selected
+            else:
+                # 1) softmax -> base weights
+                w_raw = self._softmax_weights(scores_t)
 
-            # 2) caps/floors
-            w_capped = self._apply_caps_and_floors(w_raw)
+                # 2) caps/floors
+                w_capped = self._apply_caps_and_floors(w_raw)
 
-            # 3) smoothing vs previous
-            w_smoothed = self._smooth_weights(prev_weights, w_capped)
+                # 3) smoothing vs previous
+                w_smoothed = self._smooth_weights(prev_weights, w_capped)
 
-            # 3.5) enforce top-k selection and renormalize among selected sectors
-            w_selected = self._apply_top_k(w_smoothed)
+                # 3.5) enforce top-k selection and renormalize among selected sectors
+                w_selected = self._apply_top_k(w_smoothed)
 
             # 4) trend-based equity scaling
             if trend_state.loc[dt] == 1:

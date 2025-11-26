@@ -7,11 +7,29 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from src.universe_manager import UniverseManager
-from src.market_data_store import MarketDataStore
-from src.signal_engine import SignalEngine
-from src.vec_signal_engine import VectorizedSignalEngine
-from src.utils.stats import winsorized_zscore, sector_mean_snapshot, sector_mean_matrix
+
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parents[2]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from universe_manager import UniverseManager
+from market_data_store import MarketDataStore
+from signal_engine import SignalEngine
+from vec_signal_engine import VectorizedSignalEngine
+from utils.stats import (
+    zscore,
+    winsorized_zscore,
+    zscore_matrix_column_wise,
+    windorized_zscore_matrix_column_wise,
+    sector_mean_snapshot,
+    sector_mean_matrix,
+)
 from .trend_config import TrendConfig
 
 
@@ -83,7 +101,10 @@ class TrendSleeve:
         # ---------- Cached vectorized weights (if precomputed) ----------
         # If precompute() was called, we can directly return weights for this date
         # without re-running the single-date pipeline. We still performed regime gating above.
-        if self.precomputed_weights_mat is not None and not self.precomputed_weights_mat.empty:
+        if (
+            self.precomputed_weights_mat is not None
+            and not self.precomputed_weights_mat.empty
+        ):
             date_key = as_of.normalize()
             if date_key in self.precomputed_weights_mat.index:
                 row = self.precomputed_weights_mat.loc[date_key]
@@ -297,17 +318,12 @@ class TrendSleeve:
         Standard z-score with optional winsorization based on cfg.zscore_clip.
         """
         cfg = self.config
-        s = s.astype(float)
-        mean = s.mean()
-        std = s.std()
-        if std is None or std == 0 or np.isnan(std):
-            z = pd.Series(0.0, index=s.index)
-        else:
-            z = (s - mean) / std
-
+        zclip_enabled = getattr(cfg, "use_zscore_winsorization", False)
         zclip = getattr(cfg, "zscore_clip", None)
-        if zclip is not None and zclip > 0:
-            z = z.clip(lower=-zclip, upper=zclip)
+        if zclip_enabled and zclip is not None and zclip > 0:
+            z = winsorized_zscore(s, clip=zclip)
+        else:
+            z = zscore(s)
 
         return z
 
@@ -370,6 +386,36 @@ class TrendSleeve:
         if total <= 0:
             return pd.Series(1.0 / len(w), index=w.index)
         return w2 / total
+
+    def _smooth_weights(
+        self,
+        prev_weights: Optional[pd.Series],
+        new_weights: pd.Series,
+    ) -> pd.Series:
+        """
+        Exponential smoothing / hysteresis:
+        w_smoothed = (1 - beta) * prev + beta * new
+
+        If no prev_weights, just return new_weights.
+        """
+        if prev_weights is None:
+            return new_weights
+
+        cfg = self.config
+        beta = cfg.sector_smoothing_beta
+        # Align indices
+        prev_weights = prev_weights.reindex(new_weights.index).fillna(0.0)
+
+        w_smoothed = (1 - beta) * prev_weights + beta * new_weights
+        # Renormalize to sum to 1
+        total = w_smoothed.sum()
+        if total <= 0:
+            return pd.Series(
+                1.0 / len(w_smoothed),
+                index=w_smoothed.index,
+                dtype=float,
+            )
+        return w_smoothed / total
 
     def _top_k(self, w: pd.Series) -> pd.Series:
         cfg = self.config
@@ -503,11 +549,6 @@ class TrendSleeve:
         Fully vectorized stock score computation over ALL dates.
 
         Produces a Date x Ticker matrix with:
-            - mom_{w}(t, ticker)
-            - vol(t, ticker)
-            - z_mom_{w}(t, ticker)
-            - momentum_score(t, ticker)
-            - vol_score(t, ticker)
             - stock_score(t, ticker)
 
         No liquidity filtering here.
@@ -522,9 +563,6 @@ class TrendSleeve:
         mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
         vol_mat = VSE.get_volatility(price_mat, window=cfg.vol_window)
 
-        # Shape: Date x Ticker
-        idx = price_mat.index
-
         # Build a dict: feature_name -> matrix
         feature_mats = {}
 
@@ -536,22 +574,27 @@ class TrendSleeve:
         feature_mats["vol"] = vol_mat
 
         # --------------------------------------------------------
-        # 2) Z scoring (winsorized) *per date*, cross-sectionally
+        # 2) Z scoring (winsorized if enabled) *per date*, cross-sectionally (column-wise)
         # --------------------------------------------------------
         z_mats = {}
 
         for w in cfg.mom_windows:
             mat = feature_mats[f"mom_{w}"]
-            # apply rowwise z-scoring
-            z = mat.apply(winsorized_zscore, axis=1, clip=cfg.zscore_clip)
+            # apply rowwise z-scoring if enabled
+            if cfg.use_zscore_winsorization:
+                z = windorized_zscore_matrix_column_wise(mat, clip=cfg.zscore_clip)
+            else:
+                z = zscore_matrix_column_wise(mat)
             z_mats[f"z_mom_{w}"] = z
 
-        # Vol Z-score (rowwise)
-        z_vol = feature_mats["vol"].apply(
-            winsorized_zscore,
-            axis=1,
-            clip=cfg.zscore_clip,
-        )
+        # Vol Z-score (column-wise)
+        if cfg.use_zscore_winsorization:
+            z_vol = windorized_zscore_matrix_column_wise(
+                feature_mats["vol"],
+                clip=cfg.zscore_clip,
+            )
+        else:
+            z_vol = zscore_matrix_column_wise(feature_mats["vol"])
         z_mats["vol_score"] = -z_vol  # invert: lower vol -> higher score
 
         # --------------------------------------------------------
@@ -565,7 +608,10 @@ class TrendSleeve:
             else:
                 mom_part += wt * z_mats[f"z_mom_{w}"]
 
-        stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
+        # stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
+        stock_score_mat = mom_part.add(
+            cfg.vol_penalty * z_mats["vol_score"], fill_value=0.0
+        )
 
         # --------------------------------------------------------
         # 4) Construct final output: keep only stock_score for sector scoring
@@ -577,6 +623,7 @@ class TrendSleeve:
     def _compute_sector_scores_vectorized(
         self,
         stock_score_mat: pd.DataFrame,
+        sector_map: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
         """
         Vectorized sector scores over time.
@@ -592,7 +639,7 @@ class TrendSleeve:
         DataFrame
             Date x Sector matrix of mean stock_score per sector.
         """
-        smap = self.um.sector_map or {}
+        smap = sector_map or self.um.sector_map or {}
         if stock_score_mat is None or stock_score_mat.empty:
             return pd.DataFrame(index=getattr(stock_score_mat, "index", None))
 
@@ -613,15 +660,14 @@ class TrendSleeve:
         it does not mutate or read self.state. Smoothing happens
         along the time axis using sector_smoothing_beta.
         """
+        # Follow the exact ordering used by SectorWeightEngine.compute_weights:
+        # 1) softmax (alpha) -> 2) caps/floors -> 3) smoothing vs prev (beta)
+        # 3.5) apply top-k -> final weights (no trend scaling here)
         if sector_scores_mat.empty:
             return pd.DataFrame()
 
-        cfg = self.config
-        beta = getattr(cfg, "sector_smoothing_beta", 0.0) or 0.0
-
         dates = sector_scores_mat.index
         sectors = list(sector_scores_mat.columns)
-
         weights_list = []
         prev_smoothed: Optional[pd.Series] = None
 
@@ -629,33 +675,34 @@ class TrendSleeve:
             scores_t = sector_scores_mat.loc[dt]
 
             # Drop sectors with all-NaN scores on this date
-            scores_t = scores_t.dropna()
-            if scores_t.empty:
-                # Fallback: if absolutely no scores, either carry forward
-                # or use uniform weights over all sectors.
+            scores_t_nonan = scores_t.dropna()
+
+            if scores_t_nonan.empty:
+                # Fallback: if absolutely no scores, either carry forward or uniform
                 if prev_smoothed is not None:
-                    raw = prev_smoothed.copy()
+                    w_final = prev_smoothed.reindex(sectors).fillna(0.0)
+                    w_smoothed = w_final
                 else:
-                    raw = pd.Series(1.0 / len(sectors), index=sectors)
+                    w_final = pd.Series(1.0 / len(sectors), index=sectors)
+                    w_smoothed = w_final
             else:
-                # Compute raw weights from the non-NaN sectors
-                raw = self._compute_raw_sector_weights(scores_t)
-                # Expand to all sectors, missing ones default to 0
-                raw = raw.reindex(sectors).fillna(0.0)
+                # 1) softmax -> base weights
+                w_raw = self._softmax(scores_t)
 
-            # Smoothing
-            if prev_smoothed is None or beta <= 0.0:
-                smoothed = raw
-            else:
-                smoothed = (1.0 - beta) * prev_smoothed + beta * raw
-                total = smoothed.sum()
-                if total > 0:
-                    smoothed = smoothed / total
-                else:
-                    smoothed = raw
+                # 2) caps/floors
+                w_capped = self._apply_caps(w_raw)
 
-            weights_list.append(smoothed)
-            prev_smoothed = smoothed
+                # 3) smoothing vs previous
+                w_smoothed = self._smooth_weights(prev_smoothed, w_capped)
+
+                # 3.5) enforce top-k selection and renormalize among selected sectors
+                w_selected = self._top_k(w_smoothed)
+
+                # expand to full sector set (missing sectors -> 0)
+                w_final = w_selected.reindex(sectors).fillna(0.0)
+
+            weights_list.append(w_final)
+            prev_smoothed = w_smoothed
 
         sector_weights_mat = pd.DataFrame(weights_list, index=dates, columns=sectors)
         return sector_weights_mat
@@ -670,6 +717,7 @@ class TrendSleeve:
         stock_score_mat: pd.DataFrame,
         sector_weights_mat: pd.DataFrame,
         vol_mat: Optional[pd.DataFrame] = None,
+        sector_map: Optional[Dict[str, str]] = None,
     ) -> pd.DataFrame:
         """
         Vectorized stock allocation:
@@ -687,7 +735,7 @@ class TrendSleeve:
           - runs across all dates in a single pass
         """
         cfg = self.config
-        smap = self.um.sector_map or {}
+        smap = sector_map or self.um.sector_map or {}
         VSE = self.vec_engine  # VectorizedSignalEngine
 
         dates = stock_score_mat.index
@@ -761,14 +809,15 @@ class TrendSleeve:
         # ============================================================
         # 3) Per-day sector -> stock allocation
         # ============================================================
-        if vol_mat is None:
+        if cfg.weighting_mode == "inverse-vol" and vol_mat is None:
             vol_mat = VSE.get_volatility(
                 price_mat,
                 window=cfg.vol_window,
             )
         for dt in dates:
             scores_t = stock_score_mat.loc[dt]
-            vols_t = vol_mat.loc[dt]
+            if cfg.weighting_mode == "inverse-vol":
+                vols_t = vol_mat.loc[dt]
             sector_w_t = sector_weights_mat.loc[dt]
 
             # Per-day liquidity eligibility
@@ -862,7 +911,12 @@ class TrendSleeve:
         # Determine warmup length from signal-related windows
         window_candidates: List[int] = []
         window_candidates.extend(getattr(cfg, "mom_windows", []) or [])
-        for attr_name in ["vol_window", "adv_window", "median_volume_window", "liquidity_window"]:
+        for attr_name in [
+            "vol_window",
+            "adv_window",
+            "median_volume_window",
+            "liquidity_window",
+        ]:
             w_val = getattr(cfg, attr_name, None)
             if isinstance(w_val, int) and w_val > 0:
                 window_candidates.append(w_val)
@@ -873,18 +927,14 @@ class TrendSleeve:
         # --------------------------------------------------
         # 1) Price matrix
         # --------------------------------------------------
-        universe_all = self._get_trend_universe(end_ts)  # broad universe as of end
-        if not universe_all:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        price_mat = self.vec_engine.get_price_matrix(
-            tickers=universe_all,
+        price_mat = self.um.get_price_matrix(
+            price_loader=self.mds,
             start=warmup_start,
             end=end_ts,
+            tickers=self.um.tickers,
+            interval="1d",
+            auto_apply_membership_mask=True,
             local_only=getattr(self.mds, "local_only", False),
-            membership_aware=True,
-            treat_unknown_as_always_member=True,
         )
 
         # Drop tickers with no data at all
@@ -892,6 +942,14 @@ class TrendSleeve:
         if price_mat.empty:
             self.precomputed_weights_mat = pd.DataFrame()
             return self.precomputed_weights_mat
+
+        # Normalize tickers to uppercase and align sector_map to columns
+        price_mat.columns = [c.upper() for c in price_mat.columns]
+        sector_map = self.um.sector_map
+        if sector_map is not None:
+            sector_map = {t.upper(): s for t, s in sector_map.items()}
+            # Keep sector_map only for tickers present in prices
+            sector_map = {t: s for t, s in sector_map.items() if t in price_mat.columns}
 
         # --------------------------------------------------
         # 2) Vectorized stock scores (Date x Ticker)
@@ -904,7 +962,9 @@ class TrendSleeve:
         # --------------------------------------------------
         # 3) Vectorized sector scores (Date x Sector)
         # --------------------------------------------------
-        sector_scores_mat = self._compute_sector_scores_vectorized(stock_score_mat)
+        sector_scores_mat = self._compute_sector_scores_vectorized(
+            stock_score_mat, sector_map=sector_map
+        )
         if sector_scores_mat.empty:
             self.precomputed_weights_mat = pd.DataFrame()
             return self.precomputed_weights_mat
@@ -924,6 +984,7 @@ class TrendSleeve:
             price_mat=price_mat,
             stock_score_mat=stock_score_mat,
             sector_weights_mat=sector_weights_mat,
+            sector_map=sector_map,
         )
         if alloc_mat.empty:
             self.precomputed_weights_mat = pd.DataFrame()
@@ -932,7 +993,9 @@ class TrendSleeve:
         # --------------------------------------------------
         # 6) Slice to [start, end] (drop warmup portion)
         # --------------------------------------------------
-        alloc_mat = alloc_mat.loc[(alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)]
+        alloc_mat = alloc_mat.loc[
+            (alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)
+        ]
 
         # Optional sampling by rebalance schedule
         if rebalance_dates:

@@ -6,10 +6,19 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import sys
+from pathlib import Path
 
-from src.universe_manager import UniverseManager
-from src.market_data_store import MarketDataStore
-from src.signal_engine import SignalEngine
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+_ROOT_SRC = Path(__file__).resolve().parents[2]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from universe_manager import UniverseManager
+from market_data_store import MarketDataStore
+from signal_engine import SignalEngine
 from .defensive_config import DefensiveConfig
 
 

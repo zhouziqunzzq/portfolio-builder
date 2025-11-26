@@ -4,35 +4,48 @@ import pandas as pd
 from pyparsing import Iterable, Mapping
 
 
-# ------------------------------------------------------------
-# 1) Cross-sectional z-score
-# ------------------------------------------------------------
-def zscore_cross_sectional(s: pd.Series) -> pd.Series:
+def zscore(s: pd.Series) -> pd.Series:
     s = s.astype(float)
     mean = s.mean()
     std = s.std()
     if std is None or std == 0 or np.isnan(std):
-        return pd.Series(0.0, index=s.index)
+        return pd.Series(np.nan, index=s.index)
     return (s - mean) / std
 
 
-# ------------------------------------------------------------
-# 2) Winsorized z-score
-# ------------------------------------------------------------
 def winsorized_zscore(
     s: pd.Series,
     clip: float | None = None,
 ) -> pd.Series:
-    z = zscore_cross_sectional(s)
+    z = zscore(s)
     if clip is not None and clip > 0:
         z = z.clip(lower=-clip, upper=clip)
     return z
 
 
-# ------------------------------------------------------------
-# 3) Apply sector mask: keep only rows where price >= min_price
+def zscore_matrix_column_wise(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Z-score each row (date) across ALL tickers (column) (no sector grouping).
+
+    df: DataFrame[Date x Ticker]
+    """
+    mean = df.mean(axis=1)  # mean for each row
+    std = df.std(axis=1).replace(0, np.nan)  # std for each row
+    return df.sub(mean, axis=0).div(std, axis=0)
+
+
+def windorized_zscore_matrix_column_wise(
+    df: pd.DataFrame,
+    clip: float | None = None,
+) -> pd.DataFrame:
+    z = zscore_matrix_column_wise(df)
+    if clip is not None and clip > 0:
+        z = z.clip(lower=-clip, upper=clip)
+    return z
+
+
+# Apply sector mask: keep only rows where price >= min_price
 #    or ADV >= threshold, etc.
-# ------------------------------------------------------------
 def apply_boolean_mask(df: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
     """
     df: DataFrame indexed by ticker
@@ -42,9 +55,6 @@ def apply_boolean_mask(df: pd.DataFrame, mask: pd.Series) -> pd.DataFrame:
     return df.loc[keep]
 
 
-# ------------------------------------------------------------
-# 4) Normalize weights to sum=1
-# ------------------------------------------------------------
 def normalize_weights(w: pd.Series) -> pd.Series:
     total = w.sum()
     if total <= 0:
@@ -102,48 +112,27 @@ def sector_mean_matrix(
 
     NaN stock scores are ignored in the per-sector mean.
     """
+    # Fast path: empty input -> preserve date index but no sectors
     if stock_score_mat.empty:
-        # preserve date index, but no sectors
         return pd.DataFrame(index=stock_score_mat.index)
 
-    # Map tickers -> sector
-    smap = pd.Series(sector_map)
-    # keep tickers that exist in the matrix
-    smap = smap.reindex(stock_score_mat.columns)
+    # Build a Series mapping existing tickers -> sector (None if missing)
+    sectors = pd.Series({
+        ticker: sector_map.get(ticker, None) for ticker in stock_score_mat.columns
+    })
 
-    # drop invalid / missing sectors
-    mask_valid = smap.notna() & ~smap.astype(str).str.strip().isin(invalid_labels)
-    if not mask_valid.any():
+    # Restrict to tickers with a valid sector label
+    valid_cols = sectors.dropna().index.tolist()
+    if not valid_cols:
         return pd.DataFrame(index=stock_score_mat.index)
 
-    valid_tickers = smap.index[mask_valid]
-    smap_valid = smap[mask_valid]
+    sub = stock_score_mat[valid_cols]
+    sectors = sectors[valid_cols]
 
-    # restrict matrix to valid tickers
-    sub = stock_score_mat.reindex(columns=valid_tickers)
-
-    # Long form: (date, ticker) -> score
-    long = sub.stack(dropna=True)  # drop NaNs in scores
-    if long.empty:
-        return pd.DataFrame(index=stock_score_mat.index)
-
-    long.index.set_names(["date", "ticker"], inplace=True)
-    df_long = long.to_frame(name="score").reset_index()
-
-    # attach sector
-    df_long["sector"] = df_long["ticker"].map(smap_valid.to_dict())
-    df_long = df_long.dropna(subset=["sector"])
-
-    if df_long.empty:
-        return pd.DataFrame(index=stock_score_mat.index)
-
-    # group by (date, sector) -> mean score
-    sector_scores = (
-        df_long.groupby(["date", "sector"])["score"]
-        .mean()
-        .unstack("sector")
-        .sort_index()
-    )
+    # Avoid grouping along axis=1 directly; use transpose trick as in SignalEngine
+    stacked = sub.copy()
+    stacked.columns = pd.MultiIndex.from_arrays([sectors, stacked.columns])
+    sector_scores = stacked.T.groupby(level=0).mean().T
 
     # Ensure we have the full original date index (fill missing dates with NaNs)
     sector_scores = sector_scores.reindex(stock_score_mat.index)

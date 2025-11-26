@@ -130,13 +130,11 @@ class StockAllocator:
     def compute_stock_weights(self) -> pd.DataFrame:
         """
         Allocate sector weights to stocks for each date.
-        Returns DataFrame[Date × Ticker] of portfolio weights.
+        Returns DataFrame[Date x Ticker] of portfolio weights.
         """
         dates = self.sector_weights.index
         all_tickers = sorted(set(self.stock_scores.columns))
         stock_weights = pd.DataFrame(index=dates, columns=all_tickers, dtype=float)
-
-        prev_row = None
 
         for dt in dates:
             sector_row = self.sector_weights.loc[dt]
@@ -161,7 +159,5 @@ class StockAllocator:
                     w_row = w_row / total
 
             stock_weights.loc[dt] = w_row
-
-            prev_row = w_row
 
         return stock_weights

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import logging
@@ -625,7 +626,9 @@ class UniverseManager:
             sector_map = None
         return sector_map
 
-    def membership_mask(self, start: str, end: str) -> pd.DataFrame:
+    def membership_mask(
+        self, start: datetime | str, end: datetime | str
+    ) -> pd.DataFrame:
         """Return a mask DataFrame [date x ticker] indicating membership within [start, end].
 
         Supports two input schemas in membership CSV:
@@ -721,8 +724,8 @@ class UniverseManager:
     def get_price_matrix(
         self,
         price_loader,
-        start: str,
-        end: str,
+        start: datetime | str,
+        end: datetime | str,
         tickers: Optional[List[str]] = None,
         field: Optional[str] = None,
         interval: str = "1d",

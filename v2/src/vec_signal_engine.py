@@ -7,8 +7,18 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from src.universe_manager import UniverseManager
-from src.market_data_store import MarketDataStore
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parent
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from universe_manager import UniverseManager
+from market_data_store import MarketDataStore
 
 
 @dataclass
@@ -244,7 +254,7 @@ class VectorizedSignalEngine:
         return self.get_field_matrix_sp500(*args, **kwargs)
 
     # ======================================================================
-    #  VECTORIZED API STUBS (to be implemented gradually)
+    #  VECTORIZED APIs
     # ======================================================================
 
     # -----------------------------------------------------------
@@ -311,28 +321,6 @@ class VectorizedSignalEngine:
             vol *= np.sqrt(252)
 
         return vol
-
-    # -----------------------------------------------------------
-    # Composite stock score (momentum + vol)
-    # -----------------------------------------------------------
-    def get_stock_scores(
-        self,
-        momentum_dict: Dict[int, pd.DataFrame],
-        vol_mat: pd.DataFrame,
-        mom_weights: Sequence[float],
-        vol_penalty: float,
-    ) -> pd.DataFrame:
-        """
-        Placeholder for vectorized scoring:
-            stock_score = sum_i (weight_i * zscore(momentum_i))
-                          + (-vol_penalty) * zscore(vol)
-        """
-        # Stub implementation - real version built when wiring TrendSleeve V2
-        all_dfs = list(momentum_dict.values()) + [vol_mat]
-        index = vol_mat.index if vol_mat is not None else None
-
-        return pd.DataFrame(index=index)
-        # (Full implementation added later)
 
     # -----------------------------------------------------------
     # Convenience for slicing large precomputed matrices
