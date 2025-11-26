@@ -61,30 +61,35 @@ class MultiSleeveConfig:
 
     sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
+            # Strong uptrend, normal vol
             "bull": {
-                "trend": 1.0,
-                "defensive": 0.0,
-                "cash": 0.0,
+                "trend": 0.92,  # keep tiny always-on defensive hedge
+                "defensive": 0.08,
+                "cash": 0.00,
             },
+            # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.7,
-                "defensive": 0.2,
-                "cash": 0.1,
+                "trend": 0.60,  # was 0.7
+                "defensive": 0.35,  # was 0.2
+                "cash": 0.05,  # keep some dry powder
             },
+            # Downtrend, elevated vol
             "bear": {
-                "trend": 0.1,
-                "defensive": 0.4,
-                "cash": 0.5,
+                "trend": 0.22,  # up from 0.1
+                "defensive": 0.50,  # up from 0.4
+                "cash": 0.28,  # down from 0.5
             },
+            # Panic / crisis regime
             "crisis": {
-                "trend": 0.0,
-                "defensive": 0.3,
-                "cash": 0.7,
+                "trend": 0.00,
+                "defensive": 0.65,  # up from 0.3 (and remember: def. is 90% gold / 10% bonds)
+                "cash": 0.35,  # down from 0.7
             },
+            # Choppy / sideways
             "sideways": {
-                "trend": 0.3,
-                "defensive": 0.3,
-                "cash": 0.4,
+                "trend": 0.30,  # up from 0.3
+                "defensive": 0.40,  # up from 0.3
+                "cash": 0.30,  # down from 0.4
             },
         }
     )

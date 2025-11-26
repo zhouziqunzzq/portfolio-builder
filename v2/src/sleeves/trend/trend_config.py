@@ -73,4 +73,5 @@ class TrendConfig:
     # Regime-based gating for the Trend sleeve
     # ------------------------------------------------------------------
     use_regime_gating: bool = True
-    gated_off_regimes: Tuple[str, ...] = ("crisis", "bear")
+    gated_off_regimes: Tuple[str, ...] = ("crisis",)
+    # gated_off_regimes: Tuple[str, ...] = ("crisis", "bear")
