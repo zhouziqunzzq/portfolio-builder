@@ -63,33 +63,33 @@ class MultiSleeveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "trend": 0.92,  # keep tiny always-on defensive hedge
-                "defensive": 0.08,
+                "trend": 0.96,  # keep tiny always-on defensive hedge
+                "defensive": 0.04,
                 "cash": 0.00,
             },
             # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.60,  # was 0.7
-                "defensive": 0.35,  # was 0.2
+                "trend": 0.67,  # was 0.7
+                "defensive": 0.28,  # was 0.2
                 "cash": 0.05,  # keep some dry powder
             },
             # Downtrend, elevated vol
             "bear": {
-                "trend": 0.22,  # up from 0.1
-                "defensive": 0.50,  # up from 0.4
-                "cash": 0.28,  # down from 0.5
+                "trend": 0.28,  # up from 0.1
+                "defensive": 0.47,  # up from 0.4
+                "cash": 0.25,  # down from 0.5
             },
             # Panic / crisis regime
             "crisis": {
                 "trend": 0.00,
-                "defensive": 0.65,  # up from 0.3 (and remember: def. is 90% gold / 10% bonds)
-                "cash": 0.35,  # down from 0.7
+                "defensive": 0.72,  # up from 0.3 (and remember: def. is 90% gold / 10% bonds)
+                "cash": 0.28,  # down from 0.7
             },
             # Choppy / sideways
             "sideways": {
-                "trend": 0.30,  # up from 0.3
-                "defensive": 0.40,  # up from 0.3
-                "cash": 0.30,  # down from 0.4
+                "trend": 0.37,  # up from 0.3
+                "defensive": 0.43,  # up from 0.3
+                "cash": 0.20,  # down from 0.4
             },
         }
     )

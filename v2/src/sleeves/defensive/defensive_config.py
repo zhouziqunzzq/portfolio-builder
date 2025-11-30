@@ -107,33 +107,33 @@ class DefensiveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "equity": 0.40,
-                "bond": 0.25,
-                "gold": 0.35,
+                "equity": 0.55,
+                "bond": 0.20,
+                "gold": 0.25,
             },
             # Uptrend but pullback / higher vol
             "correction": {
-                "equity": 0.10,
-                "bond": 0.40,
-                "gold": 0.50,
+                "equity": 0.22,
+                "bond": 0.38,
+                "gold": 0.40,
             },
             # Downtrend, elevated vol
             "bear": {
-                "equity": 0.00,
-                "bond": 0.45,
+                "equity": 0.07,
+                "bond": 0.38,
                 "gold": 0.55,
             },
             # Panic / crisis regime
             "crisis": {
                 "equity": 0.00,
-                "bond": 0.25,
-                "gold": 0.75,
+                "bond": 0.20,
+                "gold": 0.80,
             },
             # Choppy / sideways
             "sideways": {
-                "equity": 0.05,
-                "bond": 0.50,
-                "gold": 0.45,
+                "equity": 0.12,
+                "bond": 0.46,
+                "gold": 0.42,
             },
         }
     )
