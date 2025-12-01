@@ -68,9 +68,9 @@ class DefensiveConfig:
     )
 
     # Liquidity filters
-    min_price: float = 5.0                 # remove penny/low-liquidity names
-    min_adv: float = 500_000               # min average daily volume
-    min_adv_window: int = 20               # 1-month ADV
+    min_price: float = 5.0  # remove penny/low-liquidity names
+    min_adv: float = 500_000  # min average daily volume
+    min_adv_window: int = 20  # 1-month ADV
 
     # -------------------------------
     # Signals / windows
@@ -107,33 +107,33 @@ class DefensiveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "equity": 0.50,
+                "equity": 0.55,
                 "bond": 0.20,
-                "gold": 0.30,
+                "gold": 0.25,
             },
             # Uptrend but pullback / higher vol
             "correction": {
-                "equity": 0.20,
-                "bond": 0.30,
-                "gold": 0.50,
+                "equity": 0.22,
+                "bond": 0.38,
+                "gold": 0.40,
             },
             # Downtrend, elevated vol
             "bear": {
-                "equity": 0.10,
-                "bond": 0.20,
-                "gold": 0.70,
+                "equity": 0.07,
+                "bond": 0.38,
+                "gold": 0.55,
             },
             # Panic / crisis regime
             "crisis": {
                 "equity": 0.00,
-                "bond": 0.10,
-                "gold": 0.90,
+                "bond": 0.20,
+                "gold": 0.80,
             },
             # Choppy / sideways
             "sideways": {
-                "equity": 0.10,
-                "bond": 0.30,
-                "gold": 0.60,
+                "equity": 0.12,
+                "bond": 0.46,
+                "gold": 0.42,
             },
         }
     )
