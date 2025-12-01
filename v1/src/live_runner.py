@@ -696,8 +696,8 @@ def compute_sector_weights_step(
                 daily_csv,
             )
 
-        # Monthly weights: last business day per month (use 'ME' for month-end to avoid deprecated 'M')
-        sector_weights_monthly = sector_weights_daily.resample("ME").last()
+        # Monthly weights: last business day per month (use 'BME' for month-end to avoid deprecated 'M')
+        sector_weights_monthly = sector_weights_daily.resample("BME").last()
         monthly_csv = out_dir / f"sector_weights_monthly_{stem}.csv"
         monthly_pq = out_dir / f"sector_weights_monthly_{stem}.parquet"
         sector_weights_monthly.to_csv(monthly_csv)
