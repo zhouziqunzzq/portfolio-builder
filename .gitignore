@@ -6,3 +6,7 @@ __pycache__
 test_data/
 data/
 production/data/
+
+# Local scripts
+run_backtest.sh
+
