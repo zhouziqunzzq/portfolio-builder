@@ -28,7 +28,9 @@ from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
-from portfolio_backtester import PortfolioBacktester  # updated v2 version
+from portfolio_backtester import PortfolioBacktester
+from friction_control.friction_control_config import FrictionControlConfig
+from friction_control.hysteresis import apply_weight_hysteresis_matrix
 
 
 # ---------------------------------------------------------------------
@@ -598,6 +600,7 @@ def main() -> int:
     um: UniverseManager = rt["um"]  # type: ignore
     mds: MarketDataStore = rt["mds"]  # type: ignore
     allocator: MultiSleeveAllocator = rt["allocator"]  # type: ignore
+    friction_cfg: FrictionControlConfig = FrictionControlConfig() # TODO: customize config
 
     # Backtest window
     if args.backtest_start:
@@ -648,7 +651,7 @@ def main() -> int:
             f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
         )
 
-    # 1) Generate sleeve-based target weights
+    # Generate sleeve-based target weights
     rebalance_target_weights = generate_target_weights(
         allocator=allocator,
         start=start_dt,
@@ -665,7 +668,24 @@ def main() -> int:
         f"{len(rebalance_target_weights.columns)} unique tickers."
     )
 
-    # 2) Get daily price matrix for all tickers that appear in weights
+    # Apply friction control
+    # Hysteresis
+    adj_rebalance_target_weights = apply_weight_hysteresis_matrix(
+        W=rebalance_target_weights,
+        dw_min=friction_cfg.dw_min,
+        keep_cash=allocator.config.preserve_cash_if_under_target, # keep in sync with allocator cash policy
+    )
+    print("[backtest_v2] Applied weight hysteresis friction control.")
+    # Debug: Count how many weights frozen due to hysteresis
+    num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
+    total_weights = rebalance_target_weights.size
+    print(
+        f"[backtest_v2] Hysteresis frozen {num_frozen} out of "
+        f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
+    )
+    rebalance_target_weights = adj_rebalance_target_weights
+
+    # Get daily price matrix for all tickers that appear in weights
     price_mat = get_price_matrix_for_weights(
         um=um,
         mds=mds,
@@ -679,7 +699,7 @@ def main() -> int:
         print("Price matrix is empty for backtest window; aborting.")
         return 0
 
-    # 3) Backtester
+    # Backtester
     bt = PortfolioBacktester(
         prices=price_mat,
         weights=rebalance_target_weights,
@@ -693,7 +713,7 @@ def main() -> int:
     result = bt.run()
     stats = bt.stats(result, auto_warmup=True, warmup_days=0)
 
-    # 4) Benchmark (SPY)
+    # Benchmark (SPY)
     bench_symbol = "SPY"
     df_bench = mds.get_ohlcv(
         bench_symbol,
@@ -722,7 +742,7 @@ def main() -> int:
             bench_series = bench_series.reindex(result.index).ffill().bfill()
             bench_returns = bench_series.pct_change().fillna(0.0)
 
-    # 5) Print stats
+    # Print stats
     def pct(x):
         return f"{x * 100:.2f}%" if x is not None and not pd.isna(x) else "n/a"
 
@@ -746,7 +766,7 @@ def main() -> int:
     print(f"Final equity      : {result['equity'].iloc[-1]:.2f}")
     print("=====================================================\n")
 
-    # 6) Plotting
+    # Plotting
     do_all = bool(args.plot_all)
     do_equity = do_all or bool(args.plot_equity)
     do_drawdown = do_all or bool(args.plot_drawdown)
@@ -794,13 +814,13 @@ def main() -> int:
             show=show,
         )
 
-    # 7) Save daily backtest results to CSV
+    # Save backtest results to CSV
     out_dir = Path("data").joinpath("backtests").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"backtest_{stamp}.csv"
     result.to_csv(out_path)
-    print(f"[backtest_v2] Saved detailed daily backtest result to: {out_path}")
+    print(f"[backtest_v2] Saved detailed backtest result to: {out_path}")
 
     return 0
 
