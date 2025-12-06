@@ -13,10 +13,17 @@ class FrictionControlConfig:
     # ------------------------------------------------------------------
     # Hysteresis parameters
     # ------------------------------------------------------------------
-    hysteresis_dw_min: float = 0.5 / 100  # Minimum change in weight to trigger rebalancing
+    hysteresis_dw_min: float = (
+        0.5 / 100
+    )  # Minimum change in weight to trigger rebalancing
 
     # ------------------------------------------------------------------
     # Minimum Trade Notional parameters
     # ------------------------------------------------------------------
     min_trade_notional_abs: float = 25.0  # Minimum trade size in dollars
     min_trade_pct_of_aum: float = 0.3 / 100  # Minimum trade size as a fraction of AUM
+
+    # ------------------------------------------------------------------
+    # Minimum holding period parameters
+    # ------------------------------------------------------------------
+    min_holding_rebalances: int = 0

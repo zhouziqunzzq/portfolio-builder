@@ -5,6 +5,7 @@ from typing import List, Tuple, Optional
 from .friction_control_config import FrictionControlConfig
 from .hysteresis import apply_weight_hysteresis_row
 from .min_trade_notional import apply_min_trade_notional_row
+from .min_holding_period import apply_min_holding_period_row
 
 import pandas as pd
 import numpy as np
@@ -73,6 +74,8 @@ class FrictionController:
         aum = self.initial_value
         W_final_vals = []  # list of pd.Series; final weights for rebalance dates
         w_prev = None  # previous effective weights on last rebalance date
+        # Holding age state (rebalance steps)
+        holding_age = pd.Series(0, index=self.weights.columns, dtype=int)
 
         for date in self.price_dates:
             w_t = self.weights.loc[date]
@@ -83,6 +86,9 @@ class FrictionController:
                 if w_prev is None:
                     # First rebalance, no previous weights
                     w_eff = w_t.copy()
+                    opened = w_eff > 0
+                    holding_age[opened] = 1
+                    holding_age[~opened] = 0
                 else:
                     # Apply hysteresis
                     w_hyst = apply_weight_hysteresis_row(
@@ -92,12 +98,20 @@ class FrictionController:
                         keep_cash=self.keep_cash,
                     )
                     # Apply min trade notional
-                    w_eff = apply_min_trade_notional_row(
+                    w_after_notional = apply_min_trade_notional_row(
                         w_prev,
                         w_hyst,
                         portfolio_value=aum,
                         min_trade_abs=self.config.min_trade_notional_abs,
                         min_trade_pct_of_aum=self.config.min_trade_pct_of_aum,
+                        keep_cash=self.keep_cash,
+                    )
+                    # Apply min holding period
+                    w_eff, holding_age = apply_min_holding_period_row(
+                        w_prev=w_prev,
+                        w_proposed=w_after_notional,
+                        holding_age=holding_age,
+                        min_holding_rebalances=self.config.min_holding_rebalances,
                         keep_cash=self.keep_cash,
                     )
                 W_final_vals.append(w_eff.copy())
