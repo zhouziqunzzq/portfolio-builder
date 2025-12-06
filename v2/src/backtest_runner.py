@@ -31,6 +31,7 @@ from allocator.multi_sleeve_config import MultiSleeveConfig
 from portfolio_backtester import PortfolioBacktester
 from friction_control.friction_control_config import FrictionControlConfig
 from friction_control.hysteresis import apply_weight_hysteresis_matrix
+from friction_control.friction_controller import FrictionController
 
 
 # ---------------------------------------------------------------------
@@ -600,7 +601,9 @@ def main() -> int:
     um: UniverseManager = rt["um"]  # type: ignore
     mds: MarketDataStore = rt["mds"]  # type: ignore
     allocator: MultiSleeveAllocator = rt["allocator"]  # type: ignore
-    friction_cfg: FrictionControlConfig = FrictionControlConfig() # TODO: customize config
+    friction_cfg: FrictionControlConfig = (
+        FrictionControlConfig()
+    )  # TODO: customize config
 
     # Backtest window
     if args.backtest_start:
@@ -668,23 +671,6 @@ def main() -> int:
         f"{len(rebalance_target_weights.columns)} unique tickers."
     )
 
-    # Apply friction control
-    # Hysteresis
-    adj_rebalance_target_weights = apply_weight_hysteresis_matrix(
-        W=rebalance_target_weights,
-        dw_min=friction_cfg.dw_min,
-        keep_cash=allocator.config.preserve_cash_if_under_target, # keep in sync with allocator cash policy
-    )
-    print("[backtest_v2] Applied weight hysteresis friction control.")
-    # Debug: Count how many weights frozen due to hysteresis
-    num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
-    total_weights = rebalance_target_weights.size
-    print(
-        f"[backtest_v2] Hysteresis frozen {num_frozen} out of "
-        f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
-    )
-    rebalance_target_weights = adj_rebalance_target_weights
-
     # Get daily price matrix for all tickers that appear in weights
     price_mat = get_price_matrix_for_weights(
         um=um,
@@ -698,6 +684,40 @@ def main() -> int:
     if price_mat.empty:
         print("Price matrix is empty for backtest window; aborting.")
         return 0
+
+    # Apply friction control
+    # # Hysteresis
+    # adj_rebalance_target_weights = apply_weight_hysteresis_matrix(
+    #     W=rebalance_target_weights,
+    #     dw_min=friction_cfg.dw_min,
+    #     keep_cash=allocator.config.preserve_cash_if_under_target, # keep in sync with allocator cash policy
+    # )
+    # print("[backtest_v2] Applied weight hysteresis friction control.")
+    # # Debug: Count how many weights frozen due to hysteresis
+    # num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
+    # total_weights = rebalance_target_weights.size
+    # print(
+    #     f"[backtest_v2] Hysteresis frozen {num_frozen} out of "
+    #     f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
+    # )
+    # rebalance_target_weights = adj_rebalance_target_weights
+    friction_controller = FrictionController(
+        prices=price_mat,
+        weights=rebalance_target_weights,
+        initial_value=float(args.initial_equity),
+        keep_cash=allocator.config.preserve_cash_if_under_target,  # keep in sync with allocator cash policy
+        config=friction_cfg,
+    )
+    adj_rebalance_target_weights = friction_controller.apply_all()
+    print("[backtest_v2] Applied friction controller adjustments to target weights.")
+    # Debug: Count how many weights frozen due to hysteresis
+    num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
+    total_weights = rebalance_target_weights.size
+    print(
+        f"[backtest_v2] Friction Controller frozen {num_frozen} out of "
+        f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
+    )
+    rebalance_target_weights = adj_rebalance_target_weights
 
     # Backtester
     bt = PortfolioBacktester(

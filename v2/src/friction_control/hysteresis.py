@@ -28,6 +28,10 @@ def apply_weight_hysteresis_row(
     pd.Series
         Adjusted weights after applying hysteresis.
     """
+    # Edge case: if dw_min <= 0, simply return new weights
+    if dw_min <= 0:
+        return w_new
+
     # Align indexes
     all_tickers = w_prev.index.union(w_new.index)
     w_prev = w_prev.reindex(all_tickers, fill_value=0.0)
@@ -72,6 +76,10 @@ def apply_weight_hysteresis_matrix(
     pd.DataFrame
         Adjusted weights after applying hysteresis.
     """
+    # Edge case: if dw_min <= 0, simply return original weights
+    if dw_min <= 0:
+        return W
+
     W_adj = W.copy()
 
     for t in range(1, W.shape[0]):
