@@ -114,18 +114,22 @@ def main() -> int:
             )
             return 0
 
-        stock_weight_files = sorted(weights_dir.glob("stock_weights_monthly_*.csv"))
-        if not stock_weight_files:
+        stock_weight_daily_files = sorted(weights_dir.glob("stock_weights_daily_*.csv"))
+        if not stock_weight_daily_files:
             logger.warning(
-                "No stock_weights_monthly_*.csv found under %s; run stock weight computation first",
+                "No stock_weights_daily_*.csv found under %s; run stock weight computation first",
                 weights_dir,
             )
             return 0
-
-        latest_sw = stock_weight_files[-1]
-        stock_weights_monthly = pd.read_csv(latest_sw, index_col=0)
-        stock_weights_monthly.index = pd.to_datetime(stock_weights_monthly.index)
-
+        # !IMPORTANT: Read in daily stock weights, and shift by one day to prevent lookahead bias
+        latest_daily_sw = stock_weight_daily_files[-1]
+        stock_weights_daily = pd.read_csv(latest_daily_sw, index_col=0)
+        stock_weights_daily.index = pd.to_datetime(stock_weights_daily.index)
+        stock_weights_daily = stock_weights_daily.sort_index()
+        # Shift by one day: today's weights are based on yesterday's close
+        stock_weights_daily_shifted = stock_weights_daily.shift(1).ffill().fillna(0.0)
+        # Resample to business month start frequency, taking the first available weights in each month
+        stock_weights_monthly = stock_weights_daily_shifted.resample("BMS").first()
         # Determine date range
         override_start = None
         if getattr(args, "backtest_start", None):
@@ -213,14 +217,11 @@ def main() -> int:
             interval="1d",
             local_only=bool(args.__dict__.get("local_only", False)),
         )
-
         if price_mat.empty:
             logger.warning(
                 "Price matrix empty for backtest window [%s..%s]", start_dt, end_dt
             )
             return 0
-
-        # Align prices to full date range
         price_mat = price_mat.sort_index()
 
         # Backtester (cost could be exposed via config later)
