@@ -107,6 +107,7 @@ class TrendSleeve:
         ):
             date_key = as_of.normalize()
             if date_key in self.precomputed_weights_mat.index:
+                print(f"[TrendSleeve] Using precomputed weights for {date_key.date()}")
                 row = self.precomputed_weights_mat.loc[date_key]
                 weights = {t: float(w) for t, w in row.items() if w > 0}
                 total = sum(weights.values())
@@ -996,6 +997,8 @@ class TrendSleeve:
         alloc_mat = alloc_mat.loc[
             (alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)
         ]
+        # Fill in missing dates with the previous available weights
+        alloc_mat = alloc_mat.asfreq("D", method="ffill").fillna(0.0)
 
         # Optional sampling by rebalance schedule
         if rebalance_dates:

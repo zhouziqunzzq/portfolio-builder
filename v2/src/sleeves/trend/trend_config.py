@@ -52,11 +52,11 @@ class TrendConfig:
 
     # Trend filter on benchmark for risk-on/risk-off scaling
     # Note: this is currently NOT used; Imported from V1.5 for completeness.
-    trend_filter_enabled: bool = False
-    trend_benchmark: str = "SPY"
-    trend_window: int = 200
-    risk_on_equity_frac: float = 1.0
-    risk_off_equity_frac: float = 0.7
+    # trend_filter_enabled: bool = False
+    # trend_benchmark: str = "SPY"
+    # trend_window: int = 200
+    # risk_on_equity_frac: float = 1.0
+    # risk_off_equity_frac: float = 0.7
 
     # ------------------------------------------------------------------
     # Stock selection within each sector

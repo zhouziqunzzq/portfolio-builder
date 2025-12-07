@@ -271,14 +271,13 @@ def generate_target_weights(
     allocator: MultiSleeveAllocator,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    rebalance_frequency: str = "monthly",
+    rebalance_schedule: pd.DatetimeIndex,
 ) -> pd.DataFrame:
     """
     Call MultiSleeveAllocator on each rebalance date and build
     a Date x Ticker matrix of target weights.
     """
-    schedule = build_rebalance_schedule(start, end, frequency=rebalance_frequency)
-
+    schedule = rebalance_schedule
     if schedule.empty:
         raise ValueError(f"No rebalance dates between {start.date()} and {end.date()}")
 
@@ -286,8 +285,13 @@ def generate_target_weights(
     rows: Dict[pd.Timestamp, Dict[str, float]] = {}
 
     for as_of in schedule:
-        print(f"[backtest_v2] Generating weights for {as_of.date()}")
-        w = allocator.generate_global_target_weights(as_of)
+        as_of_shifted = as_of - pd.Timedelta(
+            days=1
+        )  # use prior day's data to avoid lookahead
+        print(
+            f"[backtest_v2] Generating weights for {as_of.date()} (using data as of {as_of_shifted.date()})"
+        )
+        w = allocator.generate_global_target_weights(as_of_shifted)
         rows[as_of] = w
         all_tickers.update(w.keys())
 
@@ -637,6 +641,8 @@ def main() -> int:
     if rebalance_schedule.empty:
         print("No rebalance dates in window; aborting.")
         return 0
+    # Shift to prior day for lookahead bias free precompute
+    rebalance_schedule_shifted = rebalance_schedule - pd.Timedelta(days=1)
 
     # Optional vectorized sleeve precompute to accelerate per-date calls.
     # Only sleeves exposing a `precompute` method (e.g., TrendSleeve) will be used.
@@ -645,7 +651,7 @@ def main() -> int:
         allocator.precompute(
             start=start_dt,
             end=end_dt,
-            rebalance_dates=list(rebalance_schedule),
+            rebalance_dates=list(rebalance_schedule_shifted),
             warmup_buffer=30,
         )
         print("[backtest_v2] Sleeve precompute phase completed.")
@@ -659,7 +665,7 @@ def main() -> int:
         allocator=allocator,
         start=start_dt,
         end=end_dt,
-        rebalance_frequency=args.rebalance_frequency,
+        rebalance_schedule=rebalance_schedule,
     )
 
     if rebalance_target_weights.empty:
