@@ -38,23 +38,39 @@ class MultiSleeveConfig:
     #     default_factory=lambda: {
     #         "bull": {
     #             "trend": 1.0,
-    #             # "defensive": 0.2,
     #         },
     #         "correction": {
     #             "trend": 1.0,
-    #             # "defensive": 0.5,
     #         },
     #         "bear": {
     #             "trend": 1.0,
-    #             # "defensive": 1.0,
     #         },
     #         "crisis": {
     #             "trend": 1.0,
-    #             # "defensive": 1.0,
     #         },
     #         "sideways": {
     #             "trend": 1.0,
-    #             # "defensive": 0.5,
+    #         },
+    #     }
+    # )
+
+    # All defensive for testing
+    # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
+    #     default_factory=lambda: {
+    #         "bull": {
+    #             "defensive": 1.0,
+    #         },
+    #         "correction": {
+    #             "defensive": 1.0,
+    #         },
+    #         "bear": {
+    #             "defensive": 1.0,
+    #         },
+    #         "crisis": {
+    #             "defensive": 1.0,
+    #         },
+    #         "sideways": {
+    #             "defensive": 1.0,
     #         },
     #     }
     # )
@@ -63,33 +79,33 @@ class MultiSleeveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "trend": 0.96,  # keep tiny always-on defensive hedge
-                "defensive": 0.04,
+                "trend": 0.96,
+                "defensive": 0.04,  # keep tiny always-on defensive hedge
                 "cash": 0.00,
             },
             # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.67,  # was 0.7
-                "defensive": 0.28,  # was 0.2
-                "cash": 0.05,  # keep some dry powder
+                "trend": 0.35,
+                "defensive": 0.45,
+                "cash": 0.20,
             },
             # Downtrend, elevated vol
             "bear": {
-                "trend": 0.28,  # up from 0.1
-                "defensive": 0.47,  # up from 0.4
-                "cash": 0.25,  # down from 0.5
+                "trend": 0.05,
+                "defensive": 0.53,
+                "cash": 0.42,
             },
             # Panic / crisis regime
             "crisis": {
                 "trend": 0.00,
-                "defensive": 0.72,  # up from 0.3 (and remember: def. is 90% gold / 10% bonds)
-                "cash": 0.28,  # down from 0.7
+                "defensive": 0.72,
+                "cash": 0.28,
             },
             # Choppy / sideways
             "sideways": {
-                "trend": 0.37,  # up from 0.3
-                "defensive": 0.43,  # up from 0.3
-                "cash": 0.20,  # down from 0.4
+                "trend": 0.25,
+                "defensive": 0.50,
+                "cash": 0.25,
             },
         }
     )
