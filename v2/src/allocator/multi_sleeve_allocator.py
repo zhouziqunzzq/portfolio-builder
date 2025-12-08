@@ -67,9 +67,12 @@ class MultiSleeveAllocator:
         self,
         as_of: datetime | str,
         start_for_signals: Optional[datetime | str] = None,
-    ) -> Dict[str, float]:
-        """
-        Main entry point for V2 multi-sleeve allocation.
+    ) -> tuple[Dict[str, float], Dict[str, Any]]:
+        """Main entry point for V2 multi-sleeve allocation.
+
+        Returns a tuple `(weights, context)` where `context` is a dict with
+        keys `primary_regime`, `regime_scores`, and `sleeve_weights` that were
+        used to form the returned global `weights`.
 
         Steps:
             1) Query RegimeEngine over a lookback window.
@@ -93,8 +96,14 @@ class MultiSleeveAllocator:
         sleeve_alloc = self._compute_effective_sleeve_weights(
             primary_regime, regime_scores
         )
+        # Build context to return to caller
+        context: Dict[str, Any] = {
+            "primary_regime": primary_regime,
+            "regime_scores": regime_scores,
+            "sleeve_weights": sleeve_alloc,
+        }
         if not sleeve_alloc:
-            return {}
+            return {}, context
 
         # 3) Query sleeves and combine
         combined: Dict[str, float] = {}
@@ -135,7 +144,7 @@ class MultiSleeveAllocator:
         self.last_sleeve_weights = sleeve_alloc
         self.last_portfolio = out
 
-        return out
+        return out, context
 
     # ------------------------------------------------------------------
     # Vectorized Precompute for All Sleeves

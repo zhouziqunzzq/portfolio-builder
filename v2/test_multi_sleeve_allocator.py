@@ -94,7 +94,7 @@ def build_runtime():
 # --------------------------------------------------------------------
 def run_snapshot(allocator: MultiSleeveAllocator, as_of: str):
     as_of_ts = pd.to_datetime(as_of)
-    weights = allocator.generate_global_target_weights(as_of_ts)
+    weights, ctx = allocator.generate_global_target_weights(as_of_ts)
 
     print("\n" + "=" * 60)
     print(f"Global portfolio as of {as_of_ts.date()}")

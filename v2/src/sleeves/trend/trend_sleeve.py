@@ -604,6 +604,9 @@ class TrendSleeve:
         # Weighted momentum score
         mom_part = None
         for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
+            # print(f"[TrendSleeve] Adding momentum z-score for window {w} with weight {wt}")
+            # m_dropped_na = z_mats[f"z_mom_{w}"].dropna(how="all", axis=0)
+            # print(f"[TrendSleeve] z_mom_{w} matrix:\n{m_dropped_na}")
             if mom_part is None:
                 mom_part = wt * z_mats[f"z_mom_{w}"]
             else:

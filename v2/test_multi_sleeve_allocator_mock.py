@@ -116,7 +116,7 @@ if __name__ == "__main__":
     as_of = "2025-01-31"
     print("=== MultiSleeveAllocator Test ===")
 
-    weights = allocator.generate_global_target_weights(as_of)
+    weights, ctx = allocator.generate_global_target_weights(as_of)
 
     for t, w in weights.items():
         print(f"{t:6} : {w:.4f}")

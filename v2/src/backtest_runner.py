@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -272,7 +272,7 @@ def generate_target_weights(
     start: pd.Timestamp,
     end: pd.Timestamp,
     rebalance_schedule: pd.DatetimeIndex,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, Dict[pd.Timestamp, Dict[str, Any]]]:
     """
     Call MultiSleeveAllocator on each rebalance date and build
     a Date x Ticker matrix of target weights.
@@ -283,6 +283,7 @@ def generate_target_weights(
 
     all_tickers: set[str] = set()
     rows: Dict[pd.Timestamp, Dict[str, float]] = {}
+    contexts: Dict[pd.Timestamp, Dict[str, Any]] = {}
 
     for as_of in schedule:
         as_of_shifted = as_of - pd.Timedelta(
@@ -291,12 +292,13 @@ def generate_target_weights(
         print(
             f"[backtest_v2] Generating weights for {as_of.date()} (using data as of {as_of_shifted.date()})"
         )
-        w = allocator.generate_global_target_weights(as_of_shifted)
+        w, ctx = allocator.generate_global_target_weights(as_of_shifted)
         rows[as_of] = w
+        contexts[as_of] = ctx
         all_tickers.update(w.keys())
 
     if not all_tickers:
-        return pd.DataFrame(index=schedule)
+        return pd.DataFrame(index=schedule), contexts
 
     cols = sorted(all_tickers)
     weights_df = pd.DataFrame(0.0, index=schedule, columns=cols)
@@ -305,7 +307,7 @@ def generate_target_weights(
         for t, val in w.items():
             weights_df.at[dt, t] = float(val)
 
-    return weights_df
+    return weights_df, contexts
 
 
 def get_price_matrix_for_weights(
@@ -592,6 +594,114 @@ def plot_monthly_turnover(
     return out_path
 
 
+def plot_regime_scores(
+    contexts: Dict[pd.Timestamp, Dict[str, Any]], show: bool = False
+) -> Optional[Path]:
+    plt, mdates = _import_matplotlib()
+    if plt is None:
+        return None
+
+    if not contexts:
+        print("[backtest_v2] No regime contexts to plot.")
+        return None
+
+    dates = sorted(contexts.keys())
+    # collect all regime names
+    regime_names = set()
+    for c in contexts.values():
+        rs = c.get("regime_scores") or {}
+        regime_names.update(rs.keys())
+
+    df = pd.DataFrame(index=dates, columns=sorted(regime_names), dtype=float).fillna(
+        0.0
+    )
+    for dt, c in contexts.items():
+        rs = c.get("regime_scores") or {}
+        for k, v in rs.items():
+            df.at[dt, k] = float(v)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for col in df.columns:
+        ax.plot(df.index, df[col].values, label=col)
+    ax.set_title("Regime Soft Scores Over Rebalance Dates")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Score")
+    ax.legend()
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    if mdates is not None:
+        try:
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        except Exception:
+            pass
+    fig.autofmt_xdate()
+
+    plots_dir = _ensure_plots_dir()
+    start_s = str(dates[0].date()) if dates else "na"
+    end_s = str(dates[-1].date()) if dates else "na"
+    out_path = plots_dir / f"v2_regime_scores_{start_s}_{end_s}.png"
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    print(f"[backtest_v2] Saved regime scores plot: {out_path}")
+    return out_path
+
+
+def plot_sleeve_weights(
+    contexts: Dict[pd.Timestamp, Dict[str, Any]], show: bool = False
+) -> Optional[Path]:
+    plt, mdates = _import_matplotlib()
+    if plt is None:
+        return None
+
+    if not contexts:
+        print("[backtest_v2] No sleeve context to plot.")
+        return None
+
+    dates = sorted(contexts.keys())
+    # collect sleeve names
+    sleeve_names = set()
+    for c in contexts.values():
+        sw = c.get("sleeve_weights") or {}
+        sleeve_names.update(sw.keys())
+
+    df = pd.DataFrame(index=dates, columns=sorted(sleeve_names), dtype=float).fillna(
+        0.0
+    )
+    for dt, c in contexts.items():
+        sw = c.get("sleeve_weights") or {}
+        for k, v in sw.items():
+            df.at[dt, k] = float(v)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for col in df.columns:
+        ax.plot(df.index, df[col].values, label=col)
+    ax.set_title("Effective Sleeve Weights Over Rebalance Dates")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Weight")
+    ax.legend()
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    if mdates is not None:
+        try:
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        except Exception:
+            pass
+    fig.autofmt_xdate()
+
+    plots_dir = _ensure_plots_dir()
+    start_s = str(dates[0].date()) if dates else "na"
+    end_s = str(dates[-1].date()) if dates else "na"
+    out_path = plots_dir / f"v2_sleeve_weights_{start_s}_{end_s}.png"
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    print(f"[backtest_v2] Saved sleeve weights plot: {out_path}")
+    return out_path
+
+
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
@@ -660,8 +770,8 @@ def main() -> int:
             f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
         )
 
-    # Generate sleeve-based target weights
-    rebalance_target_weights = generate_target_weights(
+    # Generate sleeve-based target weights (and collect regime context)
+    rebalance_target_weights, rebalance_contexts = generate_target_weights(
         allocator=allocator,
         start=start_dt,
         end=end_dt,
@@ -840,6 +950,16 @@ def main() -> int:
             show=show,
         )
 
+    # Additional plots (regime context + sleeve weights) when doing full plots
+    if do_all:
+        try:
+            plot_regime_scores(rebalance_contexts, show=show)
+        except Exception as e:
+            print(f"[backtest_v2] Failed to plot regime scores: {e}")
+        try:
+            plot_sleeve_weights(rebalance_contexts, show=show)
+        except Exception as e:
+            print(f"[backtest_v2] Failed to plot sleeve weights: {e}")
     # Save backtest results to CSV
     out_dir = Path("data").joinpath("backtests").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

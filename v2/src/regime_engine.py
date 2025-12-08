@@ -141,67 +141,81 @@ class RegimeEngine:
     # -------------------------------------------------
 
     def _compute_regime_scores(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Heuristic, interpretable scoring rules.
-
-        Each regime score is in [0, +inf); we will normalize later.
-        The shape is mostly piecewise-linear around intuitive thresholds.
-        """
-
         trend = df["trend_score"]
         vol_score = df["vol_score"]
         dd_1y = df["dd_1y"]
         mom = df["mom_252"]
 
-        # Helper to create smooth-ish ramps
         def ramp(x, x0, x1):
-            """Linear ramp: 0 at x<=x0, 1 at x>=x1."""
             return ((x - x0) / (x1 - x0)).clip(lower=0.0, upper=1.0)
 
-        # Bull: positive trend, moderate vol, mild drawdown
-        bull_trend = ramp(trend, 0.0, 0.5)  # stronger for higher trend_score
-        bull_vol = 1.0 - ramp(vol_score, 0.5, 2.0)  # penalize very high vol
-        bull_dd = 1.0 - ramp(-dd_1y, 0.15, 0.30)  # penalize deep drawdown
+        # -----------------
+        # Bull
+        # -----------------
+        bull_trend = ramp(trend, 0.1, 0.7)  # need a clearer positive trend
+        bull_vol = 1.0 - ramp(vol_score, 0.5, 2.0)  # penalize high vol
+        bull_dd = 1.0 - ramp(-dd_1y, 0.10, 0.30)  # penalize 10-30% DD
 
         bull_score = (bull_trend * 0.5) + (bull_vol * 0.3) + (bull_dd * 0.2)
 
-        # Correction: long-term uptrend but noticeable drawdown & higher vol
-        corr_trend = ramp(trend, -0.2, 0.3)  # still not strongly negative
-        corr_dd = ramp(-dd_1y, 0.05, 0.20)  # 5~20% off highs
-        corr_vol = ramp(vol_score, 0.0, 1.5)  # vol elevated but not panic
-        corr_mom = ramp(mom, -0.05, 0.10)  # prefer >= 0, fade if very negative
-
-        correction_score = (corr_trend * 0.3) + (corr_dd * 0.4) + (corr_vol * 0.3)
-        correction_score *= corr_mom
-
-        # Bear: negative trend, deep drawdown, elevated vol
+        # -----------------
+        # Bear
+        # -----------------
         bear_trend = ramp(-trend, 0.2, 0.7)
         bear_dd = ramp(-dd_1y, 0.20, 0.40)
         bear_vol = ramp(vol_score, 0.0, 1.5)
         bear_mom = ramp(-mom, 0.0, 0.20)
 
-        bear_score = (bear_trend * 0.4) + (bear_dd * 0.4) + (bear_vol * 0.2)
-        bear_score = bear_score * 0.6 + bear_mom * 0.4
+        bear_core = (bear_trend * 0.4) + (bear_dd * 0.4) + (bear_vol * 0.2)
+        bear_score = bear_core * 0.6 + bear_mom * 0.4
 
-        # Crisis: very high vol and large recent drops
-        # crisis_vol = ramp(vol_score, 1.5, 3.0)
-        # crisis_dd = ramp(-dd_1y, 0.25, 0.50)
-        crisis_vol = ramp(vol_score, 2.0, 3.5)  # require really high vol
-        crisis_dd = ramp(-dd_1y, 0.30, 0.50)  # deeper drawdowns
-
+        # -----------------
+        # Crisis
+        # -----------------
+        crisis_vol = ramp(vol_score, 2.0, 3.5)
+        crisis_dd = ramp(-dd_1y, 0.30, 0.50)
         crisis_score = (crisis_vol * 0.7) + (crisis_dd * 0.3)
 
-        # Sideways: weak trend, modest dd, normal-ish vol.
-        # Compute as an independent "how sideways are we" measure.
-        # side_trend_flat = 1.0 - ramp(trend.abs(), 0.2, 0.7)
-        # side_dd = 1.0 - ramp(-dd_1y, 0.10, 0.30)
-        # side_vol = 1.0 - ramp(vol_score.abs(), 0.5, 2.0)
+        # -----------------
+        # Correction (re-defined)
+        # -----------------
+        # 1) Long-term uptrend: positive momentum / trend
+        corr_uptrend = ramp(mom, 0.0, 0.10)  # prefer >0 12m mom
+        corr_trend_ok = ramp(trend, 0.0, 0.5)  # some positive trend
+        # but not TOO strong (otherwise it should just be bull)
+        corr_not_strong_bull = 1.0 - ramp(trend, 0.7, 1.0)
 
-        # sideways_score = (side_trend_flat * 0.5) + (side_dd * 0.3) + (side_vol * 0.2)
+        # 2) Mild drawdown: 5-20% below 1y high, but fade out >25%
+        corr_dd_mid = ramp(-dd_1y, 0.05, 0.20)
+        corr_dd_not_deep = 1.0 - ramp(-dd_1y, 0.25, 0.40)
+        corr_dd = corr_dd_mid * corr_dd_not_deep
 
-        # Sideways - alternative: make it the residual regime
+        # 3) Vol: somewhat elevated, but explicitly *not* crisis-level
+        corr_vol_up = ramp(vol_score, 0.0, 1.5)
+        corr_vol_not_panic = 1.0 - ramp(vol_score, 2.0, 3.5)
+        corr_vol = corr_vol_up * corr_vol_not_panic
+
+        # Base correction score
+        correction_score = corr_uptrend * corr_trend_ok * corr_not_strong_bull
+        correction_score *= 0.5 * corr_dd + 0.5 * corr_vol
+
+        # 4) Explicitly suppress correction when bear/crisis is strong
+        #    (use the unnormalized bear/crisis scores we just computed)
+        suppress_bear = 1.0 - ramp(bear_score, 0.3, 0.8)
+        suppress_crisis = 1.0 - ramp(crisis_score, 0.2, 0.6)
+        correction_score *= suppress_bear * suppress_crisis
+
+        # -----------------
+        # Sideways as residual
+        # -----------------
         non_side = bull_score + correction_score + bear_score + crisis_score
-        sideways_score = (1.0 - non_side.clip(0, 1.0)).clip(lower=0.0)
+        sideways_score = (1.0 - non_side.clip(0.0, 1.0)).clip(lower=0.0)
+        # Alternative: explicit scoring for sideways regime
+        # side_trend_flat = 1.0 - ramp(trend.abs(), 0.15, 0.5)
+        # side_vol_low   = 1.0 - ramp(vol_score, 0.0, 1.0)
+        # side_dd_shallow = 1.0 - ramp(-dd_1y, 0.05, 0.15)
+        # sideways_score = (side_trend_flat * 0.5) + (side_vol_low * 0.3) + (side_dd_shallow * 0.2)
+        # sideways_score = sideways_score.clip(lower=0.0)
 
         scores = pd.DataFrame(
             {
@@ -213,8 +227,5 @@ class RegimeEngine:
             },
             index=df.index,
         )
-
-        # Avoid negative scores due to numerical noise
         scores[scores < 0] = 0.0
-
         return scores
