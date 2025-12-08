@@ -107,7 +107,8 @@ def compute_cross_sectional_ics(
             continue
 
         ic_t = s[mask].corr(r[mask], method="pearson")
-        ics.append((dt, ic_t))
+        if pd.notna(ic_t):
+            ics.append((dt, ic_t))
 
     ic_series = pd.Series(
         data=[v for _, v in ics], index=[dt for dt, _ in ics], name=f"IC_H{H}"
@@ -150,8 +151,8 @@ def plot_ic_series(ic_series: pd.Series, H: int, out_dir: _Path = _Path("data/pl
 
 
 def main():
-    START = "2007-01-01"
-    END = "2008-12-31"
+    START = "2020-01-01"
+    END = "2025-11-30"
 
     # Build runtime components
     rt = build_runtime()
@@ -188,7 +189,7 @@ def main():
     )
 
     # Compute ICs for a given horizon H
-    for H in [5,21,63]:
+    for H in [5, 21, 63]:
         ic_series, ic_mean, ic_std, ic_tstat = compute_cross_sectional_ics(
             signal_mat=signal_mat, price_mat=price_mat, start=start, end=end, H=H
         )
@@ -200,13 +201,16 @@ def main():
         print("Std(IC):", ic_std)
         print("IC t-stat:", ic_tstat)
 
-        # Save plots for IC over time and distribution
-        ts_path, hist_path = plot_ic_series(ic_series, H)
-        if ts_path and hist_path:
-            print(f"Saved IC timeseries to: {ts_path}")
-            print(f"Saved IC histogram to: {hist_path}")
-        else:
-            print(f"No ICs to plot for H={H}")
+        # Save plots for IC over time and distribution (best effort)
+        try:
+            ts_path, hist_path = plot_ic_series(ic_series, H)
+            if ts_path and hist_path:
+                print(f"Saved IC timeseries to: {ts_path}")
+                print(f"Saved IC histogram to: {hist_path}")
+            else:
+                print(f"No ICs to plot for H={H}")
+        except Exception as e:
+            print(f"Error plotting IC series for H={H}: {e}")
 
 
 if __name__ == "__main__":
