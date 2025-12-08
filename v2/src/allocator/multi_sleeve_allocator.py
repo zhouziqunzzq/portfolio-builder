@@ -51,6 +51,11 @@ class MultiSleeveAllocator:
         self.regime_engine = regime_engine
         self.sleeves: Dict[str, Any] = dict(sleeves)
         self.config = config or MultiSleeveConfig()
+        self.enabled_sleeves = set()
+        for regime_weights in self.config.sleeve_regime_weights.values():
+            for sleeve_name in regime_weights.keys():
+                self.enabled_sleeves.add(sleeve_name)
+        print(f"[MultiSleeveAllocator] Enabled sleeves: {self.enabled_sleeves}")
 
         # Optional state
         self.last_as_of: Optional[pd.Timestamp] = None
@@ -189,6 +194,9 @@ class MultiSleeveAllocator:
         results: Dict[str, pd.DataFrame] = {}
 
         for name, sleeve in self.sleeves.items():
+            if name not in self.enabled_sleeves:
+                print(f"[MultiSleeveAllocator] Sleeve '{name}' is not enabled; skipping precompute.")
+                continue
             if not hasattr(sleeve, "precompute"):
                 print(f"[MultiSleeveAllocator] Sleeve '{name}' has no precompute(); skipping.")
                 continue

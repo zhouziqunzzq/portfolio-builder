@@ -96,6 +96,7 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
+                print(f"[TrendSleeve] Regime '{regime_key}' is gated off; returning empty weights.")
                 return {}
 
         # ---------- Cached vectorized weights (if precomputed) ----------

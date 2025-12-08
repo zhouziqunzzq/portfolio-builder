@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
+SINGLE_SLEEVE_TESTING = "sideways"
+
 
 @dataclass
 class MultiSleeveConfig:
@@ -33,44 +35,23 @@ class MultiSleeveConfig:
     # These represent *ideal* allocations for each sleeve under each regime.
     # MultiSleeveAllocator will blend these using regime scores.
 
-    # All trend for testing
+    # Single sleeve for testing
     # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
     #     default_factory=lambda: {
     #         "bull": {
-    #             "trend": 1.0,
+    #             SINGLE_SLEEVE_TESTING: 1.0,
     #         },
     #         "correction": {
-    #             "trend": 1.0,
+    #             SINGLE_SLEEVE_TESTING: 1.0,
     #         },
     #         "bear": {
-    #             "trend": 1.0,
+    #             SINGLE_SLEEVE_TESTING: 1.0,
     #         },
     #         "crisis": {
-    #             "trend": 1.0,
+    #             SINGLE_SLEEVE_TESTING: 1.0,
     #         },
     #         "sideways": {
-    #             "trend": 1.0,
-    #         },
-    #     }
-    # )
-
-    # All defensive for testing
-    # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
-    #     default_factory=lambda: {
-    #         "bull": {
-    #             "defensive": 1.0,
-    #         },
-    #         "correction": {
-    #             "defensive": 1.0,
-    #         },
-    #         "bear": {
-    #             "defensive": 1.0,
-    #         },
-    #         "crisis": {
-    #             "defensive": 1.0,
-    #         },
-    #         "sideways": {
-    #             "defensive": 1.0,
+    #             SINGLE_SLEEVE_TESTING: 1.0,
     #         },
     #     }
     # )
