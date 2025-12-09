@@ -19,6 +19,7 @@ from v1.src.stock_allocator import StockAllocator as SAv1
 # Epsilon threshold for comparison: suppress tiny numeric residuals
 EPS = 1e-6
 
+
 def compute_mom2_score(mom2, mom_windows, mom_weights):
     z_mats = {}
 
@@ -107,8 +108,8 @@ if __name__ == "__main__":
         print("V1 sector map:", sm1)
         print("V2 sector map:", sm2)
 
-    start_date = "2005-01-01"
-    end_date = "2010-12-31"
+    start_date = "2015-01-01"
+    end_date = "2020-12-31"
     pm1 = um1.get_price_matrix(
         price_loader=mds1,
         start=start_date,
@@ -225,6 +226,13 @@ if __name__ == "__main__":
         vol_window=vol_window,
         vol_weight=vol_weight,
     )
+    # dt = pd.Timestamp("2020-10-19")
+    # print(">>> stock_score1 right after compute_stock_score:")
+    # print(stock_score1.loc[dt, ["TGT", "KDP", "ADM"]])
+    # Print sampled KDP signal for debugging (monthly resampled)
+    print(">>> V1 KDP stock scores sample:")
+    print(stock_score1["KDP"].resample("M").last())
+
     stock_score2 = trend_sleeve._compute_stock_scores_vectorized(
         price_mat=pm2,
     )
@@ -317,7 +325,9 @@ if __name__ == "__main__":
     if overall_maxdiff <= EPS:
         print(f"Final stock allocations match (within EPS={EPS}).")
     else:
-        print("Final stock allocations differ. Showing per-date top-10 allocations and diffs:")
+        print(
+            "Final stock allocations differ. Showing per-date top-10 allocations and diffs:"
+        )
         # Iterate over union of dates present in either allocation
         dates = all_dates
         for dt in dates:
@@ -349,5 +359,19 @@ if __name__ == "__main__":
             if not biggest.empty:
                 print(" Biggest diffs:")
                 print(biggest)
+            # Show the respective stock scores for the biggest differing tickers
+            print(" Respective stock scores for biggest diffs:")
+            for ticker in biggest.index:
+                score1 = (
+                    sa1.stock_scores[ticker].loc[dt]
+                    if ticker in sa1.stock_scores.columns
+                    else float("nan")
+                )
+                score2 = (
+                    stock_score2[ticker].loc[dt]
+                    if ticker in stock_score2.columns
+                    else float("nan")
+                )
+                print(f"  Ticker: {ticker}, V1 score: {score1}, V2 score: {score2}")
 
             print("-" * 60)

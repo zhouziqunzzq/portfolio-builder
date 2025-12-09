@@ -196,6 +196,8 @@ class SignalEngine:
             return self._compute_trend_score_full(
                 ticker, start, end, interval, **params
             )
+        elif signal == "sma":
+            return self._compute_sma_full(ticker, start, end, interval, **params)
         elif signal == "beta":
             return self._compute_beta_full(ticker, start, end, interval, **params)
         elif signal == "adv":
@@ -321,6 +323,37 @@ class SignalEngine:
         trend_score.name = f"trend_score_{fast_window}_{slow_window}"
 
         return trend_score
+
+    def _compute_sma_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 50,
+        price_col: str = "Close",
+    ) -> pd.Series:
+        """
+        Simple moving average (SMA) over `window` bars.
+
+        Returns a Series indexed by date, name = "sma_{window}".
+        """
+        extra = window + 5
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        sma = price.rolling(window=window).mean()
+        sma.name = f"sma_{window}"
+        return sma
 
     def _compute_beta_full(
         self,

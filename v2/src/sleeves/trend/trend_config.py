@@ -25,12 +25,16 @@ class TrendConfig:
     cs_weight: float = 1.0  # overall scale for CS-mom contribution
 
     # NEW: TS-momentum (Time-Series momentum)
-    use_ts_mom: bool = True
+    use_ts_mom: bool = False
     ts_mom_windows: List[int] = field(default_factory=lambda: [63, 126, 252])
     ts_mom_weights: List[float] = field(default_factory=lambda: [0.3, 1.0, 0.7])
     use_ts_gate: bool = True
     ts_gate_threshold: float = -0.3  # min TS-mom to be "long"
     ts_weight: float = 0.7  # overall scale for TS-mom contribution
+
+    # Z-score winsorization / clipping
+    use_zscore_winsorization: bool = False
+    zscore_clip: float = 3.0  # clip all z-scores to [-3, +3]
 
     # ------------------------------------------------------------------
     # Liquidity filters (new)
@@ -47,10 +51,6 @@ class TrendConfig:
     min_median_volume20: int = 50_000  # shares
     min_price: float = 0.5  # dollars
 
-    # Z-score winsorization / clipping
-    use_zscore_winsorization: bool = False
-    zscore_clip: float = 3.0  # clip all z-scores to [-3, +3]
-
     # ------------------------------------------------------------------
     # Sector weighting
     # ------------------------------------------------------------------
@@ -59,14 +59,6 @@ class TrendConfig:
     sector_w_max: float = 0.30
     sector_smoothing_beta: float = 0.3
     sector_top_k: int = 5
-
-    # Trend filter on benchmark for risk-on/risk-off scaling
-    # Note: this is currently NOT used; Imported from V1.5 for completeness.
-    # trend_filter_enabled: bool = False
-    # trend_benchmark: str = "SPY"
-    # trend_window: int = 200
-    # risk_on_equity_frac: float = 1.0
-    # risk_off_equity_frac: float = 0.7
 
     # ------------------------------------------------------------------
     # Stock selection within each sector

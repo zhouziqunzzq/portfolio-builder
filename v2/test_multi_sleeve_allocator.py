@@ -100,8 +100,10 @@ def run_snapshot(allocator: MultiSleeveAllocator, as_of: str):
     print(f"Global portfolio as of {as_of_ts.date()}")
     print("=" * 60)
 
-    primary = allocator.last_primary_regime
-    scores = allocator.last_regime_scores or {}
+    primary = ctx.get("primary_regime")
+    scores = ctx.get("regime_scores", {})
+    sleeve_weights = ctx.get("sleeve_weights", {})
+    trend_status = ctx.get("trend_status", None)
 
     print(f"Primary regime: {primary}")
     if scores:
@@ -110,6 +112,12 @@ def run_snapshot(allocator: MultiSleeveAllocator, as_of: str):
             print(f"  {r:10s}: {s:.3f}")
     else:
         print("Regime scores: <none> (fallback to primary regime only)")
+
+    print("Sleeve weights (pre-normalization):")
+    for s, w in sleeve_weights.items():
+        print(f"  {s:10s}: {w:.4f}")
+
+    print(f"Trend filter status: {trend_status}")
 
     print("\nTop 20 weights:")
     for t, w in sorted(weights.items(), key=lambda x: -x[1])[:20]:

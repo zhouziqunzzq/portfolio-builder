@@ -47,9 +47,11 @@ class StockAllocator:
         self.sector_map = {t.upper(): s for t, s in self.sector_map.items()}
 
         # Align date index: we will use sector_weights.index as master
-        self.stock_scores = self.stock_scores.reindex(self.sector_weights.index).ffill()
+        # Note: Don't ffill or bfill here; missing data should remain missing to preserve
+        # membership masks.
+        self.stock_scores = self.stock_scores.reindex(self.sector_weights.index)
         if self.stock_vol is not None:
-            self.stock_vol = self.stock_vol.reindex(self.sector_weights.index).ffill()
+            self.stock_vol = self.stock_vol.reindex(self.sector_weights.index)
 
     # ------------------------------------------------------------
     # Helpers
@@ -82,7 +84,7 @@ class StockAllocator:
             return []
 
         # Rank descending and take top_k
-        top = scores_t.sort_values(ascending=False).head(self.top_k)
+        top = scores_t.nlargest(self.top_k)
         return top.index.tolist()
 
     def _intra_sector_weights(

@@ -257,14 +257,14 @@ def build_rebalance_schedule(
     Build a rebalance schedule between `start` and `end` according to `frequency`.
 
     Supported frequencies:
-    - "monthly": business month-end (freq="BME")
+    - "monthly": business month-start (freq="BMS")
     - "weekly": weekly on Fridays (freq="W-FRI")
     - "bi-weekly": every two weeks on Fridays (freq="2W-FRI").
     """
     freq_lc = (frequency or "monthly").lower()
 
-    if freq_lc in ("monthly", "month", "bme"):
-        return pd.date_range(start=start, end=end, freq="BME")
+    if freq_lc in ("monthly", "month", "bms"):
+        return pd.date_range(start=start, end=end, freq="BMS")
 
     if freq_lc in ("weekly", "week"):
         return pd.date_range(start=start, end=end, freq="W-FRI")
@@ -306,6 +306,9 @@ def generate_target_weights(
         rows[as_of] = w
         contexts[as_of] = ctx
         all_tickers.update(w.keys())
+        # Debug: print the weight of KDP if present
+        if "KDP" in w:
+            print(f"  KDP weight on {as_of.date()}: {w['KDP']:.4f}")
 
     if not all_tickers:
         return pd.DataFrame(index=schedule), contexts
@@ -341,7 +344,7 @@ def get_price_matrix_for_weights(
         tickers=tickers,
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d"),
-        field="Close",
+        field=field,
         interval="1d",
         # !IMPORTANT - we need prices for all tickers (including non SP500 ones like GLD)
         auto_apply_membership_mask=False,
@@ -713,6 +716,63 @@ def plot_sleeve_weights(
     return out_path
 
 
+def plot_trend_status(
+    contexts: Dict[pd.Timestamp, Dict[str, Any]], show: bool = False
+) -> Optional[Path]:
+    """
+    Plot binary trend status (risk-on=1 / risk-off=0) over rebalance dates.
+
+    Expects each context to contain a `trend_status` key with values
+    like "risk-on" or "risk-off".
+    """
+    plt, mdates = _import_matplotlib()
+    if plt is None:
+        return None
+
+    if not contexts:
+        print("[backtest_v2] No regime contexts to plot trend status.")
+        return None
+
+    dates = sorted(contexts.keys())
+    series = []
+    for d in dates:
+        c = contexts.get(d) or {}
+        ts = c.get("trend_status")
+        series.append(1 if ts == "risk-on" else 0)
+
+    idx = pd.DatetimeIndex(dates)
+    s = pd.Series(series, index=idx)
+
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.step(s.index, s.values, where="post", linewidth=2)
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["risk-off", "risk-on"])
+    ax.set_title("Trend Filter Status Over Rebalance Dates")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Status")
+    ax.grid(True, linestyle="--", linewidth=0.5)
+
+    if mdates is not None:
+        try:
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        except Exception:
+            pass
+    fig.autofmt_xdate()
+
+    plots_dir = _ensure_plots_dir()
+    start_s = str(dates[0].date()) if dates else "na"
+    end_s = str(dates[-1].date()) if dates else "na"
+    out_path = plots_dir / f"v2_trend_status_{start_s}_{end_s}.png"
+    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    print(f"[backtest_v2] Saved trend status plot: {out_path}")
+    return out_path
+
+
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
@@ -818,7 +878,7 @@ def main() -> int:
         start=start_dt,
         end=end_dt,
         local_only=args.local_only,
-        field="Open", # use Open prices for execution
+        field="Open",  # use Open prices for execution
     )
 
     if price_mat.empty or open_price_mat.empty:
@@ -959,7 +1019,7 @@ def main() -> int:
             show=show,
         )
 
-    # Additional plots (regime context + sleeve weights) when doing full plots
+    # Additional plots when doing full plots
     if do_all:
         try:
             plot_regime_scores(rebalance_contexts, show=show)
@@ -969,6 +1029,10 @@ def main() -> int:
             plot_sleeve_weights(rebalance_contexts, show=show)
         except Exception as e:
             print(f"[backtest_v2] Failed to plot sleeve weights: {e}")
+        try:
+            plot_trend_status(rebalance_contexts, show=show)
+        except Exception as e:
+            print(f"[backtest_v2] Failed to plot trend status: {e}")
     # Save backtest results to CSV
     out_dir = Path("data").joinpath("backtests").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)

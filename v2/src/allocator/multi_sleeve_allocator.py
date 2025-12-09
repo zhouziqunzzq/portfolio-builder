@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from src.regime_engine import RegimeEngine
+from src.signal_engine import SignalEngine
 from .multi_sleeve_config import MultiSleeveConfig
 
 
@@ -48,7 +49,10 @@ class MultiSleeveAllocator:
         config:
             MultiSleeveConfig instance. If None, default config is used.
         """
-        self.regime_engine = regime_engine
+        self.regime_engine: RegimeEngine = regime_engine
+        self.signals: SignalEngine = (
+            regime_engine.signals
+        )  # "steal" SignalEngine from RegimeEngine
         self.sleeves: Dict[str, Any] = dict(sleeves)
         self.config = config or MultiSleeveConfig()
         self.enabled_sleeves = set()
@@ -101,11 +105,16 @@ class MultiSleeveAllocator:
         sleeve_alloc = self._compute_effective_sleeve_weights(
             primary_regime, regime_scores
         )
+        # Adjust sleeve weights via trend filter if enabled
+        if self.config.trend_filter_enabled:
+            trend_status = self._compute_trend_filter_status(as_of_ts)
+            sleeve_alloc = self._apply_trend_filter(sleeve_alloc, trend_status)
         # Build context to return to caller
         context: Dict[str, Any] = {
             "primary_regime": primary_regime,
             "regime_scores": regime_scores,
             "sleeve_weights": sleeve_alloc,
+            "trend_status": trend_status if self.config.trend_filter_enabled else None,
         }
         if not sleeve_alloc:
             return {}, context
@@ -187,18 +196,26 @@ class MultiSleeveAllocator:
         if end_ts < start_ts:
             raise ValueError("end must be >= start for precompute")
 
-        print(f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]")
+        print(
+            f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]"
+        )
         if rebalance_dates is not None:
-            print(f"[MultiSleeveAllocator] Rebalance dates supplied: {len(rebalance_dates)}")
+            print(
+                f"[MultiSleeveAllocator] Rebalance dates supplied: {len(rebalance_dates)}"
+            )
 
         results: Dict[str, pd.DataFrame] = {}
 
         for name, sleeve in self.sleeves.items():
             if name not in self.enabled_sleeves:
-                print(f"[MultiSleeveAllocator] Sleeve '{name}' is not enabled; skipping precompute.")
+                print(
+                    f"[MultiSleeveAllocator] Sleeve '{name}' is not enabled; skipping precompute."
+                )
                 continue
             if not hasattr(sleeve, "precompute"):
-                print(f"[MultiSleeveAllocator] Sleeve '{name}' has no precompute(); skipping.")
+                print(
+                    f"[MultiSleeveAllocator] Sleeve '{name}' has no precompute(); skipping."
+                )
                 continue
             print(f"[MultiSleeveAllocator] Precomputing sleeve '{name}' ...")
             try:
@@ -209,7 +226,9 @@ class MultiSleeveAllocator:
                     warmup_buffer=warmup_buffer,
                 )
                 if wmat is None or wmat.empty:
-                    print(f"[MultiSleeveAllocator] Sleeve '{name}' returned empty matrix.")
+                    print(
+                        f"[MultiSleeveAllocator] Sleeve '{name}' returned empty matrix."
+                    )
                 else:
                     print(
                         f"[MultiSleeveAllocator] Sleeve '{name}' weights shape: {wmat.shape} (dates={wmat.shape[0]}, tickers={wmat.shape[1]})"
@@ -310,3 +329,68 @@ class MultiSleeveAllocator:
             return {}
 
         return {sleeve: w / total for sleeve, w in accum.items()}
+
+    def _compute_trend_filter_status(
+        self,
+        as_of: pd.Timestamp,
+    ) -> str:
+        """
+        Compute trend filter status ("risk-on" or "risk-off") based on
+        configured benchmark and window.
+
+        Returns "risk-on" or "risk-off".
+        """
+        benchmark = self.config.trend_benchmark
+        window = self.config.trend_window
+
+        smas = self.signals.get_series(
+            ticker=benchmark,
+            signal="sma",
+            start=as_of - timedelta(days=window * 3),  # extra buffer
+            end=as_of,
+            window=window,
+        )
+        if smas is None or smas.empty:
+            return "risk-on"
+        prices = self.signals.get_series(
+            ticker=benchmark,
+            signal="last_price",
+            start=as_of - timedelta(days=window * 3),  # extra buffer
+            end=as_of,
+        )
+        if prices is None or prices.empty:
+            return "risk-on"
+
+        price_as_of = prices.get(as_of, None)
+        sma_as_of = smas.get(as_of, None)
+
+        if price_as_of is None or sma_as_of is None:
+            return "risk-on"
+
+        if price_as_of > sma_as_of:
+            return "risk-on"
+        else:
+            return "risk-off"
+
+    def _apply_trend_filter(
+        self,
+        sleeve_weights: Dict[str, float],
+        trend_status: str,
+    ) -> Dict[str, float]:
+        """
+        Apply trend filter to sleeve weights.
+
+        If trend_status is "risk-off", scale down certain sleeves
+        according to config.
+
+        Returns adjusted sleeve weights.
+        """
+        adjusted: Dict[str, float] = {}
+        for sleeve, weight in sleeve_weights.items():
+            if trend_status == "risk-off":
+                off_scale = self.config.sleeve_risk_off_equity_frac.get(sleeve, 1.0)
+                adjusted[sleeve] = weight * off_scale
+            else:
+                on_scale = self.config.sleeve_risk_on_equity_frac.get(sleeve, 1.0)
+                adjusted[sleeve] = weight * on_scale
+        return adjusted

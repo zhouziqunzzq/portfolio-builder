@@ -25,6 +25,21 @@ class MultiSleeveConfig:
         "sideways",
     )
 
+    # Trend filter on benchmark for risk-on/risk-off scaling
+    trend_filter_enabled: bool = True
+    trend_benchmark: str = "SPY"
+    trend_window: int = 200  # in trading days
+    sleeve_risk_on_equity_frac: Dict[str, float] = field(
+        default_factory=lambda: {
+            "trend": 1.0,
+        }
+    )
+    sleeve_risk_off_equity_frac: Dict[str, float] = field(
+        default_factory=lambda: {
+            "trend": 0.7,
+        }
+    )
+
     # If True: allow implicit cash by NOT normalizing global sleeve-combined
     # equity weights up to 1.0 when their raw sum is <= 1.0. We still
     # normalize (scale down) if the sum exceeds 1.0 (to avoid leverage).
@@ -61,39 +76,35 @@ class MultiSleeveConfig:
             # Strong uptrend, normal vol
             "bull": {
                 "trend": 0.90,
-                "sideways": 0.04,   # tiny, exploratory
+                "sideways": 0.04,  # tiny, exploratory
                 "defensive": 0.06,  # small stabilizer
                 "cash": 0.00,
             },
-
             # Uptrend but pullback / higher vol
             "correction": {
                 "trend": 0.28,
-                "sideways": 0.12,   # modest contribution
+                "sideways": 0.12,  # modest contribution
                 "defensive": 0.40,
                 "cash": 0.20,
             },
-
             # Downtrend, elevated vol
             "bear": {
                 "trend": 0.03,
-                "sideways": 0.02,   # tiny, avoids overexposure to laggards
+                "sideways": 0.02,  # tiny, avoids overexposure to laggards
                 "defensive": 0.53,
                 "cash": 0.42,
             },
-
             # Panic / crisis regime
             "crisis": {
                 "trend": 0.00,
-                "sideways": 0.00,   # fully suppressed
+                "sideways": 0.00,  # fully suppressed
                 "defensive": 0.72,
                 "cash": 0.28,
             },
-
             # Choppy / sideways
             "sideways": {
-                "trend": 0.15,      # down from 0.25
-                "sideways": 0.25,   # main role here, but not dominant
+                "trend": 0.15,  # down from 0.25
+                "sideways": 0.25,  # main role here, but not dominant
                 "defensive": 0.40,  # stabilizer
                 "cash": 0.20,
             },

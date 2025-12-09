@@ -33,3 +33,12 @@ if __name__ == "__main__":
     another_view = signals.get_series("SPY", "vol", start, end, window=20)
     # -> served from cache, no re-computation
     print(f"Another view of SPY Volatility:\n{another_view}")
+
+    spy_sma_20 = signals.get_series("SPY", "sma", start, end, window=20)
+    print(f"SPY 20-day SMA:\n{spy_sma_20}")
+    # Re-request to test caching
+    spy_sma_20_again = signals.get_series("SPY", "sma", start, end, window=20)
+    print(f"SPY 20-day SMA (again, from cache):\n{spy_sma_20_again}")
+
+    spy_last_price = signals.get_series("SPY", "last_price", start, end)
+    print(f"SPY Last Price:\n{spy_last_price}")
