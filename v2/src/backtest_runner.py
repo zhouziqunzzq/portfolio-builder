@@ -77,12 +77,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--rebalance-frequency",
         dest="rebalance_frequency",
-        choices=["monthly", "bi-weekly", "weekly"],
+        choices=["monthly", "bi-weekly", "weekly", "semi-monthly"],
         default="monthly",
         help=(
-            "Rebalance frequency: 'monthly' (business month-end), "
-            "'bi-weekly' (every 2 weeks, anchored to Fridays), "
-            "or 'weekly' (every Friday)."
+            "Rebalance frequency: 'monthly' (business month-start), "
+            "'bi-weekly' (every 2 weeks, anchored to Mondays), "
+            "'weekly' (every week, anchored to Mondays), "
+            "'semi-monthly' (2x per month: business month-start and mid-month Monday)"
         ),
     )
 
@@ -258,8 +259,10 @@ def build_rebalance_schedule(
 
     Supported frequencies:
     - "monthly": business month-start (freq="BMS")
-    - "weekly": weekly on Fridays (freq="W-FRI")
-    - "bi-weekly": every two weeks on Fridays (freq="2W-FRI").
+    - "weekly": weekly on Mondays (freq="W-MON")
+    - "bi-weekly": every two weeks on Mondays (freq="2W-MON").
+    - "semi-monthly": two dates per month: business month-start (BMS)
+        and a mid-month Monday (nearest Monday on/after the 15th when possible).
     """
     freq_lc = (frequency or "monthly").lower()
 
@@ -267,14 +270,55 @@ def build_rebalance_schedule(
         return pd.date_range(start=start, end=end, freq="BMS")
 
     if freq_lc in ("weekly", "week"):
-        return pd.date_range(start=start, end=end, freq="W-FRI")
+        return pd.date_range(start=start, end=end, freq="W-MON")
 
     if freq_lc in ("bi-weekly", "biweekly", "bi_weekly"):
-        # Every 2 weeks on Friday
-        return pd.date_range(start=start, end=end, freq="2W-FRI")
+        return pd.date_range(start=start, end=end, freq="2W-MON")
 
-    # fallback: monthly BME
-    return pd.date_range(start=start, end=end, freq="BME")
+    if freq_lc in (
+        "semi-monthly",
+        "semimonthly",
+        "semi_monthly",
+    ):
+        # Build Business Month Start dates
+        bms = pd.date_range(start=start, end=end, freq="BMS")
+
+        # For each month in the window, pick a mid-month Monday if possible
+        mids = []
+        months = pd.date_range(start=start, end=end, freq="MS")
+        for m in months:
+            year = int(m.year)
+            month = int(m.month)
+            # mid candidate = 15th
+            try:
+                mid = pd.Timestamp(year=year, month=month, day=15)
+            except Exception:
+                # fallback: first of month
+                mid = m
+
+            # find Monday on or after the 15th within the same month
+            candidate = mid
+            last_day = int((m + pd.offsets.MonthEnd(0)).day)
+            # Move candidate forward to Monday if possible and within month
+            while candidate.weekday() != 0 and candidate.day <= last_day:
+                candidate = candidate + pd.Timedelta(days=1)
+
+            if candidate.month != month:
+                # couldn't find Monday on/after 15th within month; search backwards
+                candidate = mid - pd.Timedelta(days=1)
+                while candidate.weekday() != 0 and candidate.day >= 1:
+                    candidate = candidate - pd.Timedelta(days=1)
+
+            # Ensure candidate is within global start/end
+            if candidate >= pd.to_datetime(start) and candidate <= pd.to_datetime(end):
+                mids.append(candidate)
+
+        # Union BMS + mids, sort, unique
+        all_dates = sorted({d.normalize(): d for d in list(bms) + mids}.keys())
+        return pd.DatetimeIndex(all_dates)
+
+    # fallback: monthly BMS
+    return pd.date_range(start=start, end=end, freq="BMS")
 
 
 def generate_target_weights(

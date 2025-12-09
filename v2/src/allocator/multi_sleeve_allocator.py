@@ -363,6 +363,7 @@ class MultiSleeveAllocator:
 
         price_as_of = prices.get(as_of, None)
         sma_as_of = smas.get(as_of, None)
+        print(f"[MultiSleeveAllocator] Trend filter for {as_of.date()}: price={price_as_of}, sma={sma_as_of}")
 
         if price_as_of is None or sma_as_of is None:
             return "risk-on"

@@ -67,6 +67,12 @@ class TrendSleeve:
         self.config = config or TrendConfig()
         self.state = TrendState()
         self.precomputed_weights_mat: Optional[pd.DataFrame] = None
+        self._cs_stock_score_mat: Optional[pd.DataFrame] = (
+            None  # cached precomputed CS-mom component
+        )
+        self._ts_stock_score_mat: Optional[pd.DataFrame] = (
+            None  # cached precomputed TS-mom component
+        )
 
         self._approx_rebalance_days = self._infer_approx_rebalance_days(
             self.config.rebalance_freq
@@ -624,10 +630,12 @@ class TrendSleeve:
 
         # stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
         base_score = mom_part.add(cfg.vol_penalty * z_mats["vol_score"], fill_value=0.0)
-        base_score *= cfg.cs_weight  # scale CS-mom contribution
+        # Explicit CS stock component (after cs_weight)
+        cs_stock_score_mat = base_score * cfg.cs_weight
 
         # NEW: TS-momentum contribution (raw, absolute)
         # ts_mom_windows / ts_mom_weights are independent of mom_windows.
+        ts_stock_score_mat = None  # will hold pure TS component (after ts_weight)
         if cfg.use_ts_mom and ts_mom_dict:
             ts_part = None
             for w, wt in zip(cfg.ts_mom_windows, cfg.ts_mom_weights):
@@ -640,8 +648,11 @@ class TrendSleeve:
                 else:
                     ts_part += wt * ts_mat
 
-            # Blend TS-mom in with an overall weight
-            stock_score_mat = base_score.add(cfg.ts_weight * ts_part, fill_value=0.0)
+            # TS stock component (after ts_weight)
+            ts_stock_score_mat = cfg.ts_weight * ts_part
+            # Combined stock score BEFORE gating
+            stock_score_mat = cs_stock_score_mat.add(ts_stock_score_mat, fill_value=0.0)
+
             # Apply TS-mom gating: zero out stock_score where TS-mom < threshold
             if cfg.use_ts_gate:
                 gate_threshold = cfg.ts_gate_threshold
@@ -651,16 +662,20 @@ class TrendSleeve:
                     bad_ts = ts_part < gate_threshold
                     # stock_score_mat = stock_score_mat.mask(bad_ts) # set to NaN
                     stock_score_mat = stock_score_mat.where(
-                        ~bad_ts, penalty, axis=0,
+                        ~bad_ts,
+                        penalty,
+                        axis=0,
                     )  # set to penalty instead of hard gating
         else:
-            stock_score_mat = base_score
+            stock_score_mat = cs_stock_score_mat
 
         # --------------------------------------------------------
         # 4) Construct final output: keep only stock_score for sector scoring
         # --------------------------------------------------------
+        # Cache components for sector scoring
+        self._cs_stock_score_mat = cs_stock_score_mat
+        self._ts_stock_score_mat = ts_stock_score_mat
         stock_score_mat.name = "stock_score"
-
         return stock_score_mat
 
     def _compute_sector_scores_vectorized(
@@ -680,16 +695,56 @@ class TrendSleeve:
         Returns
         -------
         DataFrame
-            Date x Sector matrix of mean stock_score per sector.
+            Date x Sector matrix of blended CS + TS sector scores.
         """
         smap = sector_map or self.um.sector_map or {}
         if stock_score_mat is None or stock_score_mat.empty:
             return pd.DataFrame(index=getattr(stock_score_mat, "index", None))
+        cfg = self.config
 
-        return sector_mean_matrix(
-            stock_score_mat=stock_score_mat,
+        # ------------------------------------------------------------------
+        # 1) Get cached stock-level components
+        # ------------------------------------------------------------------
+        cs_stock = getattr(self, "_cs_stock_score_mat", None)
+        ts_stock = getattr(self, "_ts_stock_score_mat", None)
+
+        # Fallback if for some reason cache is missing
+        if cs_stock is None:
+            print(
+                "[TrendSleeve] Warning: CS stock score matrix cache missing; recomputing from stock_score_mat."
+            )
+            cs_stock = stock_score_mat
+
+        # ------------------------------------------------------------------
+        # 2) Sector CS score: mean of CS stock scores within each sector
+        # ------------------------------------------------------------------
+        sector_cs = sector_mean_matrix(
+            stock_score_mat=cs_stock,
             sector_map=smap,
         )
+
+        # ------------------------------------------------------------------
+        # 3) Sector TS score: mean of TS stock scores within each sector
+        # ------------------------------------------------------------------
+        if cfg.use_ts_mom and ts_stock is not None:
+            sector_ts = sector_mean_matrix(
+                stock_score_mat=ts_stock,
+                sector_map=smap,
+            )
+        else:
+            # no TS contribution
+            sector_ts = pd.DataFrame(
+                0.0, index=sector_cs.index, columns=sector_cs.columns
+            )
+
+        # ------------------------------------------------------------------
+        # 4) Blend sector CS + TS
+        # ------------------------------------------------------------------
+        sector_scores_mat = (
+            cfg.sector_cs_weight * sector_cs + cfg.sector_ts_weight * sector_ts
+        )
+
+        return sector_scores_mat
 
     def _compute_sector_weights_vectorized(
         self,

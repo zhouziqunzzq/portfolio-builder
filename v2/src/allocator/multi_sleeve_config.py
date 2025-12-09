@@ -51,65 +51,65 @@ class MultiSleeveConfig:
     # MultiSleeveAllocator will blend these using regime scores.
 
     # Single sleeve for testing
-    # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
-    #     default_factory=lambda: {
-    #         "bull": {
-    #             SINGLE_SLEEVE_TESTING: 1.0,
-    #         },
-    #         "correction": {
-    #             SINGLE_SLEEVE_TESTING: 1.0,
-    #         },
-    #         "bear": {
-    #             SINGLE_SLEEVE_TESTING: 1.0,
-    #         },
-    #         "crisis": {
-    #             SINGLE_SLEEVE_TESTING: 1.0,
-    #         },
-    #         "sideways": {
-    #             SINGLE_SLEEVE_TESTING: 1.0,
-    #         },
-    #     }
-    # )
-
     sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            # Strong uptrend, normal vol
             "bull": {
-                "trend": 0.90,
-                "sideways": 0.04,  # tiny, exploratory
-                "defensive": 0.06,  # small stabilizer
-                "cash": 0.00,
+                SINGLE_SLEEVE_TESTING: 1.0,
             },
-            # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.28,
-                "sideways": 0.12,  # modest contribution
-                "defensive": 0.40,
-                "cash": 0.20,
+                SINGLE_SLEEVE_TESTING: 1.0,
             },
-            # Downtrend, elevated vol
             "bear": {
-                "trend": 0.03,
-                "sideways": 0.02,  # tiny, avoids overexposure to laggards
-                "defensive": 0.53,
-                "cash": 0.42,
+                SINGLE_SLEEVE_TESTING: 1.0,
             },
-            # Panic / crisis regime
             "crisis": {
-                "trend": 0.00,
-                "sideways": 0.00,  # fully suppressed
-                "defensive": 0.72,
-                "cash": 0.28,
+                SINGLE_SLEEVE_TESTING: 1.0,
             },
-            # Choppy / sideways
             "sideways": {
-                "trend": 0.15,  # down from 0.25
-                "sideways": 0.25,  # main role here, but not dominant
-                "defensive": 0.40,  # stabilizer
-                "cash": 0.20,
+                SINGLE_SLEEVE_TESTING: 1.0,
             },
         }
     )
+
+    # sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
+    #     default_factory=lambda: {
+    #         # Strong uptrend, normal vol
+    #         "bull": {
+    #             "trend": 0.90,
+    #             "sideways": 0.04,  # tiny, exploratory
+    #             "defensive": 0.06,  # small stabilizer
+    #             "cash": 0.00,
+    #         },
+    #         # Uptrend but pullback / higher vol
+    #         "correction": {
+    #             "trend": 0.28,
+    #             "sideways": 0.12,  # modest contribution
+    #             "defensive": 0.40,
+    #             "cash": 0.20,
+    #         },
+    #         # Downtrend, elevated vol
+    #         "bear": {
+    #             "trend": 0.03,
+    #             "sideways": 0.02,  # tiny, avoids overexposure to laggards
+    #             "defensive": 0.53,
+    #             "cash": 0.42,
+    #         },
+    #         # Panic / crisis regime
+    #         "crisis": {
+    #             "trend": 0.00,
+    #             "sideways": 0.00,  # fully suppressed
+    #             "defensive": 0.72,
+    #             "cash": 0.28,
+    #         },
+    #         # Choppy / sideways
+    #         "sideways": {
+    #             "trend": 0.15,  # down from 0.25
+    #             "sideways": 0.25,  # main role here, but not dominant
+    #             "defensive": 0.40,  # stabilizer
+    #             "cash": 0.20,
+    #         },
+    #     }
+    # )
 
     def get_primary_sleeve_weights_for_regime(self, regime: str) -> Dict[str, float]:
         """

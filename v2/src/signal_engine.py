@@ -125,7 +125,7 @@ class SignalEngine:
 
             # For daily/weekly/monthly data, give ourselves a calendar margin
             if interval in ("1d", "1wk", "1mo"):
-                margin = pd.Timedelta(days=7)
+                margin = pd.Timedelta(days=3) # don't use 7 days; can cause staleness when stepping weekly
             else:
                 margin = pd.Timedelta(0)
 
@@ -135,14 +135,14 @@ class SignalEngine:
             # Do we already effectively cover the requested window?
             if start_dt >= effective_start and end_dt <= effective_end:
                 # Full coverage: fast path
-                # print(f"[SignalEngine] CACHE HIT: {key}")
+                # print(f"[SignalEngine] CACHE HIT: {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}]")
                 return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
 
             # Partial coverage: extend range (recompute over union)
             new_start = min(start_dt, cached_start)
             new_end = max(end_dt, cached_end)
 
-            # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}")
+            # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}], New range [{new_start.date()} to {new_end.date()}]")
             series = self._compute_signal_full(
                 ticker=ticker,
                 signal=signal,
@@ -177,6 +177,8 @@ class SignalEngine:
         start: datetime,
         end: datetime,
         interval: str,
+        auto_ffill: bool = True, # whether to forward-fill missing values by default
+        auto_ffill_limit: Optional[int] = 5, # max number of consecutive missing values to ffill over
         **params: Any,
     ) -> pd.Series:
         """
@@ -189,27 +191,33 @@ class SignalEngine:
         signal = signal.lower()
 
         if signal == "ts_mom":
-            return self._compute_ts_mom_full(ticker, start, end, interval, **params)
+            sig = self._compute_ts_mom_full(ticker, start, end, interval, **params)
         elif signal == "vol":
-            return self._compute_vol_full(ticker, start, end, interval, **params)
+            sig = self._compute_vol_full(ticker, start, end, interval, **params)
         elif signal == "trend_score":
-            return self._compute_trend_score_full(
+            sig = self._compute_trend_score_full(
                 ticker, start, end, interval, **params
             )
         elif signal == "sma":
-            return self._compute_sma_full(ticker, start, end, interval, **params)
+            sig = self._compute_sma_full(ticker, start, end, interval, **params)
         elif signal == "beta":
-            return self._compute_beta_full(ticker, start, end, interval, **params)
+            sig = self._compute_beta_full(ticker, start, end, interval, **params)
         elif signal == "adv":
-            return self._compute_adv_full(ticker, start, end, interval, **params)
+            sig = self._compute_adv_full(ticker, start, end, interval, **params)
         elif signal == "median_volume":
-            return self._compute_median_volume_full(
+            sig = self._compute_median_volume_full(
                 ticker, start, end, interval, **params
             )
         elif signal == "last_price":
-            return self._compute_last_price_full(ticker, start, end, interval, **params)
+            sig = self._compute_last_price_full(ticker, start, end, interval, **params)
         else:
             raise ValueError(f"Unknown signal: {signal}")
+        
+        if auto_ffill:
+            # Extend to requested date range
+            sig = sig.reindex(pd.date_range(start, end, freq="D"))
+            sig = sig.ffill(limit=auto_ffill_limit) # ffill because the requested end date may not be a trading day
+        return sig
 
     # ----- concrete signal implementations -----
 
@@ -519,4 +527,6 @@ class SignalEngine:
 
         price = df[price_col].astype(float)
         price.name = "last_price"
+        # print(f"[SignalEngine] _compute_last_price_full: Retrieved {len(price)} data points for {ticker} from {start.date()} to {end.date()}")
+        # print(price.tail())
         return price
