@@ -208,25 +208,25 @@ def main() -> int:
         end_dt = override_end or latest_weight_date
 
         tickers = um.tickers
-        price_mat = um.get_price_matrix(
+        open_price_mat = um.get_price_matrix(
             price_loader=mds,
             tickers=tickers,
             start=str(start_dt),
             end=str(end_dt),
-            field=None,
+            field="Open", # Use next day's open for backtest
             interval="1d",
             local_only=bool(args.__dict__.get("local_only", False)),
         )
-        if price_mat.empty:
+        if open_price_mat.empty:
             logger.warning(
                 "Price matrix empty for backtest window [%s..%s]", start_dt, end_dt
             )
             return 0
-        price_mat = price_mat.sort_index()
+        open_price_mat = open_price_mat.sort_index()
 
         # Backtester (cost could be exposed via config later)
         bt = PortfolioBacktester(
-            prices=price_mat,
+            prices=open_price_mat,
             weights=stock_weights_monthly,
             trading_days_per_year=252,
             initial_value=float(getattr(cfg.strategy, "initial_equity", 100_000.0)),

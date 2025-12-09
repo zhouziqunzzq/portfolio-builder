@@ -299,6 +299,31 @@ class VectorizedSignalEngine:
 
         return mom_dict
 
+    def get_ts_momentum(
+        self,
+        price_mat: pd.DataFrame,
+        lookbacks: Sequence[int],
+    ) -> Dict[int, pd.DataFrame]:
+        """
+        Time-series momentum: Sharpe-like (mu/sigma) per asset, per window.
+        Returns dict[window] -> DataFrame[Date x Ticker]
+        """
+        ts_dict: Dict[int, pd.DataFrame] = {}
+        if price_mat.empty:
+            for w in lookbacks:
+                ts_dict[w] = pd.DataFrame(index=price_mat.index)
+            return ts_dict
+
+        rets = price_mat.pct_change(fill_method=None)
+
+        for w in lookbacks:
+            mu = rets.rolling(w).mean()
+            sigma = rets.rolling(w).std()
+            ts_raw = mu.div(sigma).replace([np.inf, -np.inf], np.nan)
+            ts_dict[w] = ts_raw
+
+        return ts_dict
+
     # -----------------------------------------------------------
     # Vectorized realized volatility
     # -----------------------------------------------------------

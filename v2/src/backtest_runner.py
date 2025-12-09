@@ -327,6 +327,7 @@ def get_price_matrix_for_weights(
     start: pd.Timestamp,
     end: pd.Timestamp,
     local_only: bool,
+    field: Optional[str] = "Close",
 ) -> pd.DataFrame:
     """
     Fetch daily Close prices for *exactly* the tickers that appear in the weights matrix.
@@ -797,7 +798,9 @@ def main() -> int:
         f"{len(rebalance_target_weights.columns)} unique tickers."
     )
 
-    # Get daily price matrix for all tickers that appear in weights
+    # Get daily close price matrix for all tickers that appear in weights
+    # Note: Close prices should be used to generate signals and target weights, and
+    # applying friction control.
     price_mat = get_price_matrix_for_weights(
         um=um,
         mds=mds,
@@ -805,28 +808,24 @@ def main() -> int:
         start=start_dt,
         end=end_dt,
         local_only=args.local_only,
+        field="Close",
+    )
+    # Also get open prices for backtesting (Assuming next-day open execution)
+    open_price_mat = get_price_matrix_for_weights(
+        um=um,
+        mds=mds,
+        weights=rebalance_target_weights,
+        start=start_dt,
+        end=end_dt,
+        local_only=args.local_only,
+        field="Open", # use Open prices for execution
     )
 
-    if price_mat.empty:
+    if price_mat.empty or open_price_mat.empty:
         print("Price matrix is empty for backtest window; aborting.")
         return 0
 
     # Apply friction control
-    # # Hysteresis
-    # adj_rebalance_target_weights = apply_weight_hysteresis_matrix(
-    #     W=rebalance_target_weights,
-    #     dw_min=friction_cfg.dw_min,
-    #     keep_cash=allocator.config.preserve_cash_if_under_target, # keep in sync with allocator cash policy
-    # )
-    # print("[backtest_v2] Applied weight hysteresis friction control.")
-    # # Debug: Count how many weights frozen due to hysteresis
-    # num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
-    # total_weights = rebalance_target_weights.size
-    # print(
-    #     f"[backtest_v2] Hysteresis frozen {num_frozen} out of "
-    #     f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
-    # )
-    # rebalance_target_weights = adj_rebalance_target_weights
     friction_controller = FrictionController(
         prices=price_mat,
         weights=rebalance_target_weights,
@@ -847,7 +846,7 @@ def main() -> int:
 
     # Backtester
     bt = PortfolioBacktester(
-        prices=price_mat,
+        prices=open_price_mat,  # use Open prices for execution
         weights=rebalance_target_weights,
         trading_days_per_year=252,
         initial_value=float(args.initial_equity),

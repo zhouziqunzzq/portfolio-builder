@@ -96,7 +96,9 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
-                print(f"[TrendSleeve] Regime '{regime_key}' is gated off; returning empty weights.")
+                print(
+                    f"[TrendSleeve] Regime '{regime_key}' is gated off; returning empty weights."
+                )
                 return {}
 
         # ---------- Cached vectorized weights (if precomputed) ----------
@@ -565,10 +567,16 @@ class TrendSleeve:
         mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
         vol_mat = VSE.get_volatility(price_mat, window=cfg.vol_window)
 
+        # NEW: TS-momentum (raw, no cross-sectional z-score)
+        if cfg.use_ts_mom:
+            ts_mom_dict = VSE.get_ts_momentum(price_mat, cfg.ts_mom_windows)
+        else:
+            ts_mom_dict = {}
+
         # Build a dict: feature_name -> matrix
         feature_mats = {}
 
-        # Momentum matrices
+        # Momentum matrices (CS-momentum)
         for w in cfg.mom_windows:
             feature_mats[f"mom_{w}"] = mom_dict[w]
 
@@ -577,6 +585,7 @@ class TrendSleeve:
 
         # --------------------------------------------------------
         # 2) Z scoring (winsorized if enabled) *per date*, cross-sectionally (column-wise)
+        # NOTE: this applies ONLY to CS-mom and vol, NOT TS-mom.
         # --------------------------------------------------------
         z_mats = {}
 
@@ -614,9 +623,38 @@ class TrendSleeve:
                 mom_part += wt * z_mats[f"z_mom_{w}"]
 
         # stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
-        stock_score_mat = mom_part.add(
-            cfg.vol_penalty * z_mats["vol_score"], fill_value=0.0
-        )
+        base_score = mom_part.add(cfg.vol_penalty * z_mats["vol_score"], fill_value=0.0)
+        base_score *= cfg.cs_weight  # scale CS-mom contribution
+
+        # NEW: TS-momentum contribution (raw, absolute)
+        # ts_mom_windows / ts_mom_weights are independent of mom_windows.
+        if cfg.use_ts_mom and ts_mom_dict:
+            ts_part = None
+            for w, wt in zip(cfg.ts_mom_windows, cfg.ts_mom_weights):
+                ts_mat = ts_mom_dict[w]
+                # ensure same index/columns as base_score
+                ts_mat = ts_mat.reindex_like(base_score)
+
+                if ts_part is None:
+                    ts_part = wt * ts_mat
+                else:
+                    ts_part += wt * ts_mat
+
+            # Blend TS-mom in with an overall weight
+            stock_score_mat = base_score.add(cfg.ts_weight * ts_part, fill_value=0.0)
+            # Apply TS-mom gating: zero out stock_score where TS-mom < threshold
+            if cfg.use_ts_gate:
+                gate_threshold = cfg.ts_gate_threshold
+                if gate_threshold is not None:
+                    row_min = stock_score_mat.min(axis=1)
+                    penalty = row_min - 0.5  # ensure some negative buffer
+                    bad_ts = ts_part < gate_threshold
+                    # stock_score_mat = stock_score_mat.mask(bad_ts) # set to NaN
+                    stock_score_mat = stock_score_mat.where(
+                        ~bad_ts, penalty, axis=0,
+                    )  # set to penalty instead of hard gating
+        else:
+            stock_score_mat = base_score
 
         # --------------------------------------------------------
         # 4) Construct final output: keep only stock_score for sector scoring

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
-SINGLE_SLEEVE_TESTING = "sideways"
+SINGLE_SLEEVE_TESTING = "trend"
 
 
 @dataclass
@@ -60,33 +60,42 @@ class MultiSleeveConfig:
         default_factory=lambda: {
             # Strong uptrend, normal vol
             "bull": {
-                "trend": 0.96,
-                "defensive": 0.04,  # keep tiny always-on defensive hedge
+                "trend": 0.90,
+                "sideways": 0.04,   # tiny, exploratory
+                "defensive": 0.06,  # small stabilizer
                 "cash": 0.00,
             },
+
             # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.35,
-                "defensive": 0.45,
+                "trend": 0.28,
+                "sideways": 0.12,   # modest contribution
+                "defensive": 0.40,
                 "cash": 0.20,
             },
+
             # Downtrend, elevated vol
             "bear": {
-                "trend": 0.05,
+                "trend": 0.03,
+                "sideways": 0.02,   # tiny, avoids overexposure to laggards
                 "defensive": 0.53,
                 "cash": 0.42,
             },
+
             # Panic / crisis regime
             "crisis": {
                 "trend": 0.00,
+                "sideways": 0.00,   # fully suppressed
                 "defensive": 0.72,
                 "cash": 0.28,
             },
+
             # Choppy / sideways
             "sideways": {
-                "trend": 0.25,
-                "defensive": 0.50,
-                "cash": 0.25,
+                "trend": 0.15,      # down from 0.25
+                "sideways": 0.25,   # main role here, but not dominant
+                "defensive": 0.40,  # stabilizer
+                "cash": 0.20,
             },
         }
     )

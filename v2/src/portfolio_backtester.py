@@ -12,7 +12,7 @@ class PortfolioBacktester:
     """
     Simple vectorized backtester for a weight-based multi-asset portfolio.
 
-    - prices: Date x Ticker (Close)
+    - prices: Date x Ticker (Open or Close prices on those dates)
     - weights: Date x Ticker (target weights on those dates)
 
     Parameters

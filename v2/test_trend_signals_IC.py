@@ -152,7 +152,7 @@ def plot_ic_series(ic_series: pd.Series, H: int, out_dir: _Path = _Path("data/pl
 
 def main():
     START = "2020-01-01"
-    END = "2025-11-30"
+    END = "2025-12-31"
 
     # Build runtime components
     rt = build_runtime()
@@ -181,7 +181,7 @@ def main():
     )
     stock_score_mat = stock_score_mat.loc[start:end]
     # Keep only tickers with non-NaN scores
-    stock_score_mat = stock_score_mat.dropna(axis=1, how="any")
+    # stock_score_mat = stock_score_mat.dropna(axis=1, how="any")
     signal_mat = stock_score_mat
     print(f"[test_trend_signals_IC] signal_mat:\n{signal_mat}")
     print(
