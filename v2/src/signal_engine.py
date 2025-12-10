@@ -177,7 +177,7 @@ class SignalEngine:
         start: datetime,
         end: datetime,
         interval: str,
-        auto_ffill: bool = True, # whether to forward-fill missing values by default
+        auto_ffill: bool = False, # whether to forward-fill missing values by default
         auto_ffill_limit: Optional[int] = 5, # max number of consecutive missing values to ffill over
         **params: Any,
     ) -> pd.Series:

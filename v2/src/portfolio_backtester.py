@@ -83,6 +83,39 @@ class PortfolioBacktester:
         turnover.iloc[0] = 0.0
         return turnover
 
+    def _compute_drawdown_stats(
+        self, equity: pd.Series
+    ) -> Dict[str, float | pd.Timestamp | None]:
+        # running max
+        running_max = equity.cummax()
+
+        # drawdowns
+        dd = (equity - running_max) / running_max
+
+        # trough date
+        trough_date = dd.idxmin()
+        trough_value = equity.loc[trough_date]
+
+        # the peak is the last time running_max == equity BEFORE trough
+        peak_date = equity.loc[:trough_date].idxmax()
+        peak_value = equity.loc[peak_date]
+
+        # find recovery: first date AFTER trough when equity regains peak
+        recovery_candidates = equity.loc[trough_date:].index[
+            equity.loc[trough_date:] >= peak_value
+        ]
+        recovery_date = recovery_candidates[0] if len(recovery_candidates) > 0 else None
+
+        return {
+            "mdd": dd.min(),
+            "peak_date": peak_date,
+            "trough_date": trough_date,
+            "recovery_date": recovery_date,
+            "days_in_drawdown": (
+                (recovery_date - peak_date).days if recovery_date else None
+            ),
+        }
+
     # ------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------
@@ -211,21 +244,52 @@ class PortfolioBacktester:
             else np.nan
         )
 
-        # ------ Max drawdown ------
+        # ------ Skewness of returns ------
+        # Measure asymmetry of the net (post-cost) portfolio return distribution.
+        # Use pandas' sample skew (Fisher's definition, unbiased) on the
+        # portfolio returns within the effective window.
+        skewness = float(port_rets.skew()) if len(port_rets) > 0 else np.nan
+
+        # ------ Kurtosis of returns ------
+        # Measure the tailedness of the net (post-cost) portfolio return distribution.
+        # Use pandas' kurtosis (excess kurtosis by default) on the portfolio returns
+        # within the effective window.
+        kurtosis = float(port_rets.kurtosis()) if len(port_rets) > 0 else np.nan
+
+        # ------ Max drawdown and detailed drawdown stats ------
         equity = df["equity"]
-        running_max = equity.cummax()
-        drawdown = equity / running_max - 1.0
-        max_dd = drawdown.min()
+        dd_stats = self._compute_drawdown_stats(equity)
+        max_dd = dd_stats.get("mdd")
 
         # ------ Turnover ------
         avg_turnover = df["turnover"].mean()
+
+        # ------ Total costs (monetary) ------
+        # If the run() result included a 'cost' column (daily cost as a
+        # return-rate), approximate the monetary cost on each day as
+        # cost_rate * equity_{t-1} (previous day's equity). The very first
+        # day's previous equity is approximated with `initial_value`.
+        total_cost_amount = np.nan
+        if "cost" in df.columns and "equity" in df.columns:
+            prev_equity = df["equity"].shift(1).fillna(self.initial_value)
+            cost_amounts = df["cost"] * prev_equity
+            total_cost_amount = float(cost_amounts.sum())
 
         return {
             "CAGR": cagr,
             "Volatility": vol,
             "Sharpe": sharpe,
             "MaxDrawdown": max_dd,
+            # Detailed drawdown info (may be None)
+            "DDPeakDate": dd_stats.get("peak_date"),
+            "DDTroughDate": dd_stats.get("trough_date"),
+            "DDRecoveryDate": dd_stats.get("recovery_date"),
+            "DaysInDrawdown": dd_stats.get("days_in_drawdown"),
             "AvgDailyTurnover": avg_turnover,
+            "TotalCost": total_cost_amount,
+            "Skewness": skewness,
+            "Kurtosis": kurtosis,
+            "InitialEquity": float(self.initial_value),
             "EffectiveStart": eff_start,
             "EffectiveEnd": eff_end,
         }

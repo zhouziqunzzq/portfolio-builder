@@ -81,6 +81,7 @@ class DefensiveSleeve:
             )
             if not mask.empty:
                 row = mask.iloc[0]
+                # print(f"[DefensiveSleeve] Active S&P 500 members on {as_of_dt.date()}: {row.sum()}")
                 active_tickers = set(row.index[row.astype(bool)])
 
         core: List[str] = []
@@ -110,7 +111,7 @@ class DefensiveSleeve:
 
         for t in tickers:
             try:
-                # Get last ~1 month of OHLCV
+                # Get last ~2 month of OHLCV
                 df = self.mds.get_ohlcv(
                     ticker=t,
                     start=end - pd.Timedelta(days=60),
@@ -167,12 +168,15 @@ class DefensiveSleeve:
         sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
         if sigs.empty:
             return {}
+        # print(f"[DefensiveSleeve] Signals ({as_of.date()}): \n{sigs.tail()}")
 
         # 2) compute composite scores (NO global top-k)
         scored = self._compute_scores_only(sigs)
+        # print(f"[DefensiveSleeve] Scored ({as_of.date()}): \n{scored.tail()}")
 
         # 3) class-aware allocation with per-class top-k selection
         weights = self.allocate_by_asset_class(scored, regime)
+        # print(f"[DefensiveSleeve] Weights ({as_of.date()}): {weights}")
 
         self.state.last_rebalance = as_of
         self.state.last_weights = weights
@@ -183,9 +187,10 @@ class DefensiveSleeve:
     # ------------------------------------------------------------------
 
     def allocate_by_asset_class(
-        self, df: pd.DataFrame, regime: str
+        self, scored: pd.DataFrame, regime: str
     ) -> Dict[str, float]:
         """
+        Allocate by asset class according to config.
         Steps:
         1) Assign asset class: equity / bond / gold
         2) Per-class: select top_k * class_alloc fraction
@@ -201,8 +206,8 @@ class DefensiveSleeve:
                 return cfg.asset_class_for_etf[t]
             return "equity"  # defensive stock
 
-        df = df.copy()
-        df["asset_class"] = [assign_class(t) for t in df.index]
+        scored = scored.copy()
+        scored["asset_class"] = [assign_class(t) for t in scored.index]
 
         # 2) get regime-level class allocations
         class_alloc = cfg.asset_class_allocations_by_regime.get(regime)
@@ -214,7 +219,7 @@ class DefensiveSleeve:
         final: Dict[str, float] = {}
 
         for asset_class in ["equity", "bond", "gold"]:
-            sub = df[df["asset_class"] == asset_class]
+            sub = scored[scored["asset_class"] == asset_class]
             if sub.empty:
                 continue
 
@@ -253,29 +258,49 @@ class DefensiveSleeve:
     def _compute_signals_snapshot(
         self,
         tickers: List[str],
-        start: pd.Timestamp,
+        start: pd.Timestamp,  # not used; individual signal start dates are inferred from window and buffer
         end: pd.Timestamp,
     ) -> pd.DataFrame:
+        """
+        Compute all required signals for the given tickers as-of `end` date.
+        Returns a DataFrame with one row per ticker and columns for each
+        signal.
+
+        Note that if the as-of end date does not have data (e.g. weekend/holiday),
+        we use the most recent available data before that date.
+        """
 
         cfg = self.config
+        buffer = pd.Timedelta(days=cfg.signals_extra_buffer_days)
         rows = []
 
         for t in tickers:
             try:
+                mom_fast_start = end - pd.Timedelta(days=cfg.mom_fast_window) - buffer
                 mom_fast = self.signals.get_series(
-                    t, "ts_mom", start=start, end=end, window=cfg.mom_fast_window
+                    t,
+                    "ts_mom",
+                    start=mom_fast_start,
+                    end=end,
+                    window=cfg.mom_fast_window,
                 )
+                mom_slow_start = end - pd.Timedelta(days=cfg.mom_slow_window) - buffer
                 mom_slow = self.signals.get_series(
-                    t, "ts_mom", start=start, end=end, window=cfg.mom_slow_window
+                    t,
+                    "ts_mom",
+                    start=mom_slow_start,
+                    end=end,
+                    window=cfg.mom_slow_window,
                 )
+                vol_start = end - pd.Timedelta(days=cfg.vol_window) - buffer
                 vol = self.signals.get_series(
-                    t, "vol", start=start, end=end, window=cfg.vol_window
+                    t, "vol", start=vol_start, end=end, window=cfg.vol_window
                 )
-
+                beta_start = end - pd.Timedelta(days=cfg.beta_window) - buffer
                 beta = self.signals.get_series(
                     t,
                     "beta",
-                    start=start,
+                    start=beta_start,
                     end=end,
                     window=cfg.beta_window,
                     benchmark="SPY",

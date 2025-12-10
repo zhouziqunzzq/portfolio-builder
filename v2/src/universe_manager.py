@@ -37,6 +37,8 @@ class UniverseManager:
         # When True, avoid all network calls and only use local artifacts/caches
         self.local_only = bool(local_only)
 
+        self.cached_membership_df: Optional[pd.DataFrame] = None
+
     # ---- Build methods (to be implemented incrementally) ----
     def build_current_constituents(self) -> pd.DataFrame:
         """Fetch current S&P 500 constituents from Wikipedia and normalize.
@@ -573,6 +575,8 @@ class UniverseManager:
         self.log.info("Saved membership CSV", extra={"path": str(self.membership_csv)})
 
     def load_from_membership_csv(self) -> pd.DataFrame:
+        if self.cached_membership_df is not None:
+            return self.cached_membership_df
         if not self.membership_csv.exists():
             raise FileNotFoundError(f"Membership CSV not found: {self.membership_csv}")
         df = pd.read_csv(self.membership_csv)

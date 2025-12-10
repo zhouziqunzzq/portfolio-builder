@@ -17,6 +17,9 @@ class TrendConfig:
     # ------------------------------------------------------------------
     # Signals / stock scoring
     # ------------------------------------------------------------------
+    # Extra days of data to fetch for signals; Only used in non-vectorized mode
+    signals_extra_buffer_days: int = 30
+
     # CS-momentum (Cross-Sectional momentum)
     mom_windows: List[int] = field(default_factory=lambda: [63, 126, 252])
     mom_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])

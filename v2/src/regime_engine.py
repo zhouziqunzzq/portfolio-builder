@@ -70,7 +70,6 @@ class RegimeEngine:
             )
 
         close = df_px["Close"].astype(float)
-
         trend = self.signals.get_series(
             cfg.benchmark,
             "trend_score",
@@ -80,7 +79,6 @@ class RegimeEngine:
             fast_window=cfg.fast_ma,
             slow_window=cfg.slow_ma,
         )
-
         vol = self.signals.get_series(
             cfg.benchmark,
             "vol",
@@ -89,7 +87,6 @@ class RegimeEngine:
             interval=cfg.interval,
             window=cfg.vol_window,
         )
-
         mom = self.signals.get_series(
             cfg.benchmark,
             "ts_mom",
@@ -121,17 +118,14 @@ class RegimeEngine:
         ).dropna(subset=["trend_score", "vol", "vol_score", "dd_1y", "mom_252"])
 
         # --- 3) Compute regime scores (soft membership) ---
-
         scores = self._compute_regime_scores(features)
 
         # --- 4) Normalize scores and choose primary regime ---
-
         score_cols = list(scores.columns)
         score_sum = scores[score_cols].sum(axis=1).replace(0, np.nan)
         scores_norm = scores.div(score_sum, axis=0)
 
         primary = scores_norm.idxmax(axis=1).rename("primary_regime")
-
         out = pd.concat([features, scores_norm, primary], axis=1)
 
         return out

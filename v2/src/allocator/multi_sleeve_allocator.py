@@ -100,6 +100,7 @@ class MultiSleeveAllocator:
 
         # 1) Get regime context (primary label + score distribution)
         primary_regime, regime_scores = self._get_regime_context(as_of_ts)
+        # print(f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}")
 
         # 2) Compute effective sleeve weights via regime-score blending
         sleeve_alloc = self._compute_effective_sleeve_weights(
@@ -259,6 +260,8 @@ class MultiSleeveAllocator:
             # Fallback: sideways, no scores
             return "sideways", {}
 
+        # Use the last available date <= as_of; Not necessarily as_of itself because
+        # of weekends/holidays
         last = df.iloc[-1]
 
         # Primary regime label
@@ -346,7 +349,7 @@ class MultiSleeveAllocator:
         smas = self.signals.get_series(
             ticker=benchmark,
             signal="sma",
-            start=as_of - timedelta(days=window * 3),  # extra buffer
+            start=as_of - timedelta(days=window * 7),  # extra buffer
             end=as_of,
             window=window,
         )
@@ -355,15 +358,26 @@ class MultiSleeveAllocator:
         prices = self.signals.get_series(
             ticker=benchmark,
             signal="last_price",
-            start=as_of - timedelta(days=window * 3),  # extra buffer
+            start=as_of - timedelta(days=window * 7),  # extra buffer
             end=as_of,
         )
         if prices is None or prices.empty:
             return "risk-on"
 
-        price_as_of = prices.get(as_of, None)
-        sma_as_of = smas.get(as_of, None)
-        print(f"[MultiSleeveAllocator] Trend filter for {as_of.date()}: price={price_as_of}, sma={sma_as_of}")
+        # Use the last available price and SMA as of `as_of` if not too far back
+        # Otherwise use None
+        last_trading_date = min(prices.index.max(), smas.index.max())
+        if (as_of - last_trading_date).days > 7:
+            price_as_of, sma_as_of = None, None
+            print(
+                f"[MultiSleeveAllocator] Trend filter: no recent data as of {as_of.date()}"
+            )
+        else:
+            price_as_of = prices.iloc[-1]
+            sma_as_of = smas.iloc[-1]
+            # print(
+            #     f"[MultiSleeveAllocator] Trend filter for {as_of.date()} (use {last_trading_date.date()}): price={price_as_of}, sma={sma_as_of}"
+            # )
 
         if price_as_of is None or sma_as_of is None:
             return "risk-on"

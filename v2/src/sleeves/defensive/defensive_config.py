@@ -75,6 +75,7 @@ class DefensiveConfig:
     # -------------------------------
     # Signals / windows
     # -------------------------------
+    signals_extra_buffer_days: int = 30  # extra days of data to fetch for signals
     mom_fast_window: int = 63
     mom_slow_window: int = 252
     vol_window: int = 20

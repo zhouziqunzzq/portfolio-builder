@@ -130,30 +130,36 @@ class TrendSleeve:
         universe = self._get_trend_universe(as_of)
         if not universe:
             return {}
+        # print(f"[TrendSleeve] Universe size as of {as_of.date()}: {len(universe)} tickers")
 
         # 2) Compute signals (with liquidity filters)
         sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
         if sigs.empty:
             return {}
+        # print(f"[TrendSleeve] Signals ({as_of.date()}) after liquidity filters: \n{sigs.tail()}")
 
         # 3) Stock scores
         scored = self._compute_stock_scores(sigs)
         if scored.empty:
             return {}
+        # print(f"[TrendSleeve] Stock scores ({as_of.date()}): \n{scored.tail()}")
 
         # 4) Sector scores & smoothed sector weights
         sector_scores = self._compute_sector_scores(scored)
         if sector_scores.empty:
             return {}
+        # print(f"[TrendSleeve] Sector scores ({as_of.date()}): \n{sector_scores}")
 
         sector_weights = self._compute_smoothed_sector_weights(as_of, sector_scores)
         if sector_weights.isna().all() or sector_weights.sum() <= 0:
             return {}
+        # print(f"[TrendSleeve] Sector weights ({as_of.date()}): \n{sector_weights}")
 
         # 5) Allocate sector -> stocks
         stock_weights = self._allocate_to_stocks(scored, sector_weights)
         if not stock_weights:
             return {}
+        # print(f"[TrendSleeve] Raw stock weights ({as_of.date()}): \n{stock_weights}")
 
         total = sum(stock_weights.values())
         if total <= 0:
@@ -227,6 +233,7 @@ class TrendSleeve:
         Only tickers passing all filters are kept.
         """
         cfg = self.config
+        buffer = pd.Timedelta(days=cfg.signals_extra_buffer_days or 30)
         rows = []
 
         # Pull thresholds & windows (with graceful defaults if missing)
@@ -241,13 +248,15 @@ class TrendSleeve:
                 row = {"ticker": t}
 
                 # --- Liquidity metrics ---
+                adv_start = end - pd.Timedelta(days=adv_window) - buffer
                 adv = self.signals.get_series(
                     t,
                     "adv",
-                    start=start,
+                    start=adv_start,
                     end=end,
                     window=adv_window,
                 )
+                mv_start = end - pd.Timedelta(days=mv_window) - buffer
                 mv = self.signals.get_series(
                     t,
                     "median_volume",
@@ -255,13 +264,15 @@ class TrendSleeve:
                     end=end,
                     window=mv_window,
                 )
+                px_start = end - buffer
                 px = self.signals.get_series(
                     t,
                     "last_price",
-                    start=start,
+                    start=px_start,
                     end=end,
                 )
 
+                # Use the last available values
                 adv_val = adv.iloc[-1] if not adv.empty else np.nan
                 mv_val = mv.iloc[-1] if not mv.empty else np.nan
                 px_val = px.iloc[-1] if not px.empty else np.nan
@@ -282,23 +293,27 @@ class TrendSleeve:
 
                 # --- Multi-horizon momentum ---
                 for w in cfg.mom_windows:
+                    mom_start = end - pd.Timedelta(days=w) - buffer
                     mom = self.signals.get_series(
                         t,
                         "ts_mom",
-                        start=start,
+                        start=mom_start,
                         end=end,
                         window=w,
                     )
+                    # Use the last available value
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
 
                 # --- Realized volatility ---
+                vol_start = end - pd.Timedelta(days=cfg.vol_window) - buffer
                 vol = self.signals.get_series(
                     t,
                     "vol",
-                    start=start,
+                    start=vol_start,
                     end=end,
                     window=cfg.vol_window,
                 )
+                # Use the last available value
                 row["vol"] = vol.iloc[-1] if not vol.empty else np.nan
 
                 rows.append(row)
@@ -463,6 +478,7 @@ class TrendSleeve:
             smoothed = raw
         else:
             gap = (as_of - self.state.last_as_of).days
+            # print(f"[TrendSleeve] Days since last sector weights: {gap} days")
 
             if gap <= 0:
                 smoothed = raw
@@ -777,6 +793,9 @@ class TrendSleeve:
 
             if scores_t_nonan.empty:
                 # Fallback: if absolutely no scores, either carry forward or uniform
+                print(
+                    f"[TrendSleeve] Warning: No sector scores on {dt.date()}; using fallback weights."
+                )
                 if prev_smoothed is not None:
                     w_final = prev_smoothed.reindex(sectors).fillna(0.0)
                     w_smoothed = w_final
@@ -978,13 +997,17 @@ class TrendSleeve:
         start: datetime | str,
         end: datetime | str,
         rebalance_dates: Optional[List[datetime | str]] = None,
-        warmup_buffer: int = 30,
+        warmup_buffer: Optional[
+            int
+        ] = None,  # in days; unused for vectorized trend sleeve
     ) -> pd.DataFrame:
         """
         Vectorized precomputation of final stock weights over [start, end], using a
         warmup period for signals. The warmup start date is:
-
-            warmup_start = start - (max(signal_windows) + warmup_buffer) days
+            warmup_start = start - max_signal_window - sector_smoothing_buffer
+        where
+            max_signal_window = max of all signal windows (mom, vol, adv, median_volume, etc)
+            sector_smoothing_buffer = days needed for sector weight smoothing to stabilize.
 
         Steps:
           1) Build price matrix over [warmup_start, end]
@@ -1007,6 +1030,16 @@ class TrendSleeve:
         cfg = self.config
 
         # Determine warmup length from signal-related windows
+        # Note: The warmup is extremely critical for correct sector weight smoothing.
+        beta = cfg.sector_smoothing_beta
+        # Calculate the extra buffer days needed for smoothing to stabilize
+        if beta > 0 and beta < 1:
+            sector_weight_smoothing_days = int(np.ceil(np.log(1e-3) / np.log(1 - beta)))
+        else:
+            sector_weight_smoothing_days = 0
+        sector_weight_smoothing_days = int(
+            sector_weight_smoothing_days * (365 / 252)
+        )  # trading days to calendar days
         window_candidates: List[int] = []
         window_candidates.extend(getattr(cfg, "mom_windows", []) or [])
         for attr_name in [
@@ -1019,8 +1052,14 @@ class TrendSleeve:
             if isinstance(w_val, int) and w_val > 0:
                 window_candidates.append(w_val)
         max_window = max(window_candidates) if window_candidates else 0
-        warmup_days = max_window + int(warmup_buffer)
+        max_window_abs_days = int(
+            max_window * (365 / 252)
+        )  # convert trading days to calendar days
+        warmup_days = max_window_abs_days + sector_weight_smoothing_days
         warmup_start = start_ts - pd.Timedelta(days=warmup_days)
+        print(
+            f"[TrendSleeve] Precompute warmup_start: {warmup_start.date()}, start: {start_ts.date()}, end: {end_ts.date()}"
+        )
 
         # --------------------------------------------------
         # 1) Price matrix

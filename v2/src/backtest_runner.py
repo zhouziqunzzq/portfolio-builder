@@ -92,6 +92,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable network calls and use only local caches",
     )
+    p.add_argument(
+        "--skip-precompute",
+        action="store_true",
+        help="Skip sleeves precomputing before backtest",
+    )
 
     # Cost & risk-free knobs
     p.add_argument(
@@ -871,19 +876,22 @@ def main() -> int:
 
     # Optional vectorized sleeve precompute to accelerate per-date calls.
     # Only sleeves exposing a `precompute` method (e.g., TrendSleeve) will be used.
-    try:
-        print("[backtest_v2] Starting sleeve precompute phase...")
-        allocator.precompute(
-            start=start_dt,
-            end=end_dt,
-            rebalance_dates=list(rebalance_schedule_shifted),
-            warmup_buffer=30,
-        )
-        print("[backtest_v2] Sleeve precompute phase completed.")
-    except Exception as e:
-        print(
-            f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
-        )
+    if args.skip_precompute:
+        print("[backtest_v2] Skipping sleeve precompute phase as requested.")
+    else:
+        try:
+            print("[backtest_v2] Starting sleeve precompute phase...")
+            allocator.precompute(
+                start=start_dt,
+                end=end_dt,
+                rebalance_dates=list(rebalance_schedule_shifted),
+                warmup_buffer=30,
+            )
+            print("[backtest_v2] Sleeve precompute phase completed.")
+        except Exception as e:
+            print(
+                f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
+            )
 
     # Generate sleeve-based target weights (and collect regime context)
     rebalance_target_weights, rebalance_contexts = generate_target_weights(
@@ -998,6 +1006,9 @@ def main() -> int:
     def num(x):
         return f"{x:.2f}" if x is not None and not pd.isna(x) else "n/a"
 
+    def money(x):
+        return f"${x:,.2f}" if x is not None and not pd.isna(x) else "n/a"
+
     eff_start = stats.get("EffectiveStart")
     eff_end = stats.get("EffectiveEnd")
 
@@ -1007,12 +1018,35 @@ def main() -> int:
         f"{eff_start.date() if eff_start is not None else 'n/a'}"
         f" -> {eff_end.date() if eff_end is not None else 'n/a'}"
     )
+    # Print enabled sleeves from allocator for quick debug
+    enabled = getattr(allocator, "enabled_sleeves", None)
+    if enabled:
+        enabled_list = ", ".join(sorted(enabled))
+    else:
+        enabled_list = "n/a"
+    print(f"Enabled Sleeves   : {enabled_list}")
     print(f"CAGR              : {pct(stats.get('CAGR'))}")
     print(f"Volatility        : {pct(stats.get('Volatility'))}")
     print(f"Sharpe (excess)   : {num(stats.get('Sharpe'))}")
+    print(f"Skewness          : {num(stats.get('Skewness'))}")
+    print(f"Kurtosis          : {num(stats.get('Kurtosis'))}")
     print(f"Max Drawdown      : {pct(stats.get('MaxDrawdown'))}")
+    # Additional drawdown details returned by PortfolioBacktester.stats()
+    peak_dt = stats.get("DDPeakDate")
+    trough_dt = stats.get("DDTroughDate")
+    recovery_dt = stats.get("DDRecoveryDate")
+    days_in_dd = stats.get("DaysInDrawdown")
+    print(f"Peak Date         : {peak_dt.date() if peak_dt is not None else 'n/a'}")
+    print(f"Trough Date       : {trough_dt.date() if trough_dt is not None else 'n/a'}")
+    print(
+        f"Recovery Date     : {recovery_dt.date() if recovery_dt is not None else 'n/a'}"
+    )
+    print(f"Days in Drawdown  : {int(days_in_dd) if days_in_dd is not None else 'n/a'}")
     print(f"Avg Daily Turnover: {pct(stats.get('AvgDailyTurnover'))}")
-    print(f"Final equity      : {result['equity'].iloc[-1]:.2f}")
+    # Print initial equity and total monetary costs (if provided by stats)
+    print(f"Initial equity     : {money(stats.get('InitialEquity'))}")
+    print(f"Total Costs        : {money(stats.get('TotalCost'))}")
+    print(f"Final equity       : {money(result['equity'].iloc[-1])}")
     print("=====================================================\n")
 
     # Plotting
