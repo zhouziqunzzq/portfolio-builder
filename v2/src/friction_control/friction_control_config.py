@@ -23,6 +23,8 @@ class FrictionControlConfig:
 
     # ------------------------------------------------------------------
     # Minimum holding period parameters
+    # Note: This is in number of rebalance steps, not days; Has to be
+    #   greater than 1 to have any effect.
     # ------------------------------------------------------------------
     min_holding_rebalances: int = 0
 

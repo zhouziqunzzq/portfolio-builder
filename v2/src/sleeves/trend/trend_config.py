@@ -75,6 +75,7 @@ class TrendConfig:
 
     # ------------------------------------------------------------------
     # Rebalancing (may be overridden by global scheduler)
+    # Note: Only used in non-vectorized mode
     # ------------------------------------------------------------------
     rebalance_freq: str = "M"
 

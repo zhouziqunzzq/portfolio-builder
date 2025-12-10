@@ -355,9 +355,10 @@ def generate_target_weights(
         rows[as_of] = w
         contexts[as_of] = ctx
         all_tickers.update(w.keys())
-        # Debug: print the weight of KDP if present
-        if "KDP" in w:
-            print(f"  KDP weight on {as_of.date()}: {w['KDP']:.4f}")
+        # Debug: print raw weights
+        print(
+            f"  Raw weights: {', '.join([f'{t}:{v:.4f}' for t,v in w.items() if v > 0.0])}"
+        )
 
     if not all_tickers:
         return pd.DataFrame(index=schedule), contexts
@@ -400,6 +401,57 @@ def get_price_matrix_for_weights(
         local_only=bool(local_only),
     )
     return price_mat
+
+
+def shift_rebalance_dates_to_trading_calendar(
+    rebalance_dates: pd.DatetimeIndex, trading_calendar: pd.DatetimeIndex
+) -> pd.DatetimeIndex:
+    """
+    Shift each date in `rebalance_dates` forward to the next available
+    date in `trading_calendar` (both treated as normalized dates).
+
+    If a rebalance date falls on a non-trading day, the next trading day
+    on or after that date is used. If no trading day exists after a
+    rebalance date (i.e., it's after the last trading date), that
+    rebalance date is dropped.
+    Returns a deduplicated, ordered `DatetimeIndex` of shifted dates.
+    """
+    if rebalance_dates.empty:
+        return rebalance_dates
+
+    # Normalize and sort trading calendar
+    trading = pd.DatetimeIndex(sorted(pd.to_datetime(trading_calendar).normalize()))
+    if len(trading) == 0:
+        return rebalance_dates
+
+    shifted: list[pd.Timestamp] = []
+    for d in rebalance_dates:
+        dn = pd.Timestamp(d).normalize()
+        if dn in trading:
+            shifted.append(dn)
+        else:
+            pos = trading.searchsorted(dn)
+            if pos < len(trading):
+                newd = trading[pos]
+                shifted.append(newd)
+                print(
+                    f"[backtest_v2] Shifted rebalance date {dn.date()} -> {newd.date()}"
+                )
+            else:
+                # No trading day after this date in the calendar; skip it
+                print(
+                    f"[backtest_v2] Dropping rebalance date {dn.date()}: no later trading day available"
+                )
+
+    # Deduplicate while preserving order
+    seen = set()
+    deduped: list[pd.Timestamp] = []
+    for d in shifted:
+        if d not in seen:
+            seen.add(d)
+            deduped.append(d)
+
+    return pd.DatetimeIndex(deduped)
 
 
 # ---------------------------------------------------------------------
@@ -864,6 +916,19 @@ def main() -> int:
         f"(local_only={args.local_only})"
     )
 
+    # Benchmark (SPY)
+    bench_symbol = "SPY"
+    df_bench = mds.get_ohlcv(
+        bench_symbol,
+        start=start_dt,
+        end=end_dt,
+        interval="1d",
+        auto_adjust=True,
+        local_only=bool(args.local_only),
+    )
+    bench_series = None
+    bench_returns = None
+
     # Build rebalance schedule early for precompute (frequency from CLI)
     rebalance_schedule = build_rebalance_schedule(
         start=start_dt, end=end_dt, frequency=args.rebalance_frequency
@@ -871,6 +936,22 @@ def main() -> int:
     if rebalance_schedule.empty:
         print("No rebalance dates in window; aborting.")
         return 0
+    # Shift rebalance dates to next trading day if needed using benchmark calendar
+    if df_bench is not None and not df_bench.empty:
+        orig_count = len(rebalance_schedule)
+        rebalance_schedule = shift_rebalance_dates_to_trading_calendar(
+            rebalance_schedule, df_bench.index
+        )
+        new_count = len(rebalance_schedule)
+        if new_count != orig_count:
+            print(
+                f"[backtest_v2] Rebalance schedule adjusted: {orig_count} -> {new_count} dates after shifting to trading calendar"
+            )
+    else:
+        print(
+            "[backtest_v2] No benchmark calendar available; skipping rebalance date shifting."
+        )
+
     # Shift to prior day for lookahead bias free precompute
     rebalance_schedule_shifted = rebalance_schedule - pd.Timedelta(days=1)
 
@@ -955,6 +1036,13 @@ def main() -> int:
         f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
     )
     rebalance_target_weights = adj_rebalance_target_weights
+    # Debug: print adjusted weights after friction control
+    for dt in rebalance_target_weights.index:
+        w_row = rebalance_target_weights.loc[dt]
+        print(
+            f"  Adjusted weights for {dt.date()}: "
+            f"{', '.join([f'{t}:{v:.4f}' for t,v in w_row.items() if v > 0.0])}"
+        )
 
     # Backtester
     bt = PortfolioBacktester(
@@ -970,19 +1058,7 @@ def main() -> int:
     result = bt.run()
     stats = bt.stats(result, auto_warmup=True, warmup_days=0)
 
-    # Benchmark (SPY)
-    bench_symbol = "SPY"
-    df_bench = mds.get_ohlcv(
-        bench_symbol,
-        start=start_dt,
-        end=end_dt,
-        interval="1d",
-        auto_adjust=True,
-        local_only=bool(args.local_only),
-    )
-    bench_series = None
-    bench_returns = None
-
+    # Prepare benchmark series and returns
     if df_bench is not None and not df_bench.empty:
         price_col = (
             "Adjclose"

@@ -62,6 +62,11 @@ def apply_min_holding_period_row(
     w_prev = w_prev.reindex(idx).fillna(0.0)
     w_prop = w_proposed.reindex(idx).fillna(0.0)
     holding_age = holding_age.reindex(idx).fillna(0).astype(int)
+    # print(
+    #     f"[friction-min-hold] idx={idx.tolist()}" f", w_prev={w_prev.to_dict()}",
+    #     f", w_prop={w_prop.to_dict()}",
+    #     f", holding_age={holding_age.to_dict()}",
+    # )
 
     # Identify sells on young positions
     young = holding_age < min_holding_rebalances

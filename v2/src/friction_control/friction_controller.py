@@ -114,6 +114,30 @@ class FrictionController:
                         min_holding_rebalances=self.config.min_holding_rebalances,
                         keep_cash=self.keep_cash,
                     )
+                    # Debug: print intermediate weights
+                    # print(
+                    #     f"  Raw target weights: {', '.join([f'{t}:{v:.4f}' for t,v in w_t.items() if v > 0.0])}"
+                    # )
+                    # print(
+                    #     f"  Previous effective weights: "
+                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_prev.items() if v > 0.0])}"
+                    # )
+                    # print(
+                    #     f"  Post-hysteresis weights: "
+                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_hyst.items() if v > 0.0])}"
+                    # )
+                    # print(
+                    #     f"  Post-min-trade-notional weights: "
+                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_after_notional.items() if v > 0.0])}"
+                    # )
+                    # print(
+                    #     f"  Post-min-holding-period weights: "
+                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_eff.items() if v > 0.0])}"
+                    # )
+                    # print(
+                    #     f"  Updated holding ages: "
+                    #     f"{', '.join([f'{t}:{v}' for t,v in holding_age.items() if v > 0])}"
+                    # )
                 W_final_vals.append(w_eff.copy())
                 w_prev = w_eff
             else:
