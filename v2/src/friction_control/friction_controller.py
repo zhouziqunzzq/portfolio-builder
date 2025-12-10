@@ -53,6 +53,10 @@ class FrictionController:
         self.rebalance_dates_set = set(self.weights_dates).intersection(
             set(self.price_dates)
         )
+        # Print some warning if rebalance dates were dropped due to missing prices
+        dropped_dates = set(self.weights_dates) - self.rebalance_dates_set
+        if dropped_dates:
+            print(f"[FrictionController] Warning: Dropped {len(dropped_dates)} rebalance dates due to missing price data: {sorted(dropped_dates)}")
         self.rebalance_dates = sorted(self.rebalance_dates_set)
         # Ensure columns are aligned & uppercase tickers
         self.prices.columns = [c.upper() for c in self.prices.columns]

@@ -584,6 +584,7 @@ class UniverseManager:
             "Loaded membership CSV",
             extra={"path": str(self.membership_csv), "rows": len(df)},
         )
+        self.cached_membership_df = df
         return df
 
     # ---- Interfaces for consumers ----
