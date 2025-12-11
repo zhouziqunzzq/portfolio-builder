@@ -26,6 +26,9 @@ if __name__ == "__main__":
     spy_vol = signals.get_series("SPY", "vol", start, end, window=20)
     print(f"SPY Volatility:\n{spy_vol}")
 
+    spy_ewm_vol = signals.get_series("SPY", "ewm_vol", start, end, halflife=20)
+    print(f"SPY EWM Volatility:\n{spy_ewm_vol}")
+
     spy_mom = signals.get_series("SPY", "ts_mom", start, end, window=252)
     print(f"SPY Momentum:\n{spy_mom}")
 

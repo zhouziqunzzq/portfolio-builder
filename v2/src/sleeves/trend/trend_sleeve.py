@@ -36,6 +36,7 @@ from .trend_config import TrendConfig
 @dataclass
 class TrendState:
     last_as_of: Optional[pd.Timestamp] = None
+    # Latent smoothed sector weights (before top-k)
     last_sector_weights: Optional[pd.Series] = None
 
 
@@ -66,17 +67,20 @@ class TrendSleeve:
         self.vec_engine = vec_engine
         self.config = config or TrendConfig()
         self.state = TrendState()
-        self.precomputed_weights_mat: Optional[pd.DataFrame] = None
-        self._cs_stock_score_mat: Optional[pd.DataFrame] = (
-            None  # cached precomputed CS-mom component
-        )
-        self._ts_stock_score_mat: Optional[pd.DataFrame] = (
-            None  # cached precomputed TS-mom component
-        )
 
         self._approx_rebalance_days = self._infer_approx_rebalance_days(
             self.config.rebalance_freq
         )
+
+        # Precomputed caches
+        # Cached precomputed weights matrix (Date x Ticker)
+        self.precomputed_weights_mat: Optional[pd.DataFrame] = None
+        # Cached precomputed CS-mom component
+        self._cs_stock_score_mat: Optional[pd.DataFrame] = None
+        # Cached precomputed TS-mom component
+        self._ts_stock_score_mat: Optional[pd.DataFrame] = None
+        # Cached raw feature matrices (without z-scoring)
+        self._cached_feature_mats: Optional[Dict[str, pd.DataFrame]] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -260,7 +264,7 @@ class TrendSleeve:
                 mv = self.signals.get_series(
                     t,
                     "median_volume",
-                    start=start,
+                    start=mv_start,
                     end=end,
                     window=mv_window,
                 )
@@ -305,17 +309,36 @@ class TrendSleeve:
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
 
                 # --- Realized volatility ---
-                vol_start = end - pd.Timedelta(days=cfg.vol_window) - buffer
-                vol = self.signals.get_series(
-                    t,
-                    "vol",
-                    start=vol_start,
-                    end=end,
-                    window=cfg.vol_window,
-                )
-                # Use the last available value
-                row["vol"] = vol.iloc[-1] if not vol.empty else np.nan
+                vol_mode = getattr(cfg, "vol_mode", "rolling")
+                ewm_halflife = getattr(cfg, "ewm_vol_halflife", None) or cfg.vol_window
+                if vol_mode == "rolling":
+                    vol_start = end - pd.Timedelta(days=cfg.vol_window) - buffer
+                    vol = self.signals.get_series(
+                        t,
+                        "vol",
+                        start=vol_start,
+                        end=end,
+                        window=cfg.vol_window,
+                    )
+                    # Use the last available value
+                    vol_val = vol.iloc[-1] if not vol.empty else np.nan
+                elif vol_mode == "ewm":
+                    # NEW: EM-vol from last_price series
+                    # Use a longer lookback window to make sure we have enough px data
+                    vol_lookback_days = max(cfg.vol_window, ewm_halflife)
+                    vol_start = end - pd.Timedelta(days=vol_lookback_days) - buffer
+                    vol = self.signals.get_series(
+                        t,
+                        "ewm_vol",
+                        start=vol_start,
+                        end=end,
+                        halflife=ewm_halflife,
+                    )
+                    vol_val = vol.iloc[-1] if not vol.empty else np.nan
+                else:
+                    raise ValueError(f"Unknown vol_mode: {vol_mode}")
 
+                row["vol"] = vol_val
                 rows.append(row)
 
             except Exception:
@@ -460,44 +483,53 @@ class TrendSleeve:
             return w2
         return w2 / total
 
-    def _compute_raw_sector_weights(self, sector_scores: pd.Series) -> pd.Series:
-        w = self._softmax(sector_scores)
-        w = self._apply_caps(w)
-        w = self._top_k(w)
-        return w
-
     def _compute_smoothed_sector_weights(
         self,
         as_of: pd.Timestamp,
         sector_scores: pd.Series,
     ) -> pd.Series:
         cfg = self.config
-        raw = self._compute_raw_sector_weights(sector_scores)
 
+        # 1) Softmax -> base sector weights
+        w_soft = self._softmax(sector_scores)
+
+        # 2) Apply caps/floors
+        w_capped = self._apply_caps(w_soft)
+
+        # 3) Time-based smoothing vs previous (on full uncropped vector)
         if self.state.last_as_of is None or self.state.last_sector_weights is None:
-            smoothed = raw
+            # First time: no smoothing, just use capped weights
+            smoothed_pre_topk = w_capped
         else:
             gap = (as_of - self.state.last_as_of).days
             # print(f"[TrendSleeve] Days since last sector weights: {gap} days")
 
             if gap <= 0:
-                smoothed = raw
+                # Same day or out-of-order: dont smooth, just use new capped weights
+                smoothed_pre_topk = w_capped
             elif gap <= 2 * self._approx_rebalance_days:
-                prev = self.state.last_sector_weights.reindex(raw.index).fillna(0.0)
-                smoothed = (
-                    1 - cfg.sector_smoothing_beta
-                ) * prev + cfg.sector_smoothing_beta * raw
-                total = smoothed.sum()
-                if total > 0:
-                    smoothed = smoothed / total
-                else:
-                    smoothed = raw
-            else:
-                smoothed = raw
+                # Normal smoothing case
+                prev = self.state.last_sector_weights.reindex(w_capped.index).fillna(0.0)
+                beta = cfg.sector_smoothing_beta
+                smoothed_pre_topk = (1 - beta) * prev + beta * w_capped
 
+                total = smoothed_pre_topk.sum()
+                if total > 0:
+                    smoothed_pre_topk = smoothed_pre_topk / total
+                else:
+                    smoothed_pre_topk = w_capped
+            else:
+                # Large gap -> reset smoothing, treat as fresh start
+                smoothed_pre_topk = w_capped
+
+        # 4) Apply top-k on the smoothed weights for actual allocation
+        smoothed_out = self._top_k(smoothed_pre_topk)
+
+        # 5) Update state with pre-top-k smoothed weights (latent preference)
         self.state.last_as_of = as_of
-        self.state.last_sector_weights = smoothed.copy()
-        return smoothed
+        self.state.last_sector_weights = smoothed_pre_topk.copy()
+
+        return smoothed_out
 
     # ------------------------------------------------------------------
     # Allocate sector -> stocks
@@ -586,24 +618,39 @@ class TrendSleeve:
         # --------------------------------------------------------
         # 1) Vectorized raw signals
         # --------------------------------------------------------
-        mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
-        vol_mat = VSE.get_volatility(price_mat, window=cfg.vol_window)
-
+        # CS-momentum
+        cs_mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
         # NEW: TS-momentum (raw, no cross-sectional z-score)
         if cfg.use_ts_mom:
             ts_mom_dict = VSE.get_ts_momentum(price_mat, cfg.ts_mom_windows)
         else:
             ts_mom_dict = {}
 
+        # Realized volatility
+        vol_mat = None
+        # NEW: volatility matrix (EM-vol or rolling)
+        vol_mode = getattr(cfg, "vol_mode", "rolling")
+        ewm_halflife = getattr(cfg, "ewm_vol_halflife", None) or cfg.vol_window
+        if vol_mode == "ewm":
+            vol_mat = VSE.get_ewm_volatility(
+                price_mat,
+                halflife=ewm_halflife,
+            )
+        else:  # rolling
+            vol_mat = VSE.get_volatility(
+                price_mat,
+                window=cfg.vol_window,
+            )
+
         # Build a dict: feature_name -> matrix
         feature_mats = {}
-
         # Momentum matrices (CS-momentum)
         for w in cfg.mom_windows:
-            feature_mats[f"mom_{w}"] = mom_dict[w]
-
+            feature_mats[f"mom_{w}"] = cs_mom_dict[w]
         # Volatility matrix
         feature_mats["vol"] = vol_mat
+        # Save cached feature matrices
+        self._cached_feature_mats = feature_mats
 
         # --------------------------------------------------------
         # 2) Z scoring (winsorized if enabled) *per date*, cross-sectionally (column-wise)
@@ -927,10 +974,25 @@ class TrendSleeve:
         # 3) Per-day sector -> stock allocation
         # ============================================================
         if cfg.weighting_mode == "inverse-vol" and vol_mat is None:
-            vol_mat = VSE.get_volatility(
-                price_mat,
-                window=cfg.vol_window,
-            )
+            # First try to get cached vol matrix
+            vol_mat = getattr(self, "_cached_feature_mats", {}).get("vol")
+            if vol_mat is None:
+                print(
+                    "[TrendSleeve] Warning: volatility matrix cache missing; recomputing vol_mat."
+                )
+                # Fallback: compute on the fly
+                vol_mode = getattr(cfg, "vol_mode", "rolling")
+                ewm_halflife = getattr(cfg, "ewm_vol_halflife", None) or cfg.vol_window
+                if vol_mode == "ewm":
+                    vol_mat = VSE.get_ewm_volatility(
+                        price_mat,
+                        halflife=ewm_halflife,
+                    )
+                else:  # rolling
+                    vol_mat = VSE.get_volatility(
+                        price_mat,
+                        window=cfg.vol_window,
+                    )
         for dt in dates:
             scores_t = stock_score_mat.loc[dt]
             if cfg.weighting_mode == "inverse-vol":

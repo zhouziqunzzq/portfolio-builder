@@ -347,6 +347,26 @@ class VectorizedSignalEngine:
 
         return vol
 
+    def get_ewm_volatility(
+        self,
+        price_mat: pd.DataFrame,
+        halflife: int = 20,
+        annualize: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Vectorized EWM realized volatility (Date x Ticker).
+        """
+        if price_mat.empty:
+            return price_mat
+
+        returns = price_mat.pct_change(fill_method=None)
+        vol = returns.ewm(halflife=halflife).std()
+
+        if annualize:
+            vol *= np.sqrt(252)
+
+        return vol
+
     # -----------------------------------------------------------
     # Convenience for slicing large precomputed matrices
     # -----------------------------------------------------------

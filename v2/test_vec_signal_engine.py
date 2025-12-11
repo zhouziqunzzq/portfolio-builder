@@ -136,10 +136,16 @@ def test_vectorized_signals(vse: VectorizedSignalEngine):
     print("\nVolatility (tail):")
     print(vol_mat.tail())
 
+    # ---- EWM Volatility ----
+    ewm_vol_mat = vse.get_ewm_volatility(price_mat, halflife=20, annualize=True)
+    print("\nEWM Volatility (tail):")
+    print(ewm_vol_mat.tail())
+
     # Simple sanity stats
     print("\nBasic stats:")
     print(f"  Returns mean (per-ticker):\n{rets.mean()}")
     print(f"\n  Vol (per-ticker, last date):\n{vol_mat.iloc[-1]}")
+    print(f"\n  EWM Vol (per-ticker, last date):\n{ewm_vol_mat.iloc[-1]}")
 
 
 def main():

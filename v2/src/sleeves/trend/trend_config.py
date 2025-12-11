@@ -23,7 +23,12 @@ class TrendConfig:
     # CS-momentum (Cross-Sectional momentum)
     mom_windows: List[int] = field(default_factory=lambda: [63, 126, 252])
     mom_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
-    vol_window: int = 20
+  
+    # NEW: volatility estimator mode
+    vol_mode: str = "rolling"          # "rolling" | "ewm"
+    ewm_vol_halflife: int = 40     # in trading days; if None, fall back to vol_window
+  
+    vol_window: int = 20 # only used if vol_mode == "rolling"
     vol_penalty: float = 0.5  # negative contribution from volatility
     cs_weight: float = 1.0  # overall scale for CS-mom contribution
 

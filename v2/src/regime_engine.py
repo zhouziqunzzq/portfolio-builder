@@ -33,6 +33,9 @@ class RegimeConfig:
     slow_ma: int = 200
     dd_lookback: int = 252  # 1y trading days
     vol_norm_window: int = 252  # for z-scoring vol
+    # NEW: volatility estimator mode
+    vol_mode: str = "rolling"  # "rolling" | "ewm"
+    ewm_vol_halflife: int = 20  # in trading days; if None, fall back to vol_window
 
 
 class RegimeEngine:
@@ -79,14 +82,26 @@ class RegimeEngine:
             fast_window=cfg.fast_ma,
             slow_window=cfg.slow_ma,
         )
-        vol = self.signals.get_series(
-            cfg.benchmark,
-            "vol",
-            start=start_dt,
-            end=end_dt,
-            interval=cfg.interval,
-            window=cfg.vol_window,
-        )
+        vol: pd.Series | None = None
+        vol_mode = cfg.vol_mode
+        if vol_mode == "ewm":
+            vol = self.signals.get_series(
+                cfg.benchmark,
+                "ewm_vol",
+                start=start_dt,
+                end=end_dt,
+                interval=cfg.interval,
+                halflife=cfg.ewm_vol_halflife,
+            )
+        else:  # default to "rolling"
+            vol = self.signals.get_series(
+                cfg.benchmark,
+                "vol",
+                start=start_dt,
+                end=end_dt,
+                interval=cfg.interval,
+                window=cfg.vol_window,
+            )
         mom = self.signals.get_series(
             cfg.benchmark,
             "ts_mom",

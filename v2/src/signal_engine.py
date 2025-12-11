@@ -125,7 +125,9 @@ class SignalEngine:
 
             # For daily/weekly/monthly data, give ourselves a calendar margin
             if interval in ("1d", "1wk", "1mo"):
-                margin = pd.Timedelta(days=3) # don't use 7 days; can cause staleness when stepping weekly
+                margin = pd.Timedelta(
+                    days=3
+                )  # don't use 7 days; can cause staleness when stepping weekly
             else:
                 margin = pd.Timedelta(0)
 
@@ -177,8 +179,10 @@ class SignalEngine:
         start: datetime,
         end: datetime,
         interval: str,
-        auto_ffill: bool = False, # whether to forward-fill missing values by default
-        auto_ffill_limit: Optional[int] = 5, # max number of consecutive missing values to ffill over
+        auto_ffill: bool = False,  # whether to forward-fill missing values by default
+        auto_ffill_limit: Optional[
+            int
+        ] = 5,  # max number of consecutive missing values to ffill over
         **params: Any,
     ) -> pd.Series:
         """
@@ -189,34 +193,40 @@ class SignalEngine:
         at `start` is valid.
         """
         signal = signal.lower()
+        possible_signal_varients = [
+            signal,
+            signal.replace(" ", "_"),
+            signal.replace("-", "_"),
+        ]
 
-        if signal == "ts_mom":
-            sig = self._compute_ts_mom_full(ticker, start, end, interval, **params)
-        elif signal == "vol":
-            sig = self._compute_vol_full(ticker, start, end, interval, **params)
-        elif signal == "trend_score":
-            sig = self._compute_trend_score_full(
-                ticker, start, end, interval, **params
-            )
-        elif signal == "sma":
-            sig = self._compute_sma_full(ticker, start, end, interval, **params)
-        elif signal == "beta":
-            sig = self._compute_beta_full(ticker, start, end, interval, **params)
-        elif signal == "adv":
-            sig = self._compute_adv_full(ticker, start, end, interval, **params)
-        elif signal == "median_volume":
-            sig = self._compute_median_volume_full(
-                ticker, start, end, interval, **params
-            )
-        elif signal == "last_price":
-            sig = self._compute_last_price_full(ticker, start, end, interval, **params)
-        else:
+        # Prefer direct naming convention: `_compute_{signal}_full`.
+        # This keeps a single place to add new signals and avoids long
+        # duplicated if/elif chains.
+        for signal in possible_signal_varients:
+            method = getattr(self, f"_compute_{signal}_full", None)
+            if method is not None:
+                break
+        # Fallback: try some common aliases
+        if method is None:
+            # Common alias mappings (extendable)
+            aliases = {
+                "median-volume": "median_volume",
+                "last-price": "last_price",
+            }
+            normalized = aliases.get(signal, signal)
+            method = getattr(self, f"_compute_{normalized}_full", None)
+
+        if method is None:
             raise ValueError(f"Unknown signal: {signal}")
-        
+
+        sig = method(ticker, start, end, interval, **params)
+
         if auto_ffill:
             # Extend to requested date range
             sig = sig.reindex(pd.date_range(start, end, freq="D"))
-            sig = sig.ffill(limit=auto_ffill_limit) # ffill because the requested end date may not be a trading day
+            sig = sig.ffill(
+                limit=auto_ffill_limit
+            )  # ffill because the requested end date may not be a trading day
         return sig
 
     # ----- concrete signal implementations -----
@@ -288,6 +298,46 @@ class SignalEngine:
             vol = vol * np.sqrt(252)
 
         vol.name = f"vol_{window}"
+        return vol
+
+    def _compute_ewm_vol_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        halflife: int = 20,
+        price_col: str = "Close",
+        annualize: bool = True,
+    ) -> pd.Series:
+        """
+        Exponentially-weighted moving volatility estimator.
+
+        Parameters:
+            halflife: halflife in trading days for EWM
+        """
+        # Need extra days for EWM to stabilize
+        extra = halflife * 3  # EWM needs more data to stabilize
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty:
+            return pd.Series(dtype=float)
+
+        px = df[price_col].astype(float)
+        rets = px.pct_change().dropna()
+        if rets.empty:
+            return pd.Series(dtype=float)
+
+        vol = rets.ewm(halflife=halflife, adjust=False).std()
+        if annualize:
+            vol = vol * np.sqrt(252)
+        vol.name = f"ewm_vol_{halflife}"
         return vol
 
     def _compute_trend_score_full(
