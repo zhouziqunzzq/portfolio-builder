@@ -580,3 +580,69 @@ class SignalEngine:
         # print(f"[SignalEngine] _compute_last_price_full: Retrieved {len(price)} data points for {ticker} from {start.date()} to {end.date()}")
         # print(price.tail())
         return price
+
+    # ----------------------------------------------------------------------
+    # Spread signals
+    # ----------------------------------------------------------------------
+
+    def _compute_spread_mom_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        price_col: str = "Close",
+        benchmark: str = "SPY",
+        buffer_days: int = 5,
+    ) -> pd.Series:
+        """
+        Spread momentum = R_ticker - R_benchmark over `window` days.
+
+        Where R_ticker = log(P_t / P_{t-window}) is the log return over `window`.
+        """
+        extra = window + buffer_days
+        start_for_data = start - pd.tseries.offsets.BDay(extra)
+
+        # Fetch both asset and benchmark prices
+        df_asset = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        df_bench = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+
+        if df_asset.empty or df_bench.empty:
+            return pd.Series(dtype=float)
+
+        pa = df_asset[price_col].astype(float).replace({0.0: np.nan})
+        pm = df_bench[price_col].astype(float).replace({0.0: np.nan})
+        log_pa = np.log(pa.astype(float))
+        log_pm = np.log(pm.astype(float))
+        # Log returns
+        ra = log_pa - log_pa.shift(window)
+        rm = log_pm - log_pm.shift(window)
+
+        # Align on common dates
+        rets = pd.concat(
+            [
+                ra.rename("ra"),
+                rm.rename("rm"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+
+        if rets.empty:
+            return pd.Series(dtype=float)
+
+        spread_mom = rets["ra"] - rets["rm"]
+        spread_mom.name = f"spread_mom_{benchmark}_{window}"
+
+        return spread_mom

@@ -324,6 +324,62 @@ class VectorizedSignalEngine:
 
         return ts_dict
 
+    def get_spread_momentum(
+        self,
+        price_mat: pd.DataFrame,
+        lookbacks: Sequence[int],
+        benchmark: Optional[
+            str
+        ] = "SPY",  # Use a single benchmark ticker for all for now
+        price_col: str = "Close",
+    ) -> Dict[int, pd.DataFrame]:
+        """
+        Vectorized spread momentum vs benchmark.
+
+        Returns
+        -------
+        dict: window -> spread momentum matrix (Date x Ticker)
+        """
+        spread_mom_dict: Dict[int, pd.DataFrame] = {}
+
+        if price_mat.empty:
+            for w in lookbacks:
+                spread_mom_dict[w] = pd.DataFrame(index=price_mat.index)
+            return spread_mom_dict
+
+        # Fetch benchmark prices from market data store directly
+        df_bench = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=price_mat.index.min(),
+            end=price_mat.index.max(),
+            interval="1d",
+        )
+        if df_bench is None or df_bench.empty:
+            for w in lookbacks:
+                spread_mom_dict[w] = pd.DataFrame(index=price_mat.index)
+            return spread_mom_dict
+        bench_price = df_bench[price_col].astype(float)
+        bench_price.index = pd.to_datetime(bench_price.index)
+        bench_price = bench_price.reindex(index=price_mat.index).ffill()
+
+        # Compute log returns
+        log_bench = np.log(bench_price).replace([np.inf, -np.inf], np.nan)
+        log_px = np.log(price_mat).replace([np.inf, -np.inf], np.nan)
+
+        for w in lookbacks:
+            ret_i = log_px - log_px.shift(w)
+            ret_b = log_bench - log_bench.shift(w)
+            # broadcast benchmark returns across all tickers
+            ret_b_mat = pd.DataFrame(
+                np.tile(ret_b.values.reshape(-1, 1), (1, price_mat.shape[1])),
+                index=price_mat.index,
+                columns=price_mat.columns,
+            )
+            spread_w = ret_i - ret_b_mat
+            spread_mom_dict[w] = spread_w
+
+        return spread_mom_dict
+
     # -----------------------------------------------------------
     # Vectorized realized volatility
     # -----------------------------------------------------------

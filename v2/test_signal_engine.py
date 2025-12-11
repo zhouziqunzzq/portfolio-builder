@@ -45,3 +45,25 @@ if __name__ == "__main__":
 
     spy_last_price = signals.get_series("SPY", "last_price", start, end)
     print(f"SPY Last Price:\n{spy_last_price}")
+
+    # Test spread momentum signal
+    # Case 1: same ticker for ticker and benchmark - expect all zeros
+    spy_spread_mom = signals.get_series(
+        "SPY",
+        "spread_mom",
+        start,
+        end,
+        benchmark="SPY",
+        window=252,
+    )
+    print(f"SPY Spread Momentum vs SPY:\n{spy_spread_mom}")
+    # Case 2: different benchmark
+    aapl_spy_spread_mom = signals.get_series(
+        "AAPL",
+        "spread_mom",
+        start,
+        end,
+        benchmark="SPY",
+        window=252,
+    )
+    print(f"AAPL Spread Momentum vs SPY:\n{aapl_spy_spread_mom}")

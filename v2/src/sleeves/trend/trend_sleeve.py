@@ -308,6 +308,24 @@ class TrendSleeve:
                     # Use the last available value
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
 
+                # --- Multi-horizon spread momentum ---
+                if cfg.use_spread_mom:
+                    benchmark = cfg.spread_benchmark or "SPY"
+                    for w in cfg.spread_mom_windows:
+                        smom_start = end - pd.Timedelta(days=w) - buffer
+                        smom = self.signals.get_series(
+                            t,
+                            "spread_mom",
+                            start=smom_start,
+                            end=end,
+                            window=w,
+                            benchmark=benchmark,
+                        )
+                        # Use the last available value
+                        row[f"spread_mom_{w}"] = (
+                            smom.iloc[-1] if not smom.empty else np.nan
+                        )
+
                 # --- Realized volatility ---
                 vol_mode = getattr(cfg, "vol_mode", "rolling")
                 ewm_halflife = getattr(cfg, "ewm_vol_halflife", None) or cfg.vol_window
@@ -380,15 +398,23 @@ class TrendSleeve:
         df = sigs.copy()
 
         # z-score momentum components
+        # Note: By z-scoring we turn the sampled ts-mom into a cross-sectional ranking, i.e. cs-mom
         for w in cfg.mom_windows:
             col = f"mom_{w}"
             df[f"z_mom_{w}"] = self._zscore_series(df[col])
+            # print(f"[TrendSleeve] Z-scored momentum (w={w}): \n{df[[col, f'z_mom_{w}']].tail()}")
 
-        # weighted momentum score
+        # weighted momentum scores for z_mom and spread_mom
         momentum_score = pd.Series(0.0, index=df.index)
+        # CS-momentum
         for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
             momentum_score += wt * df[f"z_mom_{w}"]
-
+        # Spread-momentum
+        if cfg.use_spread_mom:
+            for w, wt in zip(cfg.spread_mom_windows, cfg.spread_mom_window_weights):
+                col = f"spread_mom_{w}"
+                # Raw addition; no z-scoring of spread_mom
+                momentum_score += cfg.spread_mom_weight * wt * df[f"spread_mom_{w}"]
         df["momentum_score"] = momentum_score
 
         # volatility score (lower vol -> higher score)
@@ -509,7 +535,9 @@ class TrendSleeve:
                 smoothed_pre_topk = w_capped
             elif gap <= 2 * self._approx_rebalance_days:
                 # Normal smoothing case
-                prev = self.state.last_sector_weights.reindex(w_capped.index).fillna(0.0)
+                prev = self.state.last_sector_weights.reindex(w_capped.index).fillna(
+                    0.0
+                )
                 beta = cfg.sector_smoothing_beta
                 smoothed_pre_topk = (1 - beta) * prev + beta * w_capped
 
@@ -620,15 +648,25 @@ class TrendSleeve:
         # --------------------------------------------------------
         # CS-momentum
         cs_mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
-        # NEW: TS-momentum (raw, no cross-sectional z-score)
+        # TS-momentum (raw, no cross-sectional z-score)
         if cfg.use_ts_mom:
             ts_mom_dict = VSE.get_ts_momentum(price_mat, cfg.ts_mom_windows)
         else:
             ts_mom_dict = {}
+        # Spread-momentum (raw, no cross-sectional z-score)
+        if cfg.use_spread_mom:
+            benchmark = cfg.spread_benchmark or "SPY"
+            spread_mom_dict = VSE.get_spread_momentum(
+                price_mat,
+                cfg.spread_mom_windows,
+                benchmark=benchmark,
+            )
+        else:
+            spread_mom_dict = {}
 
         # Realized volatility
         vol_mat = None
-        # NEW: volatility matrix (EM-vol or rolling)
+        # volatility matrix (EM-vol or rolling)
         vol_mode = getattr(cfg, "vol_mode", "rolling")
         ewm_halflife = getattr(cfg, "ewm_vol_halflife", None) or cfg.vol_window
         if vol_mode == "ewm":
@@ -693,12 +731,14 @@ class TrendSleeve:
 
         # stock_score_mat = mom_part + cfg.vol_penalty * z_mats["vol_score"]
         base_score = mom_part.add(cfg.vol_penalty * z_mats["vol_score"], fill_value=0.0)
-        # Explicit CS stock component (after cs_weight)
+
+        # CS-momentum component (after cs_weight)
         cs_stock_score_mat = base_score * cfg.cs_weight
 
-        # NEW: TS-momentum contribution (raw, absolute)
+        # TS-momentum contribution (raw, absolute)
         # ts_mom_windows / ts_mom_weights are independent of mom_windows.
         ts_stock_score_mat = None  # will hold pure TS component (after ts_weight)
+        ts_stock_score_mat_raw = None  # will hold raw TS component before weighting
         if cfg.use_ts_mom and ts_mom_dict:
             ts_part = None
             for w, wt in zip(cfg.ts_mom_windows, cfg.ts_mom_weights):
@@ -710,27 +750,52 @@ class TrendSleeve:
                     ts_part = wt * ts_mat
                 else:
                     ts_part += wt * ts_mat
-
-            # TS stock component (after ts_weight)
+            ts_stock_score_mat_raw = ts_part
+            # TS-mom stock component (after ts_weight)
             ts_stock_score_mat = cfg.ts_weight * ts_part
-            # Combined stock score BEFORE gating
-            stock_score_mat = cs_stock_score_mat.add(ts_stock_score_mat, fill_value=0.0)
 
-            # Apply TS-mom gating: zero out stock_score where TS-mom < threshold
-            if cfg.use_ts_gate:
-                gate_threshold = cfg.ts_gate_threshold
-                if gate_threshold is not None:
-                    row_min = stock_score_mat.min(axis=1)
-                    penalty = row_min - 0.5  # ensure some negative buffer
-                    bad_ts = ts_part < gate_threshold
-                    # stock_score_mat = stock_score_mat.mask(bad_ts) # set to NaN
-                    stock_score_mat = stock_score_mat.where(
-                        ~bad_ts,
-                        penalty,
-                        axis=0,
-                    )  # set to penalty instead of hard gating
-        else:
-            stock_score_mat = cs_stock_score_mat
+        # Spread-momentum contribution (raw, absolute)
+        spread_stock_score_mat = (
+            None  # will hold pure spread-mom component (after spread_mom_weight)
+        )
+        if cfg.use_spread_mom and spread_mom_dict:
+            spread_part = None
+            for w, wt in zip(cfg.spread_mom_windows, cfg.spread_mom_window_weights):
+                smat = spread_mom_dict[w]
+                # ensure same index/columns as base_score
+                smat = smat.reindex_like(base_score)
+
+                if spread_part is None:
+                    spread_part = wt * smat
+                else:
+                    spread_part += wt * smat
+            # Spread-mom stock component (after spread_mom_weight)
+            spread_stock_score_mat = cfg.spread_mom_weight * spread_part
+
+        # Combined stock score BEFORE gating
+        stock_score_mat = cs_stock_score_mat.copy()
+        if ts_stock_score_mat is not None:
+            stock_score_mat = stock_score_mat.add(ts_stock_score_mat, fill_value=0.0)
+        if spread_stock_score_mat is not None:
+            # print(f"[TrendSleeve] Adding spread momentum component to stock scores: \n{spread_stock_score_mat.tail()}")
+            stock_score_mat = stock_score_mat.add(
+                spread_stock_score_mat, fill_value=0.0
+            )
+
+        # Apply TS-mom gating if enabled
+        if cfg.use_ts_mom and cfg.use_ts_gate and ts_stock_score_mat_raw is not None:
+            # TS-mom gating: zero out stock_score where TS-mom < threshold
+            gate_threshold = cfg.ts_gate_threshold
+            if gate_threshold is not None:
+                row_min = stock_score_mat.min(axis=1)
+                penalty = row_min - 0.5  # ensure some negative buffer
+                bad_ts = ts_stock_score_mat_raw < gate_threshold
+                # stock_score_mat = stock_score_mat.mask(bad_ts) # set to NaN
+                stock_score_mat = stock_score_mat.where(
+                    ~bad_ts,
+                    penalty,
+                    axis=0,
+                )  # set to penalty instead of hard gating
 
         # --------------------------------------------------------
         # 4) Construct final output: keep only stock_score for sector scoring

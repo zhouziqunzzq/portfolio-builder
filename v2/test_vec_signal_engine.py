@@ -102,7 +102,7 @@ def test_vectorized_signals(vse: VectorizedSignalEngine):
 
     tickers = ["AAPL", "MSFT", "GLD"]
     start = "2020-01-01"
-    end = "2020-03-31"
+    end = "2020-06-30"
 
     price_mat = vse.get_price_matrix(
         tickers=tickers,
@@ -140,6 +140,47 @@ def test_vectorized_signals(vse: VectorizedSignalEngine):
     ewm_vol_mat = vse.get_ewm_volatility(price_mat, halflife=20, annualize=True)
     print("\nEWM Volatility (tail):")
     print(ewm_vol_mat.tail())
+
+    # ---- Spread Momentum ----
+    # Case 1: SPY vs SPY - expect all zeros
+    spy_price_mat = vse.get_price_matrix(
+        tickers=["SPY"],
+        start=start,
+        end=end,
+        interval="1d",
+        local_only=True,
+        auto_adjust=True,
+    )
+    spread_mom_spy = vse.get_spread_momentum(
+        price_mat=spy_price_mat,
+        lookbacks=[5, 10],
+        benchmark="SPY",
+    )
+    for w, smom in spread_mom_spy.items():
+        print(f"\nSpread Momentum vs SPY w={w} (tail):")
+        print(smom.tail())
+    # Case 2: AAPL/MSFT/GLD vs SPY
+    spread_mom = vse.get_spread_momentum(
+        price_mat=price_mat,
+        lookbacks=[5, 10],
+        benchmark="SPY",
+    )
+    for w, smom in spread_mom.items():
+        print(f"\nSpread Momentum vs SPY w={w} (tail):")
+        print(smom.tail())
+    # Case 3: Full universe vs SPY
+    full_price_mat = vse.get_price_matrix_sp500(
+        start=start,
+        end=end,
+        interval="1d",
+        local_only=True,
+        auto_adjust=True,
+    )
+    spread = vse.get_spread_momentum(full_price_mat, [63], benchmark="SPY")[63]
+    print("\nSpread Momentum vs SPY for full universe (describe):")
+    print(spread.describe())
+    print("\nSpread Momentum vs SPY for full universe (tail):")
+    print(spread.tail())
 
     # Simple sanity stats
     print("\nBasic stats:")
