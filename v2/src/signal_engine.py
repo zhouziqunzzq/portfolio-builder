@@ -758,3 +758,368 @@ class SignalEngine:
         spread_mom.name = f"spread_mom_{benchmark}_{window}"
 
         return spread_mom
+
+    # ----------------------------------------------------------------------
+    # Bollinger signals
+    # ----------------------------------------------------------------------
+
+    def _compute_bb_mid_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands middle line = simple moving average over `window`.
+        """
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        bb_mid = price.rolling(window=window).mean()
+        bb_mid.name = f"bb_mid_{window}"
+        return bb_mid
+
+    def _compute_bb_std_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        ddof: int = 0,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands standard deviation over `window`.
+        """
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        bb_std = price.rolling(window=window).std(ddof=ddof)
+        bb_std.name = f"bb_std_{window}"
+        return bb_std
+
+    def _compute_bb_upper_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        k: float = 2.0,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands upper line = mid + k * std
+        """
+        mid = self.get_series(
+            ticker,
+            "bb_mid",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        std = self.get_series(
+            ticker,
+            "bb_std",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        upper = mid + float(k) * std
+        upper.name = f"bb_upper_{window}_{k:g}"
+        return upper
+
+    def _compute_bb_lower_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        k: float = 2.0,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands lower line = mid - k * std
+        """
+        mid = self.get_series(
+            ticker,
+            "bb_mid",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        std = self.get_series(
+            ticker,
+            "bb_std",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        lower = mid - float(k) * std
+        lower.name = f"bb_lower_{window}_{k:g}"
+        return lower
+
+    def _compute_bb_z_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands Z-score = (price - mid) / std
+        """
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+
+        mid = self.get_series(
+            ticker,
+            "bb_mid",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        std = self.get_series(
+            ticker,
+            "bb_std",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        bb_z = (price - mid) / std.replace(0, np.nan)
+        bb_z.name = f"bb_z_{window}"
+        return bb_z
+
+    def _compute_bb_bandwidth_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        k: float = 2.0,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands Bandwidth = (upper - lower) / mid = (2 * k * std) / mid
+        """
+        mid = self.get_series(
+            ticker,
+            "bb_mid",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        ).replace(0.0, np.nan)
+        std = self.get_series(
+            ticker,
+            "bb_std",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        # (upper - lower)/mid = (2*k*std)/mid
+        bw = (2.0 * float(k) * std) / mid
+        bw.name = f"bb_bandwidth_{window}_{k:g}"
+        return bw
+
+    def _compute_bb_percent_b_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        k: float = 2.0,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Bollinger Bands %B = (price - lower) / (upper - lower)
+        """
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start,
+            end=end,
+            interval=interval,
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+        price = df[price_col].astype(float)
+
+        upper = self.get_series(
+            ticker,
+            "bb_upper",
+            start,
+            end,
+            interval,
+            window=window,
+            k=k,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        lower = self.get_series(
+            ticker,
+            "bb_lower",
+            start,
+            end,
+            interval,
+            window=window,
+            k=k,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        denom = (upper - lower).replace(0.0, np.nan)
+
+        pb = (price - lower) / denom
+        pb.name = f"bb_percent_b_{window}_{k:g}"
+        return pb
+
+    def _compute_trend_slope_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 50,
+        price_col: str = "Close",
+        use_log_price: bool = True,
+        buffer_bars: int = 20,
+    ) -> pd.Series:
+        """
+        Trend slope over `window` bars, computed via OLS linear regression.
+        """
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker, start=start_for_data, end=end, interval=interval
+        )
+        if df.empty or price_col not in df:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        y = np.log(price) if use_log_price else price
+
+        # Precompute constants for slope with x = 0..window-1
+        x = np.arange(window, dtype=float)
+        x_mean = x.mean()
+        x_demean = x - x_mean
+        denom = float(np.sum(x_demean * x_demean))  # > 0
+
+        def _ols_slope(arr: np.ndarray) -> float:
+            # arr is length=window, may contain nan
+            if np.isnan(arr).any():
+                return np.nan
+            y_demean = arr - float(np.mean(arr))
+            return float(np.sum(x_demean * y_demean) / denom)
+
+        slope = y.rolling(window=window).apply(_ols_slope, raw=True)
+        # Units: log-price per bar (or price per bar if use_log_price=False)
+        slope.name = f"trend_slope_{window}" + ("_log" if use_log_price else "")
+        return slope
+
+    def _compute_donchian_pos_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 20,
+        high_col: str = "High",
+        low_col: str = "Low",
+        close_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Donchian Channel position over `window` bars:
+            pos = (close - Donchian_Low) / (Donchian_High - Donchian_Low)
+        """
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker, start=start_for_data, end=end, interval=interval
+        )
+        if df.empty or any(c not in df for c in (high_col, low_col, close_col)):
+            return pd.Series(dtype=float)
+
+        high = df[high_col].astype(float)
+        low = df[low_col].astype(float)
+        close = df[close_col].astype(float)
+
+        hi = high.rolling(window=window).max()
+        lo = low.rolling(window=window).min()
+        rng = (hi - lo).replace(0.0, np.nan)
+
+        pos = (close - lo) / rng
+        pos.name = f"donchian_pos_{window}"
+        return pos

@@ -1,5 +1,8 @@
 from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine, SignalStore, SignalKey
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
     mds = MarketDataStore(
@@ -81,3 +84,136 @@ if __name__ == "__main__":
         window=252,
     )
     print(f"AAPL Spread Momentum vs SPY:\n{aapl_spy_spread_mom}")
+
+    # Test Bollinger signals
+    BB_WINDOW = 20
+    spy_bb_mid = signals.get_series(
+        "SPY",
+        "bb_mid",
+        start,
+        end,
+        window=BB_WINDOW,
+    )
+    print(f"SPY Bollinger Mid:\n{spy_bb_mid}")
+    spy_bb_std = signals.get_series(
+        "SPY",
+        "bb_std",
+        start,
+        end,
+        window=BB_WINDOW,
+    )
+    print(f"SPY Bollinger Std:\n{spy_bb_std}")
+    spy_bb_upper = signals.get_series(
+        "SPY",
+        "bb_upper",
+        start,
+        end,
+        window=BB_WINDOW,
+        k=2.0,
+    )
+    print(f"SPY Bollinger Upper:\n{spy_bb_upper}")
+    spy_bb_lower = signals.get_series(
+        "SPY",
+        "bb_lower",
+        start,
+        end,
+        window=BB_WINDOW,
+        k=2.0,
+    )
+    print(f"SPY Bollinger Lower:\n{spy_bb_lower}")
+    spy_bb_z = signals.get_series(
+        "SPY",
+        "bb_z",
+        start,
+        end,
+        window=BB_WINDOW,
+    )
+    print(f"SPY Bollinger Z-Score:\n{spy_bb_z}")
+    spy_bb_bandwidth = signals.get_series(
+        "SPY",
+        "bb_bandwidth",
+        start,
+        end,
+        window=BB_WINDOW,
+        k=2.0,
+    )
+    print(f"SPY Bollinger Bandwidth:\n{spy_bb_bandwidth}")
+    spy_bb_percent_b = signals.get_series(
+        "SPY",
+        "bb_percent_b",
+        start,
+        end,
+        window=BB_WINDOW,
+        k=2.0,
+    )
+    print(f"SPY Bollinger %b:\n{spy_bb_percent_b}")
+
+    # --- Small visualization: plot recent Bollinger Bands for SPY ---
+    try:
+        os.makedirs("plots", exist_ok=True)
+        # Align price and bands on common index and take recent window
+        df_plot = pd.concat(
+            [
+                spy_last_price.rename("price"),
+                spy_bb_mid.rename("mid"),
+                spy_bb_upper.rename("upper"),
+                spy_bb_lower.rename("lower"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+        if not df_plot.empty:
+            df_plot = df_plot.tail(200)
+            plt.figure(figsize=(12, 6))
+            plt.plot(df_plot.index, df_plot["price"], label="Price")
+            plt.plot(df_plot.index, df_plot["mid"], label="BB Mid")
+            plt.plot(df_plot.index, df_plot["upper"], label="BB Upper", linestyle="--")
+            plt.plot(df_plot.index, df_plot["lower"], label="BB Lower", linestyle="--")
+            plt.fill_between(
+                df_plot.index,
+                df_plot["lower"],
+                df_plot["upper"],
+                color="gray",
+                alpha=0.2,
+            )
+            plt.title("SPY Bollinger Bands (last 200 points)")
+            plt.legend()
+            outpath = os.path.join("plots", "spy_bollinger.png")
+            plt.savefig(outpath, bbox_inches="tight")
+            # plt.show()
+            plt.close()
+            print(f"Saved Bollinger plot to {outpath}")
+        else:
+            print("Not enough aligned data to plot Bollinger bands.")
+    except Exception as e:
+        print(f"Failed to create Bollinger plot: {e}")
+
+    # Trend slope signal
+    spy_trend_slope = signals.get_series(
+        "SPY",
+        "trend_slope",
+        start,
+        end,
+        window=BB_WINDOW,
+        use_log_price=False,
+    )
+    print(f"SPY Trend Slope:\n{spy_trend_slope}")
+    spy_trend_slope_log = signals.get_series(
+        "SPY",
+        "trend_slope",
+        start,
+        end,
+        window=BB_WINDOW,
+        use_log_price=True,
+    )
+    print(f"SPY Trend Slope (log price):\n{spy_trend_slope_log}")
+
+    # Donchian Channel position signal
+    spy_donchian_pos = signals.get_series(
+        "SPY",
+        "donchian_pos",
+        start,
+        end,
+        window=BB_WINDOW,
+    )
+    print(f"SPY Donchian Channel Position 20:\n{spy_donchian_pos}")
