@@ -74,7 +74,10 @@ class MarketDataStore:
         if df_full is None or df_full.empty:
             return pd.DataFrame()
 
-        return df_full.loc[(df_full.index >= start_dt) & (df_full.index <= end_dt)]
+        # Slice to requested date range, and guard against duplicates and ensure sorted
+        df = df_full.loc[(df_full.index >= start_dt) & (df_full.index <= end_dt)]
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        return df
 
     def has_cached(self, ticker: str, interval: str = "1d") -> bool:
         """
@@ -257,7 +260,7 @@ class MarketDataStore:
 
             # right gap (note +1 day to avoid overlapping last cached bar)
             if end > cached_end:
-                missing_right_start = cached_end + timedelta(days=1)
+                missing_right_start = cached_end + timedelta(days=1) if interval == "1d" else cached_end
                 if missing_right_start < end:
                     df_right = self._fetch_online(
                         ticker, missing_right_start, end, interval, auto_adjust

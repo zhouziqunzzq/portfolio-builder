@@ -88,6 +88,11 @@ class SignalEngine:
     def __init__(self, mds: MarketDataStore):
         self.mds = mds
         self.store = SignalStore()
+        self.annualize_factor = {
+            "1d": 252,
+            "1wk": 52,
+            "1mo": 12,
+        }
 
     # ----- public API -----
 
@@ -110,6 +115,8 @@ class SignalEngine:
         """
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
+        # auto_ffill = params.pop("auto_ffill", False)
+        # auto_ffill_limit = params.pop("auto_ffill_limit", 5)
 
         key = SignalKey(
             ticker=ticker.upper(),
@@ -124,10 +131,12 @@ class SignalEngine:
             cached_end = cached.index.max()
 
             # For daily/weekly/monthly data, give ourselves a calendar margin
-            if interval in ("1d", "1wk", "1mo"):
-                margin = pd.Timedelta(
-                    days=3
-                )  # don't use 7 days; can cause staleness when stepping weekly
+            if interval == "1d":
+                margin = pd.Timedelta(days=3)
+            elif interval == "1wk":
+                margin = pd.Timedelta(days=10)
+            elif interval == "1mo":
+                margin = pd.Timedelta(days=40)
             else:
                 margin = pd.Timedelta(0)
 
@@ -151,6 +160,8 @@ class SignalEngine:
                 start=new_start,
                 end=new_end,
                 interval=interval,
+                # auto_ffill=auto_ffill,
+                # auto_ffill_limit=auto_ffill_limit,
                 **params,
             )
             self.store.set(key, series)
@@ -164,6 +175,8 @@ class SignalEngine:
             start=start_dt,
             end=end_dt,
             interval=interval,
+            # auto_ffill=auto_ffill,
+            # auto_ffill_limit=auto_ffill_limit,
             **params,
         )
 
@@ -179,10 +192,10 @@ class SignalEngine:
         start: datetime,
         end: datetime,
         interval: str,
-        auto_ffill: bool = False,  # whether to forward-fill missing values by default
-        auto_ffill_limit: Optional[
-            int
-        ] = 5,  # max number of consecutive missing values to ffill over
+        # auto_ffill: bool = False,  # whether to forward-fill missing values by default
+        # auto_ffill_limit: Optional[
+        #     int
+        # ] = 5,  # max number of consecutive missing values to ffill over
         **params: Any,
     ) -> pd.Series:
         """
@@ -193,7 +206,7 @@ class SignalEngine:
         at `start` is valid.
         """
         signal = signal.lower()
-        possible_signal_varients = [
+        possible_signal_variants = [
             signal,
             signal.replace(" ", "_"),
             signal.replace("-", "_"),
@@ -202,7 +215,7 @@ class SignalEngine:
         # Prefer direct naming convention: `_compute_{signal}_full`.
         # This keeps a single place to add new signals and avoids long
         # duplicated if/elif chains.
-        for signal in possible_signal_varients:
+        for signal in possible_signal_variants:
             method = getattr(self, f"_compute_{signal}_full", None)
             if method is not None:
                 break
@@ -221,33 +234,65 @@ class SignalEngine:
 
         sig = method(ticker, start, end, interval, **params)
 
-        if auto_ffill:
-            # Extend to requested date range
-            sig = sig.reindex(pd.date_range(start, end, freq="D"))
-            sig = sig.ffill(
-                limit=auto_ffill_limit
-            )  # ffill because the requested end date may not be a trading day
+        # if auto_ffill:
+        #     # Extend to requested date range
+        #     sig = sig.reindex(pd.date_range(start, end, freq="D"))
+        #     sig = sig.ffill(
+        #         limit=auto_ffill_limit
+        #     )  # ffill because the requested end date may not be a trading day
         return sig
+
+    def _calc_start_for_data(
+        self, start: datetime, extra_bars: int, interval: str
+    ) -> datetime:
+        """
+        Compute an approximate calendar start date to fetch `extra_bars` of
+        history before `start`, depending on `interval`.
+
+        - For daily data (`1d`) use business days (`BDay`).
+        - For weekly data (`1wk`) subtract `7 * extra_bars` days.
+        - For monthly data (`1mo`) use `DateOffset(months=...)`.
+        - For other/undetected intervals fall back to business-day estimate.
+
+        This is a conservative approximation; if `MarketDataStore` later
+        supports fetching N-bars before a date, prefer that instead.
+        """
+        lower = (interval or "").lower()
+        # daily
+        if lower in ("1d", "d", "day") or lower.endswith("d"):
+            return start - pd.tseries.offsets.BDay(extra_bars)
+
+        # weekly-ish
+        if "wk" in lower or lower.endswith("w") or "week" in lower:
+            return start - pd.Timedelta(days=7 * extra_bars)
+
+        # monthly-ish
+        if "mo" in lower or "month" in lower:
+            return start - pd.DateOffset(months=extra_bars)
+
+        # fallback: assume daily business-day spacing (conservative)
+        return start - pd.tseries.offsets.BDay(max(1, extra_bars))
 
     # ----- concrete signal implementations -----
 
-    def _compute_ts_mom_full(
+    def _compute_ret_full(
         self,
         ticker: str,
         start: datetime,
         end: datetime,
         interval: str,
-        window: int = 252,
+        window: int = 1,
         price_col: str = "Close",
+        buffer_bars: int = 10,
     ) -> pd.Series:
         """
-        Time-series momentum: P / P.shift(window) - 1
+        Simple return over `window`: P / P.shift(window) - 1
 
         We fetch (start - extra_lookback, end) so that value at 'start'
         has a valid lookback.
         """
-        extra = window + 5  # add a bit of cushion
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
         df = self.mds.get_ohlcv(
             ticker=ticker,
@@ -259,7 +304,73 @@ class SignalEngine:
             return pd.Series(dtype=float)
 
         price = df[price_col].astype(float)
-        mom = price / price.shift(window) - 1.0
+        ret = price / price.shift(window) - 1.0
+        ret.name = f"ret_{window}"
+
+        return ret
+
+    def _compute_log_ret_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 1,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Log return over `window`: log(P / P.shift(window))
+
+        We fetch (start - extra_lookback, end) so that value at 'start'
+        has a valid lookback.
+        """
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        if df.empty:
+            return pd.Series(dtype=float)
+
+        price = df[price_col].astype(float)
+        log_ret = np.log(price / price.shift(window))
+        log_ret.name = f"log_ret_{window}"
+
+        return log_ret
+
+    def _compute_ts_mom_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 252,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Time-series momentum: P / P.shift(window) - 1
+
+        We fetch (start - extra_lookback, end) so that value at 'start'
+        has a valid lookback.
+        """
+        ret = self.get_series(
+            ticker,
+            "ret",
+            start,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        mom = ret
         mom.name = f"ts_mom_{window}"
 
         return mom
@@ -273,29 +384,30 @@ class SignalEngine:
         window: int = 20,
         price_col: str = "Close",
         annualize: bool = True,
+        buffer_bars: int = 5,
     ) -> pd.Series:
         """
         Realized volatility over 'window', computed from daily log returns.
         """
-        # Need window extra days
-        extra = window + 5
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
-        df = self.mds.get_ohlcv(
-            ticker=ticker,
-            start=start_for_data,
-            end=end,
-            interval=interval,
+        log_rets = self.get_series(
+            ticker,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=1,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
         )
-        if df.empty:
-            return pd.Series(dtype=float)
+        log_rets = log_rets.dropna()
 
-        price = df[price_col].astype(float)
-        rets = np.log(price / price.shift(1)).dropna()
-
-        vol = rets.rolling(window=window).std()
+        vol = log_rets.rolling(window=window).std()
         if annualize:
-            vol = vol * np.sqrt(252)
+            annualize_factor = self.annualize_factor.get(interval, 252)
+            vol = vol * np.sqrt(annualize_factor)
 
         vol.name = f"vol_{window}"
         return vol
@@ -316,27 +428,28 @@ class SignalEngine:
         Parameters:
             halflife: halflife in trading days for EWM
         """
-        # Need extra days for EWM to stabilize
-        extra = halflife * 3  # EWM needs more data to stabilize
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        # Need extra bars for EWM to stabilize (approx in calendar time)
+        extra = halflife * 10  # EWM needs more data to stabilize
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
-        df = self.mds.get_ohlcv(
-            ticker=ticker,
-            start=start_for_data,
-            end=end,
-            interval=interval,
+        log_rets = self.get_series(
+            ticker,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=1,
+            price_col=price_col,
+            buffer_bars=extra,
         )
-        if df.empty:
+        log_rets = log_rets.dropna()
+        if log_rets.empty:
             return pd.Series(dtype=float)
 
-        px = df[price_col].astype(float)
-        rets = px.pct_change().dropna()
-        if rets.empty:
-            return pd.Series(dtype=float)
-
-        vol = rets.ewm(halflife=halflife, adjust=False).std()
+        vol = log_rets.ewm(halflife=halflife, adjust=False).std()
         if annualize:
-            vol = vol * np.sqrt(252)
+            annualize_factor = self.annualize_factor.get(interval, 252)
+            vol = vol * np.sqrt(annualize_factor)
         vol.name = f"ewm_vol_{halflife}"
         return vol
 
@@ -349,6 +462,7 @@ class SignalEngine:
         fast_window: int = 50,
         slow_window: int = 200,
         price_col: str = "Close",
+        buffer_bars: int = 10,
     ) -> pd.Series:
         """
         Example 'trend_score' combining fast-vs-slow MA and price vs slow MA.
@@ -357,8 +471,8 @@ class SignalEngine:
           trend_score = 0.5 * sign(MA_fast - MA_slow) + 0.5 * (price - MA_slow) / MA_slow
         (You can refine this later, this is just a placeholder.)
         """
-        extra = slow_window + 10
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = slow_window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
         df = self.mds.get_ohlcv(
             ticker=ticker,
@@ -390,14 +504,15 @@ class SignalEngine:
         interval: str,
         window: int = 50,
         price_col: str = "Close",
+        buffer_bars: int = 5,
     ) -> pd.Series:
         """
         Simple moving average (SMA) over `window` bars.
 
         Returns a Series indexed by date, name = "sma_{window}".
         """
-        extra = window + 5
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
         df = self.mds.get_ohlcv(
             ticker=ticker,
@@ -422,6 +537,7 @@ class SignalEngine:
         window: int = 63,
         benchmark: str = "SPY",
         price_col: str = "Close",
+        buffer_bars: int = 10,
     ) -> pd.Series:
         """
         Rolling beta of `ticker` vs `benchmark` using log returns.
@@ -435,32 +551,29 @@ class SignalEngine:
             benchmark: reference index/ETF (default: SPY)
             window:    lookback window in bars (default: 63)
         """
-        extra = window + 5
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
-
-        # Fetch both asset and benchmark prices
-        df_asset = self.mds.get_ohlcv(
-            ticker=ticker,
-            start=start_for_data,
-            end=end,
-            interval=interval,
-        )
-        df_bench = self.mds.get_ohlcv(
-            ticker=benchmark,
-            start=start_for_data,
-            end=end,
-            interval=interval,
-        )
-
-        if df_asset.empty or df_bench.empty:
-            return pd.Series(dtype=float)
-
-        pa = df_asset[price_col].astype(float)
-        pm = df_bench[price_col].astype(float)
-
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
         # Log returns
-        ra = np.log(pa / pa.shift(1))
-        rm = np.log(pm / pm.shift(1))
+        ra = self.get_series(
+            ticker,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=1,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        rm = self.get_series(
+            benchmark,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=1,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
 
         # Align on common dates
         rets = pd.concat(
@@ -479,7 +592,7 @@ class SignalEngine:
         cov = rets["ra"].rolling(window=window).cov(rets["rm"])
         var_m = rets["rm"].rolling(window=window).var()
 
-        beta = cov / var_m
+        beta = cov / var_m.replace(0, np.nan)
         beta.name = f"beta_{benchmark}_{window}"
 
         return beta
@@ -497,6 +610,7 @@ class SignalEngine:
         window: int = 20,
         price_col: str = "Close",
         volume_col: str = "Volume",
+        buffer_bars: int = 5,
     ) -> pd.Series:
         """
         ADV = rolling mean of (Close * Volume)
@@ -504,8 +618,8 @@ class SignalEngine:
         Returns: Series indexed by date, name = "adv_{window}".
         """
 
-        extra = window + 5
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
         df = self.mds.get_ohlcv(
             ticker=ticker,
@@ -531,13 +645,14 @@ class SignalEngine:
         interval: str,
         window: int = 20,
         volume_col: str = "Volume",
+        buffer_bars: int = 5,
     ) -> pd.Series:
         """
         20-day median volume (or configurable window).
         """
 
-        extra = window + 5
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
         df = self.mds.get_ohlcv(
             ticker=ticker,
@@ -594,40 +709,37 @@ class SignalEngine:
         window: int = 20,
         price_col: str = "Close",
         benchmark: str = "SPY",
-        buffer_days: int = 5,
+        buffer_bars: int = 5,
     ) -> pd.Series:
         """
         Spread momentum = R_ticker - R_benchmark over `window` days.
 
         Where R_ticker = log(P_t / P_{t-window}) is the log return over `window`.
         """
-        extra = window + buffer_days
-        start_for_data = start - pd.tseries.offsets.BDay(extra)
+        extra = window + buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
 
-        # Fetch both asset and benchmark prices
-        df_asset = self.mds.get_ohlcv(
-            ticker=ticker,
-            start=start_for_data,
-            end=end,
-            interval=interval,
-        )
-        df_bench = self.mds.get_ohlcv(
-            ticker=benchmark,
-            start=start_for_data,
-            end=end,
-            interval=interval,
-        )
-
-        if df_asset.empty or df_bench.empty:
-            return pd.Series(dtype=float)
-
-        pa = df_asset[price_col].astype(float).replace({0.0: np.nan})
-        pm = df_bench[price_col].astype(float).replace({0.0: np.nan})
-        log_pa = np.log(pa.astype(float))
-        log_pm = np.log(pm.astype(float))
         # Log returns
-        ra = log_pa - log_pa.shift(window)
-        rm = log_pm - log_pm.shift(window)
+        ra = self.get_series(
+            ticker,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        rm = self.get_series(
+            benchmark,
+            "log_ret",
+            start_for_data,
+            end,
+            interval,
+            window=window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
 
         # Align on common dates
         rets = pd.concat(

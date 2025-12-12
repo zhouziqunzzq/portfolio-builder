@@ -12,7 +12,6 @@ if __name__ == "__main__":
     start = "2020-01-01"
     end = "2025-01-01"
 
-    # RegimeEngine might do:
     spy_trend = signals.get_series(
         "SPY",
         "trend_score",
@@ -32,19 +31,34 @@ if __name__ == "__main__":
     spy_mom = signals.get_series("SPY", "ts_mom", start, end, window=252)
     print(f"SPY Momentum:\n{spy_mom}")
 
+    spy_ret = signals.get_series("SPY", "ret", start, end, window=252)
+    print(f"SPY Return:\n{spy_ret}")
+    spy_log_ret = signals.get_series("SPY", "log_ret", start, end, window=252)
+    print(f"SPY Log Return:\n{spy_log_ret}")
+
     # A sleeve can later request something already computed:
-    another_view = signals.get_series("SPY", "vol", start, end, window=20)
+    # another_view = signals.get_series("SPY", "vol", start, end, window=20)
     # -> served from cache, no re-computation
-    print(f"Another view of SPY Volatility:\n{another_view}")
+    # print(f"Another view of SPY Volatility:\n{another_view}")
 
     spy_sma_20 = signals.get_series("SPY", "sma", start, end, window=20)
     print(f"SPY 20-day SMA:\n{spy_sma_20}")
     # Re-request to test caching
-    spy_sma_20_again = signals.get_series("SPY", "sma", start, end, window=20)
-    print(f"SPY 20-day SMA (again, from cache):\n{spy_sma_20_again}")
+    # spy_sma_20_again = signals.get_series("SPY", "sma", start, end, window=20)
+    # print(f"SPY 20-day SMA (again, from cache):\n{spy_sma_20_again}")
 
     spy_last_price = signals.get_series("SPY", "last_price", start, end)
     print(f"SPY Last Price:\n{spy_last_price}")
+
+    aapl_spy_beta = signals.get_series(
+        "AAPL",
+        "beta",
+        start,
+        end,
+        benchmark="SPY",
+        window=252,
+    )
+    print(f"AAPL Beta vs SPY:\n{aapl_spy_beta}")
 
     # Test spread momentum signal
     # Case 1: same ticker for ticker and benchmark - expect all zeros
