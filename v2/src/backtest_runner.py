@@ -26,9 +26,8 @@ from vec_signal_engine import VectorizedSignalEngine
 from regime_engine import RegimeEngine
 from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
-
-# from sleeves.sideways_fake.sideways_sleeve import SidewaysSleeve
 from sleeves.sideways.sideways_sleeve import SidewaysSleeve
+from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
 from portfolio_backtester import PortfolioBacktester
@@ -266,6 +265,13 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         signals=signals,
         config=None,  # default SidewaysConfig
     )
+    fast_alpha = FastAlphaSleeve(
+        universe=um,
+        mds=mds,
+        signals=signals,
+        vec_engine=vec_engine,
+        config=None,  # default FastAlphaConfig
+    )
 
     # Multi-sleeve configuration (already has defensive + trend defaults)
     ms_config = MultiSleeveConfig()
@@ -276,6 +282,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
             "defensive": defensive,
             "trend": trend,
             "sideways": sideways,
+            "fast_alpha": fast_alpha,
         },
         config=ms_config,
     )
@@ -437,6 +444,7 @@ def get_price_matrix_for_weights(
     end: pd.Timestamp,
     local_only: bool,
     field: Optional[str] = "Close",
+    auto_adjust: bool = True,
 ) -> pd.DataFrame:
     """
     Fetch daily Close prices for *exactly* the tickers that appear in the weights matrix.
@@ -452,6 +460,7 @@ def get_price_matrix_for_weights(
         end=end.strftime("%Y-%m-%d"),
         field=field,
         interval="1d",
+        auto_adjust=auto_adjust,
         # !IMPORTANT - we need prices for all tickers (including non SP500 ones like GLD)
         auto_apply_membership_mask=False,
         local_only=bool(local_only),
@@ -468,6 +477,7 @@ def build_execution_price_matrix(
     local_only: bool,
     exec_mode: str = "open",
     close_price_mat: Optional[pd.DataFrame] = None,
+    auto_adjust: bool = True,
 ) -> pd.DataFrame:
     """
     Build an execution price matrix for the supplied `weights` and date range
@@ -494,6 +504,7 @@ def build_execution_price_matrix(
             end=end,
             local_only=local_only,
             field="Open",
+            auto_adjust=auto_adjust,
         )
     elif mode == "close":
         if close_price_mat is not None:
@@ -507,6 +518,7 @@ def build_execution_price_matrix(
                 end=end,
                 local_only=local_only,
                 field="Close",
+                auto_adjust=auto_adjust,
             )
     elif mode == "midpoint_v1":
         # avg(open, close)
@@ -518,6 +530,7 @@ def build_execution_price_matrix(
             end=end,
             local_only=local_only,
             field="Open",
+            auto_adjust=auto_adjust,
         )
         close_mat = (
             close_price_mat
@@ -530,6 +543,7 @@ def build_execution_price_matrix(
                 end=end,
                 local_only=local_only,
                 field="Close",
+                auto_adjust=auto_adjust,
             )
         )
         if open_mat.empty or close_mat.empty:
@@ -546,6 +560,7 @@ def build_execution_price_matrix(
             end=end,
             local_only=local_only,
             field="High",
+            auto_adjust=auto_adjust,
         )
         low_mat = get_price_matrix_for_weights(
             um=um,
@@ -555,6 +570,7 @@ def build_execution_price_matrix(
             end=end,
             local_only=local_only,
             field="Low",
+            auto_adjust=auto_adjust,
         )
         if high_mat.empty or low_mat.empty:
             exec_mat = pd.DataFrame()
@@ -757,6 +773,7 @@ def main() -> int:
         end=end_dt,
         local_only=args.local_only,
         field="Close",
+        auto_adjust=True,
     )
 
     # Build execution price matrix according to execution mode knob
@@ -781,6 +798,12 @@ def main() -> int:
         return 0
 
     print(f"Execution mode: {exec_mode}; using execution price matrix for backtest.")
+    # 1) Rebalance dates must exist in exec price index (open prices available)
+    missing = rebalance_target_weights.index.difference(exec_price_mat.index)
+    if not missing.empty:
+        print("Missing exec prices for rebalance dates:", list(missing[:10]), "count=", len(missing))
+    # 2) Ensure exec prices are not forward-filled across missing days (dangerous)
+    # (depends on how get_price_matrix behaves)
 
     # Apply friction control
     friction_controller = FrictionController(
@@ -819,7 +842,24 @@ def main() -> int:
         risk_free_rate_annual=float(args.rf_annual),
     )
 
-    result = bt.run()
+    result = bt.run(
+        apply_weights_to="next",
+        # IMPORTANT:
+        # Weights are timestamped on the *execution day t*, not the prior day.
+        #
+        # Backtest flow:
+        #   - Signals are computed using data up to t-1 (no lookahead)
+        #   - Target weights are generated for date t
+        #   - Trades are assumed to execute on day t (open / close / midpoint)
+        #   - PnL should therefore accrue from t → t+1
+        #
+        # Using apply_weights_to="next" ensures returns on day t reflect
+        # the portfolio *after* trades executed on day t.
+        #
+        # Using "same" here would incorrectly apply weights to the t-1 → t
+        # return interval and introduce lookahead bias.
+    )
+
     stats = bt.stats(result, auto_warmup=True, warmup_days=0)
 
     # Prepare benchmark series and returns

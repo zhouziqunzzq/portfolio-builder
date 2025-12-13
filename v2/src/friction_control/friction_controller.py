@@ -85,7 +85,7 @@ class FrictionController:
             w_t = self.weights.loc[date]
 
             if date in self.rebalance_dates_set:
-                print(f"Applying friction controls on rebalance date {date.date()}")
+                # print(f"Applying friction controls on rebalance date {date.date()}")
                 # On rebalance date, apply friction controls
                 if w_prev is None:
                     # First rebalance, no previous weights

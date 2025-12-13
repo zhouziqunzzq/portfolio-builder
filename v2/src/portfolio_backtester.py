@@ -119,9 +119,27 @@ class PortfolioBacktester:
     # ------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------
-    def run(self) -> pd.DataFrame:
+    def run(self, apply_weights_to: str = "next") -> pd.DataFrame:
         """
         Run the backtest.
+
+        Parameters
+        ----------
+        apply_weights_to : {"prev", "same", "next"}, default "next"
+            Controls which return interval the weights at date t are applied to.
+
+            - "prev": weights[t] * return[t]   where return[t] is (P[t]/P[t-1]-1)
+                    => interprets weights as being in force over (t-1 -> t).
+                    (Generally WRONG if you trade at t.)
+
+            - "same": weights[t] * return[t]   same as "prev" in this implementation
+                    (kept for readability / future extension)
+
+            - "next": weights[t] * return_next[t] where return_next[t] is (P[t+1]/P[t]-1)
+                    => interprets weights as being established at t (after trading at t)
+                        and earning (t -> t+1). This is what you want if your weights
+                        matrix is indexed by the trade/execution date (e.g., trade at t open/close).
+
         Returns DataFrame with columns:
         - 'gross_return'     : portfolio return before costs
         - 'cost'             : transaction cost impact (rate)
@@ -130,21 +148,38 @@ class PortfolioBacktester:
         - 'turnover'         : daily turnover
         - 'weight_sum'       : equity exposure (1 - weight_sum = cash)
         """
-        rets = self._compute_returns()
+        mode = (apply_weights_to or "next").lower().strip()
+        if mode not in ("prev", "same", "next"):
+            raise ValueError(
+                f"apply_weights_to must be one of {{'prev','same','next'}}, got: {apply_weights_to}"
+            )
+
+        # ------------------------------------------------------------
+        # Returns
+        # ------------------------------------------------------------
+        rets = self._compute_returns()  # default: P[t]/P[t-1]-1, indexed by t
+
+        if mode in ("prev", "same"):
+            aligned_rets = rets
+        else:
+            # "next": make return at t represent (t -> t+1)
+            # Use shift(-1) so weights[t] earn the next interval.
+            aligned_rets = rets.shift(-1).fillna(0.0)
 
         # Raw portfolio returns before costs
-        gross_rets = (self.weights * rets).sum(axis=1)
+        gross_rets = (self.weights * aligned_rets).sum(axis=1)
 
+        # ------------------------------------------------------------
         # Turnover and exposure
+        # ------------------------------------------------------------
         turnover = self._compute_turnover(self.weights)
         weight_sum = self.weights.sum(axis=1)
 
-        # Effective cost rate per unit turnover
-        #   base commission/fee + round-trip bid-ask from per-side bps.
+        # ------------------------------------------------------------
+        # Costs
+        # ------------------------------------------------------------
         spread_rate = 2.0 * self.bid_ask_bps_per_side / 10_000.0
         effective_cost_rate = self.cost_per_turnover + spread_rate
-
-        # Transaction costs: proportional to turnover
         cost = effective_cost_rate * turnover
 
         # Net returns after costs
