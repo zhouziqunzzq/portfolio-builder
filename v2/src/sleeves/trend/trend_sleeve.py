@@ -836,10 +836,38 @@ class TrendSleeve:
         cs_stock = getattr(self, "_cs_stock_score_mat", None)
         ts_stock = getattr(self, "_ts_stock_score_mat", None)
 
-        # Fallback if for some reason cache is missing
-        if cs_stock is None:
+        # Fallback if for some reason cache is missing, all-NaN, all-zero,
+        # or mostly-zero (e.g. cache was zeroed out). Use a small epsilon
+        # and a fractional threshold to detect "mostly zero" matrices.
+        def _is_mostly_zero(df: pd.DataFrame, eps: float = 1e-12, frac_thresh: float = 0.01) -> bool:
+            if df is None:
+                return True
+            if df.empty:
+                return True
+            # all-NaN
+            try:
+                if df.isna().all().all():
+                    return True
+            except Exception:
+                pass
+            # count non-negligible entries
+            try:
+                total = df.size
+                nonzero = (df.fillna(0).abs() > eps).sum().sum()
+                if total == 0:
+                    return True
+                if nonzero == 0:
+                    return True
+                if (nonzero / float(total)) < float(frac_thresh):
+                    return True
+            except Exception:
+                # If anything goes wrong, err on the side of recomputing
+                return True
+            return False
+
+        if _is_mostly_zero(cs_stock):
             print(
-                "[TrendSleeve] Warning: CS stock score matrix cache missing; recomputing from stock_score_mat."
+                "[TrendSleeve] Warning: CS stock score matrix cache missing or empty/mostly-zero; overriding with stock_score_mat."
             )
             cs_stock = stock_score_mat
 
