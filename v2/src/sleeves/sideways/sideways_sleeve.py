@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Set
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
-
-# Make v2/src importable by adding it to sys.path.
 import sys
 from pathlib import Path
 
@@ -15,69 +13,89 @@ _ROOT_SRC = Path(__file__).resolve().parents[2]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
-from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
-from vec_signal_engine import VectorizedSignalEngine
-from utils.stats import (
-    zscore_matrix_column_wise,
-    windorized_zscore_matrix_column_wise,
-    sector_mean_matrix,
-)
 from .sideways_config import SidewaysConfig
-
-
-# ----------------------------------------------------------------------
-# State (very light; mainly here for API symmetry)
-# ----------------------------------------------------------------------
 
 
 @dataclass
 class SidewaysState:
-    last_as_of: Optional[pd.Timestamp] = None
-    last_sector_weights: Optional[pd.Series] = None
-
-
-# ----------------------------------------------------------------------
-# SidewaysSleeve
-# ----------------------------------------------------------------------
+    last_rebalance: Optional[pd.Timestamp] = None
+    last_weights: Optional[Dict[str, float]] = None
+    # Per-ticker gate state (hysteresis)
+    in_sideways: Dict[str, bool] = None
+    # Per-ticker position state
+    positions: Dict[str, bool] = None
 
 
 class SidewaysSleeve:
     """
-    Sideways / Mean-Reversion Sleeve (stock-based, sector-aware).
+    Sideways Sleeve (BB mean reversion, long-only)
 
-    MVP design:
-      - Uses the same vectorized pipeline as TrendSleeve.
-      - BUT the composite stock_score is *sign-flipped* (anti-momentum):
-            stock_score_sideways = - stock_score_trend
-        so that high scores correspond to *expected mean-reversion* winners.
+    1) Sideways gate per ticker:
+       - bb_bandwidth(window=bb_window,k=bb_k) < bw_thresh
+       - abs(trend_slope(window=bb_window, use_log_price=True)) < slope_thresh
+       - persistence: rolling mean over gate_window
+       - hysteresis: enter >= gate_enter, exit <= gate_exit
 
-      - Only implements the precomputed, fully vectorized path:
-            * precompute(...)
-            * generate_target_weights_for_date(...) reading from cache
-
-      - Regime gating:
-            - Uses SidewaysConfig.gated_off_regimes if use_regime_gating=True.
-            - In practice you will mostly control ON/OFF at the allocator level
-              by giving this sleeve nonzero weights only in sideways regimes.
+    2) Trade rule:
+       - if in_sideways[ticker] and bb_z(window=bb_window,k=bb_k) <= -entry_z:
+           allocate long weight (mean reversion)
+       - weight by strength (more oversold -> more weight), optionally inverse-vol
     """
 
     def __init__(
         self,
-        universe: UniverseManager,
         mds: MarketDataStore,
-        signals: SignalEngine,  # Not used directly; only for API compatibility
-        vec_engine: Optional[VectorizedSignalEngine] = None,
+        signals: SignalEngine,
         config: Optional[SidewaysConfig] = None,
-    ) -> None:
-        self.um = universe
+    ):
         self.mds = mds
-        self.signals = signals  # Not used directly; only for API compatibility
-        self.vec_engine = vec_engine
-        self.config: SidewaysConfig = config or SidewaysConfig()
-        self.state = SidewaysState()
-        self.precomputed_weights_mat: Optional[pd.DataFrame] = None
+        self.signals = signals
+        self.config = config or SidewaysConfig()
+        self.state = SidewaysState(in_sideways={})
+
+    # ------------------------------------------------------------------
+    # Universe + liquidity (MVP)
+    # ------------------------------------------------------------------
+
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> List[str]:
+        # MVP: static list
+        return sorted(set([t.upper() for t in self.config.tickers]))
+
+    def _apply_liquidity_filters(
+        self, tickers: List[str], end: pd.Timestamp
+    ) -> List[str]:
+        cfg = self.config
+        keep: List[str] = []
+        for t in tickers:
+            try:
+                df = self.mds.get_ohlcv(
+                    ticker=t,
+                    start=end - pd.Timedelta(days=90),
+                    end=end,
+                    interval="1d",
+                    auto_adjust=True,
+                )
+                if df is None or df.empty:
+                    print(f"[SidewaysSleeve] no price data for {t} up to {end.date()}")
+                    continue
+                if df["Close"].iloc[-1] < cfg.min_price:
+                    print(
+                        f"[SidewaysSleeve] {t} price {df['Close'].iloc[-1]:.2f} below min {cfg.min_price}"
+                    )
+                    continue
+                if "Volume" not in df.columns:
+                    print(f"[SidewaysSleeve] {t} has no Volume data for ADV filter")
+                    continue
+                adv = df["Volume"].rolling(cfg.min_adv_window).mean().iloc[-1]
+                if not np.isfinite(adv) or adv < cfg.min_adv:
+                    print(f"[SidewaysSleeve] {t} ADV {adv:.0f} below min {cfg.min_adv}")
+                    continue
+                keep.append(t)
+            except Exception:
+                continue
+        return keep
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,526 +104,338 @@ class SidewaysSleeve:
     def generate_target_weights_for_date(
         self,
         as_of: datetime | str,
-        start_for_signals: datetime | str,  # unused for MVP; kept for API compatibility
+        start_for_signals: (
+            datetime | str
+        ),  # kept for interface parity; we infer lookbacks internally
         regime: str = "sideways",
     ) -> Dict[str, float]:
-        """
-        For MVP, we *only* support the precomputed vectorized path.
-
-        Workflow:
-          - MultiSleeveAllocator.precompute(...) calls self.precompute(...)
-          - Later, on each rebalance date, allocator calls this method.
-          - We simply look up the cached weights for `as_of` date.
-
-        Regime gating:
-          - If config.use_regime_gating is True and the regime is in
-            config.gated_off_regimes, we return an empty dict.
-          - Otherwise we use the precomputed weights if present.
-        """
         as_of = pd.to_datetime(as_of).normalize()
-        regime_key = (regime or "").lower()
-        cfg = self.config
 
-        # ---------- Regime-based gating (optional) ----------
-        if getattr(cfg, "use_regime_gating", False):
-            gated_off = {r.lower() for r in cfg.gated_off_regimes}
-            if regime_key in gated_off:
-                print(
-                    f"[SidewaysSleeve] Regime '{regime_key}' is gated off; returning empty weights."
+        orig_universe = self.get_universe(as_of=as_of)
+        universe = self._apply_liquidity_filters(orig_universe, as_of)
+        # print(f"SidewaysSleeve: universe tickers: {universe}")
+        if not universe:
+            return {}
+
+        snap = self._compute_snapshot(universe, as_of)
+        # print(f"SidewaysSleeve: snapshot at {as_of.date()}:\n{snap}")
+        if snap.empty:
+            return {}
+
+        # 1) update hysteresis gate state per ticker
+        self._update_gate_state(snap)
+        # print(
+        #     f"SidewaysSleeve: in_sideways state at {as_of.date()}: {self.state.in_sideways}"
+        # )
+
+        # 2) choose candidates: only those currently in-sideways AND oversold
+        # determine which tickers were dropped by liquidity/universe filters
+        dropped_by_liquidity = set(orig_universe) - set(universe)
+        weights = self._allocate_mean_reversion(
+            snap, dropped_by_liquidity=dropped_by_liquidity
+        )
+
+        self.state.last_rebalance = as_of
+        self.state.last_weights = weights
+        return weights
+
+    # ------------------------------------------------------------------
+    # Snapshot computation (non-vec)
+    # ------------------------------------------------------------------
+
+    def _compute_snapshot(self, tickers: List[str], end: pd.Timestamp) -> pd.DataFrame:
+        cfg = self.config
+        buffer = pd.Timedelta(days=cfg.signals_extra_buffer_days)
+
+        rows = []
+        for t in tickers:
+            try:
+                lookback = max(cfg.bb_window, cfg.trend_slope_window) + cfg.gate_window
+                start_gate = end - pd.Timedelta(days=lookback) - buffer
+
+                # --- gate inputs ---
+                bb_bw = self.signals.get_series(
+                    t,
+                    "bb_bandwidth",
+                    start=start_gate,
+                    end=end,
+                    window=cfg.bb_window,
+                    k=cfg.bb_k,
                 )
-                return {}
+                # print(
+                #     f"SidewaysSleeve: {t} bb_bandwidth at {bb_bw.index[-1].date()} = {bb_bw.iloc[-1]:.4f}"
+                # )
+                bb_bw_slope = bb_bw.pct_change(cfg.bw_slope_window)
+                # print(
+                #     f"SidewaysSleeve: {t} bb_bandwidth_slope at {bb_bw_slope.index[-1].date()} = {bb_bw_slope.iloc[-1]:.6f}"
+                # )
+                slope = self.signals.get_series(
+                    t,
+                    "trend_slope",
+                    start=start_gate,
+                    end=end,
+                    window=cfg.trend_slope_window,
+                    use_log_price=True,
+                )
+                # print(
+                #     f"SidewaysSleeve: {t} trend_slope at {slope.index[-1].date()} = {slope.iloc[-1]:.6f}"
+                # )
 
-        # ---------- Cached vectorized weights ----------
-        if (
-            self.precomputed_weights_mat is not None
-            and not self.precomputed_weights_mat.empty
-        ):
-            if as_of in self.precomputed_weights_mat.index:
-                print(f"[SidewaysSleeve] Using precomputed weights for {as_of.date()}")
-                row = self.precomputed_weights_mat.loc[as_of]
-                weights = {t: float(w) for t, w in row.items() if w > 0}
-                total = sum(weights.values())
-                if total > 0:
-                    return {t: w / total for t, w in weights.items()}
-                return {}
+                gate_score = self._gate_score_from_series(
+                    bb_bw, bb_bw_slope, slope
+                )  # scalar
 
-        # If no precomputed weights (or date missing), return empty.
-        return {}
+                # --- trade signal ---
+                bb_z_s = self.signals.get_series(
+                    t,
+                    "bb_z",
+                    start=start_gate,
+                    end=end,
+                    window=cfg.bb_window,
+                )
+                bb_z = (
+                    bb_z_s.iloc[-1]
+                    if (bb_z_s is not None and not bb_z_s.empty)
+                    else np.nan
+                )
+                # print(
+                #     f"SidewaysSleeve: {t} bb_z at {bb_z_s.index[-1].date()} = {bb_z:.4f}"
+                # )
 
-    # ------------------------------------------------------------------
-    # Vectorized stock scoring (anti-momentum)
-    # ------------------------------------------------------------------
+                # --- optional sizing ---
+                vol_val = np.nan
+                if cfg.use_inverse_vol:
+                    start_vol = end - pd.Timedelta(days=cfg.vol_window) - buffer
+                    vol_s = self.signals.get_series(
+                        t, "vol", start=start_vol, end=end, window=cfg.vol_window
+                    )
+                    vol_val = (
+                        vol_s.iloc[-1]
+                        if (vol_s is not None and not vol_s.empty)
+                        else np.nan
+                    )
 
-    def _compute_stock_scores_vectorized(
-        self,
-        price_mat: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Fully vectorized stock score computation over ALL dates.
+                rows.append(
+                    {
+                        "ticker": t,
+                        "gate_score": gate_score,  # float
+                        "bb_z": bb_z,  # float
+                        "vol": vol_val,  # float (or nan)
+                    }
+                )
 
-        Produces a Date x Ticker matrix with:
-            - stock_score_sideways(t, ticker)
+            except Exception as e:
+                print(
+                    f"SidewaysSleeve: warning - failed to compute signals for {t}. Exception: {e}"
+                )
+                continue
 
-        This is derived from the TrendSleeve stock_score, but sign-flipped:
-            stock_score_sideways = - (mom_part + vol_penalty * vol_score)
-
-        No liquidity filtering here (that's handled downstream).
-        """
-        cfg = self.config
-        VSE = self.vec_engine
-        if VSE is None:
-            raise ValueError("vec_engine is not set; cannot compute stock scores.")
-
-        # --------------------------------------------------------
-        # 1) Vectorized raw signals
-        # --------------------------------------------------------
-        mom_dict = VSE.get_momentum(price_mat, cfg.mom_windows)
-        vol_mat = VSE.get_volatility(price_mat, window=cfg.vol_window)
-
-        feature_mats: Dict[str, pd.DataFrame] = {}
-
-        # Momentum matrices
-        for w in cfg.mom_windows:
-            feature_mats[f"mom_{w}"] = mom_dict[w]
-
-        # Volatility matrix
-        feature_mats["vol"] = vol_mat
-
-        # --------------------------------------------------------
-        # 2) Z scoring per date (cross-sectional)
-        # --------------------------------------------------------
-        z_mats: Dict[str, pd.DataFrame] = {}
-
-        for w in cfg.mom_windows:
-            mat = feature_mats[f"mom_{w}"]
-            if cfg.use_zscore_winsorization:
-                z = windorized_zscore_matrix_column_wise(mat, clip=cfg.zscore_clip)
-            else:
-                z = zscore_matrix_column_wise(mat)
-            z_mats[f"z_mom_{w}"] = z
-
-        # Vol Z-score (column-wise)
-        if cfg.use_zscore_winsorization:
-            z_vol = windorized_zscore_matrix_column_wise(
-                feature_mats["vol"],
-                clip=cfg.zscore_clip,
-            )
-        else:
-            z_vol = zscore_matrix_column_wise(feature_mats["vol"])
-
-        # For stock selection we want *lower* vol to be better:
-        z_mats["vol_score"] = -z_vol
-
-        # --------------------------------------------------------
-        # 3) Composite score (before flip)
-        # --------------------------------------------------------
-        mom_part: Optional[pd.DataFrame] = None
-        for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
-            if mom_part is None:
-                mom_part = wt * z_mats[f"z_mom_{w}"]
-            else:
-                mom_part += wt * z_mats[f"z_mom_{w}"]
-
-        if mom_part is None:
-            # Should not happen if mom_windows is non-empty
-            return pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
-
-        stock_score_mat_trend_like = mom_part.add(
-            cfg.vol_penalty * z_mats["vol_score"],
-            fill_value=0.0,
-        )
-
-        # --------------------------------------------------------
-        # 4) Sideways stock score = negative of trend-like score
-        # --------------------------------------------------------
-        stock_score_mat = -stock_score_mat_trend_like
-        stock_score_mat.name = "stock_score"
-
-        return stock_score_mat
-
-    # ------------------------------------------------------------------
-    # Sector scoring & smoothing (vectorized)
-    # ------------------------------------------------------------------
-
-    def _compute_sector_scores_vectorized(
-        self,
-        stock_score_mat: pd.DataFrame,
-        sector_map: Optional[Dict[str, str]] = None,
-    ) -> pd.DataFrame:
-        """
-        Vectorized sector scores over time.
-
-        Returns Date x Sector matrix of mean stock_score per sector.
-        """
-        smap = sector_map or self.um.sector_map or {}
-        if stock_score_mat is None or stock_score_mat.empty:
-            return pd.DataFrame(index=getattr(stock_score_mat, "index", None))
-
-        return sector_mean_matrix(
-            stock_score_mat=stock_score_mat,
-            sector_map=smap,
-        )
-
-    def _softmax(self, scores: pd.Series) -> pd.Series:
-        cfg = self.config
-        x = cfg.sector_softmax_alpha * scores.astype(float)
-        x = x.fillna(0.0)
-        x = x - x.max()
-        e = np.exp(x)
-        return e / e.sum()
-
-    def _apply_caps(self, w: pd.Series) -> pd.Series:
-        cfg = self.config
-        w2 = w.clip(lower=cfg.sector_w_min, upper=cfg.sector_w_max)
-        total = w2.sum()
-        if total <= 0:
-            return pd.Series(1.0 / len(w), index=w.index)
-        return w2 / total
-
-    def _smooth_weights(
-        self,
-        prev_weights: Optional[pd.Series],
-        new_weights: pd.Series,
-    ) -> pd.Series:
-        """
-        Exponential smoothing:
-            w_smoothed = (1 - beta) * prev + beta * new
-        """
-        if prev_weights is None:
-            return new_weights
-
-        cfg = self.config
-        beta = cfg.sector_smoothing_beta
-
-        prev_weights = prev_weights.reindex(new_weights.index).fillna(0.0)
-        w_smoothed = (1 - beta) * prev_weights + beta * new_weights
-
-        total = w_smoothed.sum()
-        if total <= 0:
-            return pd.Series(1.0 / len(w_smoothed), index=w_smoothed.index, dtype=float)
-        return w_smoothed / total
-
-    def _top_k(self, w: pd.Series) -> pd.Series:
-        cfg = self.config
-        k = cfg.sector_top_k
-        if k is None or k >= len(w):
-            total = w.sum()
-            if total > 0:
-                return w / total
-            return pd.Series(1.0 / len(w), index=w.index)
-
-        keep = w.nlargest(k).index
-        w2 = w.copy()
-        w2.loc[~w2.index.isin(keep)] = 0.0
-        total = w2.sum()
-        if total <= 0:
-            w2.loc[keep] = 1.0 / len(keep)
-            return w2
-        return w2 / total
-
-    def _compute_sector_weights_vectorized(
-        self,
-        sector_scores_mat: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Vectorized sector weights: Date x Sector matrix, with
-        per-day softmax/caps/top-k and forward smoothing.
-        """
-        if sector_scores_mat.empty:
+        if not rows:
             return pd.DataFrame()
 
-        dates = sector_scores_mat.index
-        sectors = list(sector_scores_mat.columns)
-        weights_list: List[pd.Series] = []
-        prev_smoothed: Optional[pd.Series] = None
+        df = pd.DataFrame(rows).set_index("ticker")
 
-        for dt in dates:
-            scores_t = sector_scores_mat.loc[dt]
-            scores_t_nonan = scores_t.dropna()
+        # sanitize numeric columns only (all are numeric now)
+        df[["gate_score", "bb_z", "vol"]] = df[["gate_score", "bb_z", "vol"]].replace(
+            [np.inf, -np.inf], np.nan
+        )
 
-            if scores_t_nonan.empty:
-                # carry forward or uniform
-                if prev_smoothed is not None:
-                    w_final = prev_smoothed.reindex(sectors).fillna(0.0)
-                    w_smoothed = w_final
-                else:
-                    w_final = pd.Series(1.0 / len(sectors), index=sectors)
-                    w_smoothed = w_final
-            else:
-                w_raw = self._softmax(scores_t)
-                w_capped = self._apply_caps(w_raw)
-                w_smoothed = self._smooth_weights(prev_smoothed, w_capped)
-                w_selected = self._top_k(w_smoothed)
-                w_final = w_selected.reindex(sectors).fillna(0.0)
-
-            weights_list.append(w_final)
-            prev_smoothed = w_smoothed
-
-        sector_weights_mat = pd.DataFrame(weights_list, index=dates, columns=sectors)
-        return sector_weights_mat
+        # require trade signal at least; gate_score can be nan (means "no update")
+        df = df.dropna(subset=["bb_z"])
+        return df
 
     # ------------------------------------------------------------------
-    # Vectorized stock allocation (with liquidity mask)
+    # Gate state update (persistence + hysteresis)
     # ------------------------------------------------------------------
 
-    def _allocate_to_stocks_vectorized(
-        self,
-        price_mat: pd.DataFrame,
-        stock_score_mat: pd.DataFrame,
-        sector_weights_mat: pd.DataFrame,
-        vol_mat: Optional[pd.DataFrame] = None,
-        sector_map: Optional[Dict[str, str]] = None,
-    ) -> pd.DataFrame:
-        """
-        Vectorized stock allocation:
-
-            Inputs:
-                price_mat          : Date x Ticker (Close)
-                stock_score_mat    : Date x Ticker (sideways stock_score)
-                sector_weights_mat : Date x Sector
-                vol_mat            : Date x Ticker (realized vol); if None, compute.
-
-            Output:
-                Date x Ticker portfolio weights.
-        """
+    def _gate_score_from_series(
+        self, bb_bw: pd.Series, bb_bw_slope: pd.Series, slope: pd.Series
+    ) -> float:
         cfg = self.config
-        smap = sector_map or self.um.sector_map or {}
-        VSE = self.vec_engine
-        if VSE is None:
-            raise ValueError("vec_engine is not set; cannot allocate to stocks.")
 
-        dates = stock_score_mat.index
-        tickers = stock_score_mat.columns.tolist()
+        # Align + clean
+        s = pd.concat(
+            [bb_bw.rename("bw"), bb_bw_slope.rename("bw_slope"), slope.rename("slope")],
+            axis=1,
+            join="inner",
+        ).dropna()
+        if s.empty:
+            return np.nan
+        # Annualize slope
+        # Note: Assuming daily bars!!!
+        slope_ann = np.expm1(s["slope"] * 252.0)
 
-        out = pd.DataFrame(0.0, index=dates, columns=tickers)
+        cond = (
+            (s["bw"] < cfg.bw_thresh)
+            & (slope_ann.abs() < cfg.slope_ann_thresh)
+            & (s["bw_slope"] <= cfg.bw_slope_max)
+        )
 
-        # 1) Liquidity mask
-        liq_mask: Optional[pd.DataFrame] = None
-        if getattr(cfg, "use_liquidity_filters", False):
-            adv_window = getattr(cfg, "adv_window", 20)
-            median_volume_window = getattr(cfg, "median_volume_window", 20)
-            min_price = getattr(cfg, "min_price", None)
-            min_adv = getattr(cfg, "min_adv20", None)
-            min_medvol = getattr(cfg, "min_median_volume20", None)
+        bw_ok = s["bw"] < cfg.bw_thresh
+        slope_ok = slope_ann.abs() < cfg.slope_ann_thresh
+        bwsl_ok = s["bw_slope"] <= cfg.bw_slope_max
+        # print(
+        #     "gate hit rates:",
+        #     float(bw_ok.mean()),
+        #     float(slope_ok.mean()),
+        #     float(bwsl_ok.mean()),
+        #     "all:",
+        #     float((bw_ok & slope_ok & bwsl_ok).mean()),
+        # )
 
-            try:
-                volume_mat = VSE.get_field_matrix(
-                    tickers=tickers,
-                    start=price_mat.index.min(),
-                    end=price_mat.index.max(),
-                    field="Volume",
-                    interval="1d",
-                    local_only=getattr(self.mds, "local_only", False),
-                    auto_adjust=False,
-                    membership_aware=False,
-                    treat_unknown_as_always_member=True,
+        # Require full history for gate window
+        score = cond.rolling(window=cfg.gate_window, min_periods=cfg.gate_window).mean()
+        if score.empty:
+            return np.nan
+        return float(score.iloc[-1])
+
+    def _update_gate_state(self, snap: pd.DataFrame) -> None:
+        cfg = self.config
+        if self.state.in_sideways is None:
+            self.state.in_sideways = {}
+
+        for t, row in snap.iterrows():
+            score = float(row["gate_score"]) if pd.notna(row["gate_score"]) else np.nan
+
+            prev = bool(self.state.in_sideways.get(t, False))
+            now = prev
+
+            # Only update state if we have a valid score
+            if np.isfinite(score):
+                if (not prev) and (score >= cfg.gate_enter):
+                    now = True
+                elif prev and (score <= cfg.gate_exit):
+                    now = False
+
+            self.state.in_sideways[t] = now
+
+        # Optional: drop series columns to avoid accidental downstream use
+        # (keeps memory smaller if you store snap)
+        # snap.drop(columns=["bb_bw_series", "slope_series"], inplace=True)
+
+    # ------------------------------------------------------------------
+    # Allocation: long-only BB mean reversion
+    # ------------------------------------------------------------------
+
+    def _allocate_mean_reversion(
+        self, snap: pd.DataFrame, dropped_by_liquidity: Optional[Set[str]] = None
+    ) -> Dict[str, float]:
+        cfg = self.config
+        if self.state.positions is None:
+            self.state.positions = {}
+
+        max_pos = int(getattr(cfg, "max_positions", 0) or 0)
+        if max_pos <= 0:
+            max_pos = None  # treat as unlimited
+
+        # ---------- 1) update exits for currently held ----------
+        held = {t for t, v in self.state.positions.items() if v}
+
+        for t in list(held):
+            # If a held ticker is missing from the snapshot it may have been
+            # removed by liquidity/universe filters. Only treat as a hard exit
+            # when it's present in `dropped_by_liquidity` (explicitly removed).
+            if t not in snap.index:
+                if dropped_by_liquidity and (t in dropped_by_liquidity):
+                    self.state.positions[t] = False
+                    held.remove(t)
+                    print(
+                        f"[SidewaysSleeve] HARD EXIT {t} - removed by liquidity filters; closing position"
+                    )
+                    continue
+                # Not in snapshot but not dropped by liquidity filters: warn and skip
+                print(
+                    f"[SidewaysSleeve] WARNING: Held ticker {t} missing from signals snapshot (not dropped by liquidity), skipping exit check"
                 )
-            except Exception:
-                volume_mat = pd.DataFrame(index=price_mat.index, columns=tickers)
+                continue
 
-            volume_mat = volume_mat.reindex_like(price_mat)
+            z = float(snap["bb_z"].get(t, np.nan))
+            if not np.isfinite(z):
+                print(f"[SidewaysSleeve] WARNING: Non-finite z for {t}: {z}")
+            gate_on = bool(self.state.in_sideways.get(t, False))
 
-            dollar_vol = price_mat * volume_mat
-            adv_mat = dollar_vol.rolling(
-                adv_window,
-                min_periods=max(5, adv_window // 2),
-            ).mean()
-            medvol_mat = volume_mat.rolling(
-                median_volume_window,
-                min_periods=max(5, median_volume_window // 2),
-            ).median()
+            done = np.isfinite(z) and (z >= -cfg.exit_z)
+            hard_exit = bool(getattr(cfg, "exit_on_gate_off", False)) and (not gate_on)
 
-            liq_mask = pd.DataFrame(True, index=dates, columns=tickers)
-            if min_price is not None:
-                liq_mask &= price_mat >= float(min_price)
-            if min_adv is not None:
-                liq_mask &= adv_mat >= float(min_adv)
-            if min_medvol is not None:
-                liq_mask &= medvol_mat >= float(min_medvol)
+            if done or hard_exit:
+                self.state.positions[t] = False
+                held.remove(t)
+                print(
+                    f"[SidewaysSleeve] EXIT {t} z={z:.2f} done={done} hard_exit={hard_exit} gate_on={gate_on}"
+                )
 
-            liq_mask = liq_mask.fillna(False)
+        # ---------- 2) choose entries if capacity allows ----------
+        entries = []
+        for t, row in snap.iterrows():
+            if t in held:
+                continue
 
-        # 2) sector -> tickers map
-        sector_to_tickers: Dict[str, List[str]] = {}
-        for t in tickers:
-            sec = smap.get(t)
-            if isinstance(sec, str) and sec.strip() not in ("", "Unknown"):
-                sector_to_tickers.setdefault(sec, []).append(t)
+            z = float(row["bb_z"])
+            if not np.isfinite(z):
+                print(
+                    f"[SidewaysSleeve] WARNING: Non-finite z for {t}: {z}, skipping entry"
+                )
+                continue
 
-        # 3) Intra-day allocation
-        if cfg.weighting_mode == "inverse-vol" and vol_mat is None:
-            vol_mat = VSE.get_volatility(
-                price_mat,
-                window=cfg.vol_window,
-            )
+            gate_on = bool(self.state.in_sideways.get(t, False))
+            if gate_on and (z <= -cfg.entry_z):
+                strength = max(0.0, -z)
+                invvol = 1.0
+                if cfg.use_inverse_vol:
+                    v = float(row["vol"])
+                    if np.isfinite(v) and v > 0:
+                        invvol = 1.0 / v
+                entries.append((t, strength * invvol))
 
-        for dt in dates:
-            scores_t = stock_score_mat.loc[dt]
-            if cfg.weighting_mode == "inverse-vol":
-                vols_t = vol_mat.loc[dt]
-            sector_w_t = sector_weights_mat.loc[dt]
+        if max_pos is not None:
+            slots = max(0, max_pos - len(held))
+            if slots > 0 and entries:
+                entries = sorted(entries, key=lambda x: x[1], reverse=True)[:slots]
+            else:
+                entries = []
+        # if unlimited, take all entries
 
-            eligible_tickers = None
-            if liq_mask is not None:
-                eligible_tickers = liq_mask.loc[dt]
+        for t, _ in entries:
+            self.state.positions[t] = True
+            held.add(t)
 
-            for sector, w_sec in sector_w_t.items():
-                if w_sec <= 0 or pd.isna(w_sec):
-                    continue
+        # ---------- 3) allocate among actually-held positions ----------
+        if not held:
+            return {}
 
-                candidates = sector_to_tickers.get(sector)
-                if not candidates:
-                    continue
+        desired_scores = {}
+        for t in held:
+            z = float(snap["bb_z"].get(t, np.nan))
+            strength = max(0.0, -z)
 
-                if eligible_tickers is not None:
-                    candidates = [
-                        t for t in candidates if bool(eligible_tickers.get(t, False))
-                    ]
-                if not candidates:
-                    continue
+            invvol = 1.0
+            if cfg.use_inverse_vol:
+                v = float(snap["vol"].get(t, np.nan))
+                if np.isfinite(v) and v > 0:
+                    invvol = 1.0 / v
 
-                # Top-k by *sideways* stock_score within sector
-                s = scores_t[candidates].dropna()
-                if s.empty:
-                    continue
-                top = s.nlargest(cfg.top_k_per_sector).index.tolist()
+            desired_scores[t] = strength * invvol
 
-                if cfg.weighting_mode == "inverse-vol":
-                    v = vols_t[top].astype(float)
-                    v = v.replace({0.0: np.nan})
-                    inv = 1.0 / v
-                    inv = inv.replace({np.inf: np.nan}).dropna()
-                    if inv.empty:
-                        intra = pd.Series(1.0 / len(top), index=top)
-                    else:
-                        intra = inv / inv.sum()
-                else:
-                    intra = pd.Series(1.0 / len(top), index=top)
+        s = (
+            pd.Series(desired_scores, dtype=float)
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        if s.sum() <= 0:
+            s[:] = 1.0
 
-                out.loc[dt, intra.index] += w_sec * intra
+        w = (s / s.sum()).clip(upper=cfg.w_max_per_asset)
+        w = w / w.sum()
 
-        # 4) Normalize per-day
-        row_sums = out.sum(axis=1).replace(0.0, np.nan)
-        out = out.div(row_sums, axis=0).fillna(0.0)
+        # keep state consistent with actual holdings
+        for t in list(self.state.positions.keys()):
+            self.state.positions[t] = t in w.index
 
-        return out
-
-    # ------------------------------------------------------------------
-    # Precompute (vectorized end-to-end)
-    # ------------------------------------------------------------------
-
-    def precompute(
-        self,
-        start: datetime | str,
-        end: datetime | str,
-        rebalance_dates: Optional[List[datetime | str]] = None,
-        warmup_buffer: int = 30,
-    ) -> pd.DataFrame:
-        """
-        Vectorized precomputation of final stock weights over [start, end].
-
-        Steps:
-          1) Build price matrix over [warmup_start, end]
-          2) Vectorized sideways stock scores (Date x Ticker)
-          3) Vectorized sector scores (Date x Sector)
-          4) Vectorized sector weights (Date x Sector)
-          5) Vectorized stock allocation (Date x Ticker)
-          6) Slice to [start, end]; optionally sample by rebalance_dates
-
-        Result stored in self.precomputed_weights_mat.
-        """
-        if self.vec_engine is None:
-            raise ValueError("vec_engine is not set; cannot precompute.")
-
-        start_ts = pd.to_datetime(start)
-        end_ts = pd.to_datetime(end)
-        if end_ts < start_ts:
-            raise ValueError("end must be >= start")
-
-        cfg = self.config
-
-        # Warmup length from signal-related windows
-        window_candidates: List[int] = []
-        window_candidates.extend(getattr(cfg, "mom_windows", []) or [])
-        for attr_name in [
-            "vol_window",
-            "adv_window",
-            "median_volume_window",
-            "liquidity_window",
-        ]:
-            w_val = getattr(cfg, attr_name, None)
-            if isinstance(w_val, int) and w_val > 0:
-                window_candidates.append(w_val)
-        max_window = max(window_candidates) if window_candidates else 0
-        warmup_days = max_window + int(warmup_buffer)
-        warmup_start = start_ts - pd.Timedelta(days=warmup_days)
-
-        # 1) Price matrix (membership-aware)
-        price_mat = self.um.get_price_matrix(
-            price_loader=self.mds,
-            start=warmup_start,
-            end=end_ts,
-            tickers=self.um.tickers,
-            interval="1d",
-            auto_apply_membership_mask=True,
-            local_only=getattr(self.mds, "local_only", False),
+        print(
+            "held_all:",
+            sorted([t for t, v in self.state.positions.items() if v]),
+            "allocated:",
+            list(w.index),
         )
 
-        price_mat = price_mat.dropna(axis=1, how="all")
-        if price_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        price_mat.columns = [c.upper() for c in price_mat.columns]
-        sector_map = self.um.sector_map
-        if sector_map is not None:
-            sector_map = {t.upper(): s for t, s in sector_map.items()}
-            sector_map = {t: s for t, s in sector_map.items() if t in price_mat.columns}
-
-        # 2) Vectorized sideways stock scores
-        stock_score_mat = self._compute_stock_scores_vectorized(price_mat)
-        if stock_score_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        # 3) Sector scores
-        sector_scores_mat = self._compute_sector_scores_vectorized(
-            stock_score_mat, sector_map=sector_map
-        )
-        if sector_scores_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        # 4) Sector weights
-        sector_weights_mat = self._compute_sector_weights_vectorized(sector_scores_mat)
-        if sector_weights_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        # 5) Stock allocations
-        alloc_mat = self._allocate_to_stocks_vectorized(
-            price_mat=price_mat,
-            stock_score_mat=stock_score_mat,
-            sector_weights_mat=sector_weights_mat,
-            sector_map=sector_map,
-        )
-        if alloc_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        # 6) Slice to [start, end] and align to calendar
-        alloc_mat = alloc_mat.loc[
-            (alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)
-        ]
-        alloc_mat = alloc_mat.asfreq("D", method="ffill").fillna(0.0)
-
-        if rebalance_dates:
-            target_dates = pd.to_datetime(rebalance_dates).normalize()
-            alloc_mat = alloc_mat[alloc_mat.index.isin(target_dates)]
-
-        self.precomputed_weights_mat = alloc_mat.copy()
-        return self.precomputed_weights_mat
-
-    # Convenience accessor
-    def get_precomputed_weights(self) -> Optional[pd.DataFrame]:
-        return self.precomputed_weights_mat
+        return {t: float(x) for t, x in w.items()}

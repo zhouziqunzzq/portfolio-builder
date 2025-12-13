@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
-SINGLE_SLEEVE_TESTING = "trend"
+SINGLE_SLEEVE_TESTING = "sideways"
 
 
 @dataclass

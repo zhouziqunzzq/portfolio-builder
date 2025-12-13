@@ -26,6 +26,8 @@ from vec_signal_engine import VectorizedSignalEngine
 from regime_engine import RegimeEngine
 from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
+
+# from sleeves.sideways_fake.sideways_sleeve import SidewaysSleeve
 from sleeves.sideways.sideways_sleeve import SidewaysSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
@@ -77,13 +79,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--rebalance-frequency",
         dest="rebalance_frequency",
-        choices=["monthly", "bi-weekly", "weekly", "semi-monthly"],
+        choices=[
+            "monthly",
+            "bi-weekly",
+            "weekly",
+            "semi-monthly",
+            "daily",
+            "semi-weekly",
+        ],
         default="monthly",
         help=(
             "Rebalance frequency: 'monthly' (business month-start), "
             "'bi-weekly' (every 2 weeks, anchored to Mondays), "
             "'weekly' (every week, anchored to Mondays), "
-            "'semi-monthly' (2x per month: business month-start and mid-month Monday)"
+            "'semi-monthly' (2x per month: business month-start and mid-month Monday), "
+            "'daily' (every business day), 'semi-weekly' (twice per week: Monday + mid-week)"
         ),
     )
 
@@ -193,7 +203,16 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     )
 
     # Signals
-    signals = SignalEngine(mds)
+    should_disable_cache_margin = False
+    if args.rebalance_frequency in ("daily", "semi-weekly"):
+        # For high-frequency rebalancing, disable cache margin to avoid
+        # missing signals on tight windows.
+        should_disable_cache_margin = True
+    signals = SignalEngine(
+        mds,
+        disable_cache_margin=should_disable_cache_margin,
+        disable_cache_extension=True,
+    )
     vec_engine = VectorizedSignalEngine(um, mds)
 
     # Regime engine
@@ -217,10 +236,8 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         config=None,  # default TrendConfig
     )
     sideways = SidewaysSleeve(
-        universe=um,
         mds=mds,
         signals=signals,
-        vec_engine=vec_engine,
         config=None,  # default SidewaysConfig
     )
 
@@ -277,8 +294,19 @@ def build_rebalance_schedule(
     if freq_lc in ("weekly", "week"):
         return pd.date_range(start=start, end=end, freq="W-MON")
 
+    if freq_lc in ("daily", "day", "business-daily", "bday"):
+        # Every business day in the range
+        return pd.date_range(start=start, end=end, freq="B")
+
     if freq_lc in ("bi-weekly", "biweekly", "bi_weekly"):
         return pd.date_range(start=start, end=end, freq="2W-MON")
+
+    if freq_lc in ("semi-weekly", "semi_weekly", "semiweekly"):
+        # Twice per week: Mondays and mid-week (Wednesdays). Union and sort.
+        mon = pd.date_range(start=start, end=end, freq="W-MON")
+        wed = pd.date_range(start=start, end=end, freq="W-WED")
+        all_dates = sorted({d.normalize(): d for d in list(mon) + list(wed)}.keys())
+        return pd.DatetimeIndex(all_dates)
 
     if freq_lc in (
         "semi-monthly",

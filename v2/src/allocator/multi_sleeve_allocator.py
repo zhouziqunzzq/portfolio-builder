@@ -124,8 +124,10 @@ class MultiSleeveAllocator:
         combined: Dict[str, float] = {}
 
         for name, sleeve in self.sleeves.items():
+            # print(f"[MultiSleeveAllocator] Processing sleeve '{name}' ...")
             alloc = sleeve_alloc.get(name, 0.0)
             if alloc <= 0:
+                # print(f"[MultiSleeveAllocator]  Skipping sleeve '{name}' with zero allocation.")
                 continue
 
             local_weights = sleeve.generate_target_weights_for_date(

@@ -34,6 +34,7 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 from src.sleeves.defensive.defensive_config import DefensiveConfig
+from src.sleeves.sideways.sideways_config import SidewaysConfig
 
 from src.market_data_store import MarketDataStore
 from src.universe_manager import UniverseManager
@@ -54,6 +55,11 @@ def parse_args() -> argparse.Namespace:
         "--use-defensive-etfs",
         action="store_true",
         help="Use all defensive sleeve ETF tickers from DefensiveConfig (overrides --tickers)",
+    )
+    p.add_argument(
+        "--use-sideways-tickers",
+        action="store_true",
+        help="Use all tickers defined in SidewaysConfig (overrides --tickers)",
     )
     p.add_argument(
         "--use-universe",
@@ -95,7 +101,9 @@ def main() -> int:
     if end_dt < start_dt:
         raise ValueError("End date must be >= start date")
 
-    if not args.tickers and not (args.use_defensive_etfs or args.use_universe):
+    if not args.tickers and not (
+        args.use_defensive_etfs or args.use_universe or args.use_sideways_tickers
+    ):
         raise ValueError(
             "Must supply --tickers unless --use-defensive-etfs or --use-universe is set"
         )
@@ -108,6 +116,9 @@ def main() -> int:
         cfg = DefensiveConfig()
         # Use all ETF tickers defined in asset_class_for_etf
         tickers.extend(sorted({k.upper() for k in cfg.asset_class_for_etf.keys()}))
+    if args.use_sideways_tickers:
+        scfg = SidewaysConfig()
+        tickers.extend(sorted({t.upper() for t in scfg.tickers}))
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
         if not tickers:

@@ -33,7 +33,7 @@ def _normalize_params(params: Dict[str, Any]) -> Tuple[Tuple[str, Hashable], ...
     """
     if not params:
         return tuple()
-    # Ensure values are hashable â convert lists to tuples etc.
+    # Ensure values are hashable -> convert lists to tuples etc.
     normalized_items = []
     for k, v in sorted(params.items()):
         if isinstance(v, dict):
@@ -85,7 +85,14 @@ class SignalEngine:
     All sleeves + RegimeEngine should request signals via this class.
     """
 
-    def __init__(self, mds: MarketDataStore):
+    def __init__(
+        self,
+        mds: MarketDataStore,
+        disable_cache_margin: bool = False,
+        # The current implementation of cache extension drags down performance
+        # by too much in some cases; default disable for now.
+        disable_cache_extension: bool = True,
+    ) -> None:
         self.mds = mds
         self.store = SignalStore()
         self.annualize_factor = {
@@ -94,8 +101,14 @@ class SignalEngine:
             "1mo": 12,
         }
 
-    # ----- public API -----
+        self.disable_cache_margin = disable_cache_margin
+        if self.disable_cache_margin:
+            print("[SignalEngine] Cache margin DISABLED")
+        self.disable_cache_extension = disable_cache_extension
+        if self.disable_cache_extension:
+            print("[SignalEngine] Cache extension DISABLED")
 
+    # ----- public API -----
     def get_series(
         self,
         ticker: str,
@@ -113,6 +126,41 @@ class SignalEngine:
           (to account for weekends/holidays), we slice & return.
         - Otherwise we extend the cached range to the union and update the cache.
         """
+        rst_series = self._get_series(
+            ticker=ticker,
+            signal=signal,
+            start=start,
+            end=end,
+            interval=interval,
+            **params,
+        )
+        # Print a warning if:
+        # - returned series is empty
+        # - returned series end drifts too far from requested end date
+        if rst_series.empty:
+            print(
+                f"[SignalEngine] WARNING: returned empty series for {ticker} {signal} from {start} to {end} (interval={interval}, params={params})"
+            )
+        else:
+            requested_end = pd.to_datetime(end)
+            actual_end = rst_series.index.max()
+            if actual_end < requested_end - pd.Timedelta(days=5):
+                print(
+                    f"[SignalEngine] WARNING: returned series for {ticker} {signal} ends at {actual_end.date()}, which is more than 5 days before requested end date {requested_end.date()} (interval={interval}, params={params})"
+                )
+        return rst_series
+
+    # ----- internal dispatcher -----
+
+    def _get_series(
+        self,
+        ticker: str,
+        signal: str,
+        start: datetime | str,
+        end: datetime | str,
+        interval: str = "1d",
+        **params: Any,
+    ) -> pd.Series:
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
         # auto_ffill = params.pop("auto_ffill", False)
@@ -126,12 +174,15 @@ class SignalEngine:
         )
 
         cached = self.store.get(key)
+        # Cache hit: check coverage
         if cached is not None and not cached.empty:
             cached_start = cached.index.min()
             cached_end = cached.index.max()
 
             # For daily/weekly/monthly data, give ourselves a calendar margin
-            if interval == "1d":
+            if self.disable_cache_margin:
+                margin = pd.Timedelta(0)
+            elif interval == "1d":
                 margin = pd.Timedelta(days=3)
             elif interval == "1wk":
                 margin = pd.Timedelta(days=10)
@@ -150,22 +201,22 @@ class SignalEngine:
                 return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
 
             # Partial coverage: extend range (recompute over union)
-            new_start = min(start_dt, cached_start)
-            new_end = max(end_dt, cached_end)
-
-            # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}], New range [{new_start.date()} to {new_end.date()}]")
-            series = self._compute_signal_full(
-                ticker=ticker,
-                signal=signal,
-                start=new_start,
-                end=new_end,
-                interval=interval,
-                # auto_ffill=auto_ffill,
-                # auto_ffill_limit=auto_ffill_limit,
-                **params,
-            )
-            self.store.set(key, series)
-            return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
+            if not self.disable_cache_extension:
+                new_start = min(start_dt, cached_start)
+                new_end = max(end_dt, cached_end)
+                # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}], New range [{new_start.date()} to {new_end.date()}]")
+                series = self._compute_signal_full(
+                    ticker=ticker,
+                    signal=signal,
+                    start=new_start,
+                    end=new_end,
+                    interval=interval,
+                    # auto_ffill=auto_ffill,
+                    # auto_ffill_limit=auto_ffill_limit,
+                    **params,
+                )
+                self.store.set(key, series)
+                return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
         # Cache miss: compute the full series for requested range
         # print(f"[SignalEngine] CACHE MISS: {key}")
@@ -182,8 +233,6 @@ class SignalEngine:
 
         self.store.set(key, series)
         return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
-
-    # ----- internal dispatcher -----
 
     def _compute_signal_full(
         self,
