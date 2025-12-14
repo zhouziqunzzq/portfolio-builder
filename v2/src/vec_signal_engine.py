@@ -281,6 +281,13 @@ class VectorizedSignalEngine:
     ) -> Dict[int, pd.DataFrame]:
         """
         Vectorized cross-sectional time-series momentum.
+        
+        Uses row-based .shift() to count TRADING DAYS (not calendar days).
+        This matches the non-vectorized SignalEngine behavior.
+        
+        IMPORTANT: price_mat must NOT contain NaN values, as .shift() counts
+        all rows including NaNs. Call .dropna(how='all', axis=0) or .ffill()
+        to clean the data before passing to this method.
 
         Returns
         -------
@@ -294,6 +301,7 @@ class VectorizedSignalEngine:
             return mom_dict
 
         for w in lookbacks:
+            # Row-based shift = trading days (assuming no NaN rows)
             mom = price_mat / price_mat.shift(w) - 1.0
             mom_dict[w] = mom
 
@@ -391,12 +399,15 @@ class VectorizedSignalEngine:
     ) -> pd.DataFrame:
         """
         Vectorized rolling realized volatility (Date x Ticker).
+        
+        Uses log returns to match non-vectorized SignalEngine behavior.
         """
         if price_mat.empty:
             return price_mat
 
-        returns = price_mat.pct_change(fill_method=None)
-        vol = returns.rolling(window).std()
+        # Use log returns to match non-vec SignalEngine
+        log_returns = np.log(price_mat / price_mat.shift(1))
+        vol = log_returns.rolling(window).std()
 
         if annualize:
             vol *= np.sqrt(252)

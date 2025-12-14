@@ -24,7 +24,7 @@ class TrendConfig:
     cs_weight: float = 1.0  # overall scale for CS-mom contribution
     mom_windows: List[int] = field(default_factory=lambda: [63, 126, 252])
     mom_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1.0])
-  
+
     # TS-momentum (Time-Series momentum)
     # Note: TS-mom is not implemented in non-vectorized mode yet
     use_ts_mom: bool = False
@@ -36,16 +36,16 @@ class TrendConfig:
 
     # Spread-momentum vs benchmark(s)
     use_spread_mom: bool = True
-    spread_mom_weight: float = 0.4 # overall scale for spread-mom contribution
+    spread_mom_weight: float = 0.4  # overall scale for spread-mom contribution
     spread_mom_windows: List[int] = field(default_factory=lambda: [63])
     spread_mom_window_weights: List[float] = field(default_factory=lambda: [1.0])
-    spread_benchmark: str = "SPY"     # MVP - will expand to multiple later
+    spread_benchmark: str = "SPY"  # MVP - will expand to multiple later
 
     # Volatility estimator mode
-    vol_mode: str = "rolling"          # "rolling" | "ewm"
-    ewm_vol_halflife: int = 40     # in trading days; if None, fall back to vol_window
-  
-    vol_window: int = 20 # only used if vol_mode == "rolling"
+    vol_mode: str = "rolling"  # "rolling" | "ewm"
+    ewm_vol_halflife: int = 40  # in trading days; if None, fall back to vol_window
+
+    vol_window: int = 20  # only used if vol_mode == "rolling"
     vol_penalty: float = 0.5  # negative contribution from volatility
 
     # Z-score winsorization / clipping
@@ -80,6 +80,11 @@ class TrendConfig:
     sector_cs_weight: float = 1.0  # usually keep at 1.0
     sector_ts_weight: float = 0.0
 
+    # Sector weights precomputation knobs
+    # If set to "daily", apply smoothing on the daily sector weights
+    # If set to "rebalance_dates", resample to rebalance dates before applying smoothing - this is how non-vectorized mode works
+    precompute_sector_smoothing_mode: str = "rebalance_dates"  # "daily" | "rebalance_dates"
+
     # ------------------------------------------------------------------
     # Stock selection within each sector
     # ------------------------------------------------------------------
@@ -88,7 +93,7 @@ class TrendConfig:
 
     # ------------------------------------------------------------------
     # Rebalancing (may be overridden by global scheduler)
-    # Note: Only used in non-vectorized mode
+    # Note: Use for appoximate rebalancing frequency when considering resetting sector weights smoothing
     # ------------------------------------------------------------------
     rebalance_freq: str = "M"
 

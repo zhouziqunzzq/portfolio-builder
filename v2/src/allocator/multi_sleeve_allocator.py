@@ -199,13 +199,22 @@ class MultiSleeveAllocator:
         if end_ts < start_ts:
             raise ValueError("end must be >= start for precompute")
 
-        print(
-            f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]"
-        )
         if rebalance_dates is not None:
+            # Adjust start date and end date to cover all rebalance dates
+            min_rebalance_date = min(pd.to_datetime(d) for d in rebalance_dates)
+            max_rebalance_date = max(pd.to_datetime(d) for d in rebalance_dates)
+            start_ts = min(start_ts, min_rebalance_date)
+            end_ts = max(end_ts, max_rebalance_date)
             print(
                 f"[MultiSleeveAllocator] Rebalance dates supplied: {len(rebalance_dates)}"
             )
+            print(
+                f"[MultiSleeveAllocator] Adjusted precompute date range to [{start_ts.date()}, {end_ts.date()}]"
+            )
+
+        print(
+            f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]"
+        )
 
         results: Dict[str, pd.DataFrame] = {}
 
@@ -238,6 +247,9 @@ class MultiSleeveAllocator:
                     )
                 results[name] = wmat.copy() if wmat is not None else pd.DataFrame()
             except Exception as e:
+                # Print the exception and stacktrace
+                import traceback
+                traceback.print_exc()
                 print(f"[MultiSleeveAllocator] Sleeve '{name}' precompute failed: {e}")
                 results[name] = pd.DataFrame()
 

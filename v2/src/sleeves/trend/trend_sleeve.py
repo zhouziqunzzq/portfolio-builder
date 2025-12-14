@@ -72,13 +72,15 @@ class TrendSleeve:
             self.config.rebalance_freq
         )
 
-        # Precomputed caches
-        # Cached precomputed weights matrix (Date x Ticker)
-        self.precomputed_weights_mat: Optional[pd.DataFrame] = None
-        # Cached precomputed CS-mom component
-        self._cs_stock_score_mat: Optional[pd.DataFrame] = None
-        # Cached precomputed TS-mom component
-        self._ts_stock_score_mat: Optional[pd.DataFrame] = None
+        # Precomputed caches for score matrices (lightweight caching)
+        self._cached_stock_scores_mat: Optional[pd.DataFrame] = None  # Date x Ticker
+        self._cached_sector_scores_mat: Optional[pd.DataFrame] = None  # Date x Sector
+
+        # Cached components for sector scoring (used by vectorized path)
+        self._base_stock_score_mat: Optional[pd.DataFrame] = (
+            None  # CS-mom + spread-mom + vol
+        )
+        self._ts_stock_score_mat: Optional[pd.DataFrame] = None  # TS-mom component
         # Cached raw feature matrices (without z-scoring)
         self._cached_feature_mats: Optional[Dict[str, pd.DataFrame]] = None
 
@@ -106,27 +108,72 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
-                print(
-                    f"[TrendSleeve] Regime '{regime_key}' is gated off; returning empty weights."
-                )
                 return {}
 
-        # ---------- Cached vectorized weights (if precomputed) ----------
-        # If precompute() was called, we can directly return weights for this date
-        # without re-running the single-date pipeline. We still performed regime gating above.
+        # ---------- Use cached scores if available (from precompute) ----------
+        # If precompute() was called, we have stock_scores and sector_scores cached.
+        # Use those to skip expensive signal computation, but still run sector weighting
+        # and stock allocation through the non-vec path for consistency.
+        date_key = as_of.normalize()
+
         if (
-            self.precomputed_weights_mat is not None
-            and not self.precomputed_weights_mat.empty
+            self._cached_stock_scores_mat is not None
+            and not self._cached_stock_scores_mat.empty
+            and date_key in self._cached_stock_scores_mat.index
         ):
-            date_key = as_of.normalize()
-            if date_key in self.precomputed_weights_mat.index:
-                print(f"[TrendSleeve] Using precomputed weights for {date_key.date()}")
-                row = self.precomputed_weights_mat.loc[date_key]
-                weights = {t: float(w) for t, w in row.items() if w > 0}
-                total = sum(weights.values())
-                if total > 0:
-                    return {t: w / total for t, w in weights.items()}
+            print(f"[TrendSleeve] Using cached scores for {date_key.date()}")
+
+            # Extract scores for this date
+            stock_scores_series = self._cached_stock_scores_mat.loc[date_key]
+            sector_scores_series = self._cached_sector_scores_mat.loc[date_key]
+
+            # Convert to DataFrame format expected by non-vec functions
+            # stock_scores_series is a Series with ticker index
+            # We need a DataFrame with columns: ticker, stock_score, vol (for inverse-vol weighting)
+            scored = pd.DataFrame({"stock_score": stock_scores_series})
+            scored = scored[scored["stock_score"].notna()]  # Drop NaN scores
+
+            if scored.empty:
                 return {}
+
+            # Get vol data if needed for inverse-vol weighting
+            if self.config.weighting_mode == "inverse-vol":
+                # Use cached vol matrix from precompute if available
+                if (
+                    self._cached_feature_mats is not None
+                    and "vol" in self._cached_feature_mats
+                ):
+                    vol_mat = self._cached_feature_mats["vol"]
+                    # Forward-fill to daily and extract for this date
+                    vol_mat_daily = vol_mat.asfreq("D", method="ffill")
+                    if date_key in vol_mat_daily.index:
+                        vol_series = vol_mat_daily.loc[date_key]
+                        scored["vol"] = vol_series.reindex(scored.index)
+                else:
+                    # Fallback: compute on-the-fly if cache not available
+                    print("[TrendSleeve] Fallback: computing vol on-the-fly")
+                    universe = scored.index.tolist()
+                    sigs = self._compute_signals_snapshot(
+                        universe, start_for_signals, as_of
+                    )
+                    if not sigs.empty and "vol" in sigs.columns:
+                        scored["vol"] = sigs["vol"]
+
+            # Convert sector_scores_series to Series format
+            sector_scores = sector_scores_series.dropna()
+            if sector_scores.empty:
+                return {}
+
+            # Now use non-vec functions for sector weighting and stock allocation
+            sector_weights = self._compute_smoothed_sector_weights(as_of, sector_scores)
+            if sector_weights.isna().all() or sector_weights.sum() <= 0:
+                return {}
+
+            stock_weights = self._allocate_to_stocks(scored, sector_weights)
+            if not stock_weights:
+                return {}
+
+            return stock_weights
 
         # ---------- Normal trend sleeve logic below ----------
 
@@ -134,13 +181,11 @@ class TrendSleeve:
         universe = self._get_trend_universe(as_of)
         if not universe:
             return {}
-        # print(f"[TrendSleeve] Universe size as of {as_of.date()}: {len(universe)} tickers")
 
         # 2) Compute signals (with liquidity filters)
         sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
         if sigs.empty:
             return {}
-        # print(f"[TrendSleeve] Signals ({as_of.date()}) after liquidity filters: \n{sigs.tail()}")
 
         # 3) Stock scores
         scored = self._compute_stock_scores(sigs)
@@ -373,6 +418,7 @@ class TrendSleeve:
 
         # Drop rows missing key signal inputs
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=keep_cols, how="any")
+
         return df
 
     # ------------------------------------------------------------------
@@ -402,7 +448,6 @@ class TrendSleeve:
         for w in cfg.mom_windows:
             col = f"mom_{w}"
             df[f"z_mom_{w}"] = self._zscore_series(df[col])
-            # print(f"[TrendSleeve] Z-scored momentum (w={w}): \n{df[[col, f'z_mom_{w}']].tail()}")
 
         # weighted momentum scores for z_mom and spread_mom
         momentum_score = pd.Series(0.0, index=df.index)
@@ -531,9 +576,9 @@ class TrendSleeve:
             # print(f"[TrendSleeve] Days since last sector weights: {gap} days")
 
             if gap <= 0:
-                # Same day or out-of-order: dont smooth, just use new capped weights
+                # Same day or out-of-order: don't smooth, just use new capped weights
                 smoothed_pre_topk = w_capped
-            elif gap <= 2 * self._approx_rebalance_days:
+            elif gap <= np.ceil(2 * self._approx_rebalance_days):
                 # Normal smoothing case
                 prev = self.state.last_sector_weights.reindex(w_capped.index).fillna(
                     0.0
@@ -549,6 +594,7 @@ class TrendSleeve:
             else:
                 # Large gap -> reset smoothing, treat as fresh start
                 smoothed_pre_topk = w_capped
+                print(f"[TrendSleeve] Large gap ({gap} days) -> reset sector smoothing")
 
         # 4) Apply top-k on the smoothed weights for actual allocation
         smoothed_out = self._top_k(smoothed_pre_topk)
@@ -576,6 +622,7 @@ class TrendSleeve:
         s = scored.loc[tickers, "stock_score"].dropna()
         if s.empty:
             return []
+
         top = s.sort_values(ascending=False).head(cfg.top_k_per_sector)
         return top.index.tolist()
 
@@ -630,6 +677,7 @@ class TrendSleeve:
     def _compute_stock_scores_vectorized(
         self,
         price_mat: pd.DataFrame,
+        membership_mask: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
         Fully vectorized stock score computation over ALL dates.
@@ -638,6 +686,12 @@ class TrendSleeve:
             - stock_score(t, ticker)
 
         No liquidity filtering here.
+
+        Parameters
+        ----------
+        membership_mask : pd.DataFrame, optional
+            Boolean mask (Date x Ticker) indicating universe membership.
+            If provided, raw signals will be masked before z-scoring.
         """
 
         cfg = self.config
@@ -687,8 +741,43 @@ class TrendSleeve:
             feature_mats[f"mom_{w}"] = cs_mom_dict[w]
         # Volatility matrix
         feature_mats["vol"] = vol_mat
+
         # Save cached feature matrices
         self._cached_feature_mats = feature_mats
+
+        # --------------------------------------------------------
+        # 1.5) Apply membership mask to raw signals (BEFORE z-scoring)
+        # --------------------------------------------------------
+        if membership_mask is not None and not membership_mask.empty:
+            # Reindex without ffill - use exact membership status for each date
+            membership_mask_aligned = membership_mask.reindex(
+                index=feature_mats[f"mom_{cfg.mom_windows[0]}"].index,
+                fill_value=False,  # No ffill - missing dates default to False
+            )
+            membership_mask_aligned = membership_mask_aligned.reindex(
+                columns=feature_mats[f"mom_{cfg.mom_windows[0]}"].columns,
+                fill_value=False,
+            )
+
+            # Apply mask to all raw feature matrices
+            for key in feature_mats:
+                feature_mats[key] = feature_mats[key].where(membership_mask_aligned)
+
+        # --------------------------------------------------------
+        # 1.6) Filter out stocks with NaN momentum/vol (match non-vec behavior)
+        # --------------------------------------------------------
+        # The non-vec path drops stocks with missing mom/vol before z-scoring (line 470)
+        # The vec path must do the same to ensure identical z-score universes PER DATE
+        # For each date, a stock is valid only if it has non-NaN values in ALL mom windows AND vol
+
+        # Compute a combined validity mask: valid if all required signals are non-NaN
+        combined_valid_mask = feature_mats["vol"].notna()  # Start with vol
+        for w in cfg.mom_windows:
+            combined_valid_mask = combined_valid_mask & feature_mats[f"mom_{w}"].notna()
+
+        # Apply the combined mask to ALL feature matrices
+        for key in feature_mats:
+            feature_mats[key] = feature_mats[key].where(combined_valid_mask)
 
         # --------------------------------------------------------
         # 2) Z scoring (winsorized if enabled) *per date*, cross-sectionally (column-wise)
@@ -698,6 +787,7 @@ class TrendSleeve:
 
         for w in cfg.mom_windows:
             mat = feature_mats[f"mom_{w}"]
+
             # apply rowwise z-scoring if enabled
             if cfg.use_zscore_winsorization:
                 z = windorized_zscore_matrix_column_wise(mat, clip=cfg.zscore_clip)
@@ -721,9 +811,6 @@ class TrendSleeve:
         # Weighted momentum score
         mom_part = None
         for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
-            # print(f"[TrendSleeve] Adding momentum z-score for window {w} with weight {wt}")
-            # m_dropped_na = z_mats[f"z_mom_{w}"].dropna(how="all", axis=0)
-            # print(f"[TrendSleeve] z_mom_{w} matrix:\n{m_dropped_na}")
             if mom_part is None:
                 mom_part = wt * z_mats[f"z_mom_{w}"]
             else:
@@ -777,7 +864,6 @@ class TrendSleeve:
         if ts_stock_score_mat is not None:
             stock_score_mat = stock_score_mat.add(ts_stock_score_mat, fill_value=0.0)
         if spread_stock_score_mat is not None:
-            # print(f"[TrendSleeve] Adding spread momentum component to stock scores: \n{spread_stock_score_mat.tail()}")
             stock_score_mat = stock_score_mat.add(
                 spread_stock_score_mat, fill_value=0.0
             )
@@ -800,8 +886,23 @@ class TrendSleeve:
         # --------------------------------------------------------
         # 4) Construct final output: keep only stock_score for sector scoring
         # --------------------------------------------------------
+        # Apply membership mask AGAIN to final stock scores
+        # This ensures stocks that are not in the universe on each date have NaN scores
+        if membership_mask is not None and not membership_mask.empty:
+            # Reindex membership mask to match stock_score_mat dates
+            membership_mask_final = membership_mask.reindex(
+                index=stock_score_mat.index, fill_value=False
+            )
+            # Ensure columns match
+            membership_mask_final = membership_mask_final.reindex(
+                columns=stock_score_mat.columns, fill_value=False
+            )
+            # Apply mask: set non-members to NaN
+            stock_score_mat = stock_score_mat.where(membership_mask_final)
+            # print(f"[TrendSleeve] Applied final membership mask to stock scores")
+
         # Cache components for sector scoring
-        self._cs_stock_score_mat = cs_stock_score_mat
+        self._base_stock_score_mat = cs_stock_score_mat
         self._ts_stock_score_mat = ts_stock_score_mat
         stock_score_mat.name = "stock_score"
         return stock_score_mat
@@ -833,13 +934,15 @@ class TrendSleeve:
         # ------------------------------------------------------------------
         # 1) Get cached stock-level components
         # ------------------------------------------------------------------
-        cs_stock = getattr(self, "_cs_stock_score_mat", None)
+        base_stock = getattr(self, "_base_stock_score_mat", None)
         ts_stock = getattr(self, "_ts_stock_score_mat", None)
 
         # Fallback if for some reason cache is missing, all-NaN, all-zero,
         # or mostly-zero (e.g. cache was zeroed out). Use a small epsilon
         # and a fractional threshold to detect "mostly zero" matrices.
-        def _is_mostly_zero(df: pd.DataFrame, eps: float = 1e-12, frac_thresh: float = 0.01) -> bool:
+        def _is_mostly_zero(
+            df: pd.DataFrame, eps: float = 1e-12, frac_thresh: float = 0.01
+        ) -> bool:
             if df is None:
                 return True
             if df.empty:
@@ -865,17 +968,18 @@ class TrendSleeve:
                 return True
             return False
 
-        if _is_mostly_zero(cs_stock):
-            print(
-                "[TrendSleeve] Warning: CS stock score matrix cache missing or empty/mostly-zero; overriding with stock_score_mat."
-            )
-            cs_stock = stock_score_mat
+        if _is_mostly_zero(base_stock):
+            base_stock = stock_score_mat
 
         # ------------------------------------------------------------------
-        # 2) Sector CS score: mean of CS stock scores within each sector
+        # 2) Sector base score: mean of FULL stock scores (CS-mom + spread-mom + vol) within each sector
         # ------------------------------------------------------------------
-        sector_cs = sector_mean_matrix(
-            stock_score_mat=cs_stock,
+        # NOTE: We use stock_score_mat (the full composite score), not base_stock (base component only).
+        # The base_stock and ts_stock caches are only used for blended base+TS sector scoring,
+        # but standard sector aggregation should use the full composite stock score.
+
+        sector_base = sector_mean_matrix(
+            stock_score_mat=stock_score_mat,  # Full composite: CS-mom + spread-mom + vol
             sector_map=smap,
         )
 
@@ -890,83 +994,21 @@ class TrendSleeve:
         else:
             # no TS contribution
             sector_ts = pd.DataFrame(
-                0.0, index=sector_cs.index, columns=sector_cs.columns
+                0.0, index=sector_base.index, columns=sector_base.columns
             )
 
         # ------------------------------------------------------------------
-        # 4) Blend sector CS + TS
+        # 4) Blend sector base (CS + spread-mom) + TS
         # ------------------------------------------------------------------
         sector_scores_mat = (
-            cfg.sector_cs_weight * sector_cs + cfg.sector_ts_weight * sector_ts
+            cfg.sector_cs_weight * sector_base + cfg.sector_ts_weight * sector_ts
         )
 
         return sector_scores_mat
 
-    def _compute_sector_weights_vectorized(
-        self,
-        sector_scores_mat: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Vectorized sector weights: Date x Sector matrix, with
-        per-day softmax/caps/top-k and forward beta-smoothing.
-
-        This is a *pure* function with respect to sleeve state:
-        it does not mutate or read self.state. Smoothing happens
-        along the time axis using sector_smoothing_beta.
-        """
-        # Follow the exact ordering used by SectorWeightEngine.compute_weights:
-        # 1) softmax (alpha) -> 2) caps/floors -> 3) smoothing vs prev (beta)
-        # 3.5) apply top-k -> final weights (no trend scaling here)
-        if sector_scores_mat.empty:
-            return pd.DataFrame()
-
-        dates = sector_scores_mat.index
-        sectors = list(sector_scores_mat.columns)
-        weights_list = []
-        prev_smoothed: Optional[pd.Series] = None
-
-        for dt in dates:
-            scores_t = sector_scores_mat.loc[dt]
-
-            # Drop sectors with all-NaN scores on this date
-            scores_t_nonan = scores_t.dropna()
-
-            if scores_t_nonan.empty:
-                # Fallback: if absolutely no scores, either carry forward or uniform
-                print(
-                    f"[TrendSleeve] Warning: No sector scores on {dt.date()}; using fallback weights."
-                )
-                if prev_smoothed is not None:
-                    w_final = prev_smoothed.reindex(sectors).fillna(0.0)
-                    w_smoothed = w_final
-                else:
-                    w_final = pd.Series(1.0 / len(sectors), index=sectors)
-                    w_smoothed = w_final
-            else:
-                # 1) softmax -> base weights
-                w_raw = self._softmax(scores_t)
-
-                # 2) caps/floors
-                w_capped = self._apply_caps(w_raw)
-
-                # 3) smoothing vs previous
-                w_smoothed = self._smooth_weights(prev_smoothed, w_capped)
-
-                # 3.5) enforce top-k selection and renormalize among selected sectors
-                w_selected = self._top_k(w_smoothed)
-
-                # expand to full sector set (missing sectors -> 0)
-                w_final = w_selected.reindex(sectors).fillna(0.0)
-
-            weights_list.append(w_final)
-            prev_smoothed = w_smoothed
-
-        sector_weights_mat = pd.DataFrame(weights_list, index=dates, columns=sectors)
-        return sector_weights_mat
-
-        # ------------------------------------------------------------------
-
-    # Vectorized stock allocation (with liquidity mask)
+    # ------------------------------------------------------------------
+    # Vectorized stock allocation - DEPRECATED (Legacy code kept for reference)
+    # Now we precompute only scores and reuse non-vec allocation logic
     # ------------------------------------------------------------------
     def _allocate_to_stocks_vectorized(
         self,
@@ -981,7 +1023,7 @@ class TrendSleeve:
             Inputs:
                 price_mat          : Date x Ticker (Close prices)
                 stock_score_mat    : Date x Ticker (stock_score per day)
-                sector_weights_mat : Date x Sector (sector weights per day)
+                sector_weights_mat : Date x Sector (sector weights per day / rebalance date)
                 vol_mat            : Date x Ticker (realized vol per day); if None, will be computed internally
 
             Output:
@@ -995,7 +1037,9 @@ class TrendSleeve:
         smap = sector_map or self.um.sector_map or {}
         VSE = self.vec_engine  # VectorizedSignalEngine
 
-        dates = stock_score_mat.index
+        # Align dates on sector_weights_mat
+        dates = sector_weights_mat.index
+        stock_score_mat = stock_score_mat.reindex(dates, method="ffill")
         tickers = stock_score_mat.columns.tolist()
 
         # Result holder
@@ -1069,6 +1113,9 @@ class TrendSleeve:
         if cfg.weighting_mode == "inverse-vol" and vol_mat is None:
             # First try to get cached vol matrix
             vol_mat = getattr(self, "_cached_feature_mats", {}).get("vol")
+            if vol_mat is not None:
+                # Forward-fill vol_mat to daily frequency to match stock_score_mat
+                vol_mat = vol_mat.asfreq("D", method="ffill")
             if vol_mat is None:
                 print(
                     "[TrendSleeve] Warning: volatility matrix cache missing; recomputing vol_mat."
@@ -1117,6 +1164,14 @@ class TrendSleeve:
                 s = scores_t[candidates].dropna()
                 if s.empty:
                     continue
+
+                # Debug: Print stock scores for Financials on first date
+                if dt == dates[0] and sector == "Financials":
+                    print(
+                        f"[TrendSleeve] Vec first date {dt.date()}, Financials stock scores:"
+                    )
+                    print(f"  {s.sort_values(ascending=False).head(5).to_dict()}")
+
                 top = s.nlargest(cfg.top_k_per_sector).index.tolist()
 
                 # Intra-sector weights
@@ -1212,28 +1267,50 @@ class TrendSleeve:
         )  # convert trading days to calendar days
         warmup_days = max_window_abs_days + sector_weight_smoothing_days
         warmup_start = start_ts - pd.Timedelta(days=warmup_days)
-        print(
-            f"[TrendSleeve] Precompute warmup_start: {warmup_start.date()}, start: {start_ts.date()}, end: {end_ts.date()}"
-        )
 
         # --------------------------------------------------
-        # 1) Price matrix
+        # 1) Price matrix (WITHOUT membership masking to avoid NaN gaps)
         # --------------------------------------------------
+        # Fetch clean price data without membership masking to ensure
+        # signal calculations (especially .shift() operations) work correctly.
+        # We'll apply membership masking AFTER signal calculation.
         price_mat = self.um.get_price_matrix(
             price_loader=self.mds,
             start=warmup_start,
             end=end_ts,
             tickers=self.um.tickers,
             interval="1d",
-            auto_apply_membership_mask=True,
+            auto_apply_membership_mask=False,  # Changed: Don't mask prices
             local_only=getattr(self.mds, "local_only", False),
         )
 
         # Drop tickers with no data at all
         price_mat = price_mat.dropna(axis=1, how="all")
         if price_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
+            self._cached_stock_scores_mat = pd.DataFrame()
+            self._cached_sector_scores_mat = pd.DataFrame()
+            return pd.DataFrame()
+
+        # Use a reference ticker to define trading days (to match non-vec SignalEngine behavior)
+        # The non-vec SignalEngine uses mds.get_ohlcv() which returns only actual trading days
+        # To ensure .shift() operations match exactly, we use the same trading day calendar
+        reference_ticker = "AAPL"  # Use a liquid ticker typically in the universe
+        if reference_ticker not in price_mat.columns:
+            # Fallback: use the first ticker with the most non-NaN values
+            non_nan_counts = price_mat.notna().sum()
+            reference_ticker = non_nan_counts.idxmax()
+
+        # Get reference ticker's trading days (dates where it has non-NaN prices)
+        ref_dates = price_mat[reference_ticker].dropna().index
+
+        # Reindex price matrix to only include reference dates
+        # This ensures .shift() operations count the same trading days as non-vec path
+        price_mat = price_mat.reindex(index=ref_dates)
+
+        # Now forward-fill remaining NaN values
+        # Forward-fill is valid (stock keeps last price until next update)
+        # DO NOT use bfill() - it creates artificial history for new stocks
+        price_mat = price_mat.ffill()
 
         # Normalize tickers to uppercase and align sector_map to columns
         price_mat.columns = [c.upper() for c in price_mat.columns]
@@ -1243,13 +1320,30 @@ class TrendSleeve:
             # Keep sector_map only for tickers present in prices
             sector_map = {t: s for t, s in sector_map.items() if t in price_mat.columns}
 
+        # Get membership mask to apply after signal calculation
+        membership_mask = self.um.membership_mask(
+            start=warmup_start.strftime("%Y-%m-%d"),
+            end=end_ts.strftime("%Y-%m-%d"),
+        )
+        # Ensure mask columns match price_mat columns
+        if not membership_mask.empty:
+            membership_mask = membership_mask.reindex(
+                columns=price_mat.columns, fill_value=False
+            )
+
         # --------------------------------------------------
         # 2) Vectorized stock scores (Date x Ticker)
         # --------------------------------------------------
-        stock_score_mat = self._compute_stock_scores_vectorized(price_mat)
+        stock_score_mat = self._compute_stock_scores_vectorized(
+            price_mat, membership_mask=membership_mask
+        )
         if stock_score_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
+            self._cached_stock_scores_mat = pd.DataFrame()
+            self._cached_sector_scores_mat = pd.DataFrame()
+            return pd.DataFrame()
+
+        # Membership mask already applied inside _compute_stock_scores_vectorized
+        # before z-scoring to ensure cross-sectional rankings are correct
 
         # --------------------------------------------------
         # 3) Vectorized sector scores (Date x Sector)
@@ -1258,50 +1352,37 @@ class TrendSleeve:
             stock_score_mat, sector_map=sector_map
         )
         if sector_scores_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
+            self._cached_stock_scores_mat = pd.DataFrame()
+            self._cached_sector_scores_mat = pd.DataFrame()
+            return pd.DataFrame()
 
         # --------------------------------------------------
-        # 4) Vectorized sector weights (Date x Sector)
+        # 4) Cache the computed matrices for use in generate_target_weights_for_date
         # --------------------------------------------------
-        sector_weights_mat = self._compute_sector_weights_vectorized(sector_scores_mat)
-        if sector_weights_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
+        # Forward-fill stock scores to daily frequency to handle non-trading days
+        # (e.g., 2025-01-01 should use scores from 2024-12-31)
+        stock_score_mat_daily = stock_score_mat.asfreq("D", method="ffill")
+        sector_scores_mat_daily = sector_scores_mat.asfreq("D", method="ffill")
 
-        # --------------------------------------------------
-        # 5) Vectorized stock allocations (Date x Ticker)
-        # --------------------------------------------------
-        alloc_mat = self._allocate_to_stocks_vectorized(
-            price_mat=price_mat,
-            stock_score_mat=stock_score_mat,
-            sector_weights_mat=sector_weights_mat,
-            sector_map=sector_map,
-        )
-        if alloc_mat.empty:
-            self.precomputed_weights_mat = pd.DataFrame()
-            return self.precomputed_weights_mat
-
-        # --------------------------------------------------
-        # 6) Slice to [start, end] (drop warmup portion)
-        # --------------------------------------------------
-        alloc_mat = alloc_mat.loc[
-            (alloc_mat.index >= start_ts) & (alloc_mat.index <= end_ts)
+        # Slice to [start, end] (drop warmup portion)
+        stock_score_mat_daily = stock_score_mat_daily.loc[
+            (stock_score_mat_daily.index >= start_ts)
+            & (stock_score_mat_daily.index <= end_ts)
         ]
-        # Fill in missing dates with the previous available weights
-        alloc_mat = alloc_mat.asfreq("D", method="ffill").fillna(0.0)
+        sector_scores_mat_daily = sector_scores_mat_daily.loc[
+            (sector_scores_mat_daily.index >= start_ts)
+            & (sector_scores_mat_daily.index <= end_ts)
+        ]
 
-        # Optional sampling by rebalance schedule
-        if rebalance_dates:
-            target_dates = pd.to_datetime(rebalance_dates).normalize()
-            alloc_mat = alloc_mat[alloc_mat.index.isin(target_dates)]
+        # Cache the scores for use in generate_target_weights_for_date
+        self._cached_stock_scores_mat = stock_score_mat_daily.copy()
+        self._cached_sector_scores_mat = sector_scores_mat_daily.copy()
 
-        self.precomputed_weights_mat = alloc_mat.copy()
-        return self.precomputed_weights_mat
+        return pd.DataFrame()
 
-    # Convenience accessor
+    # Convenience accessor (deprecated - returns empty DataFrame)
     def get_precomputed_weights(self) -> Optional[pd.DataFrame]:
-        return self.precomputed_weights_mat
+        return pd.DataFrame()
 
     # ------------------------------------------------------------------
     # Utility
