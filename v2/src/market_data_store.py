@@ -62,20 +62,59 @@ class MarketDataStore:
             start_dt = start_dt.normalize()
             end_dt = end_dt.normalize()
 
-        df_full = self._ensure_coverage(
-            ticker=ticker,
-            start=start_dt,
-            end=end_dt,
-            interval=interval,
-            auto_adjust=auto_adjust,
-            local_only=local_only,
-        )
+        # If requesting coarser-than-daily intervals, fetch daily bars and
+        # aggregate client-side to guarantee reproducible rules. Build a
+        # single `df_source` and apply common slicing/cleanup below to avoid
+        # duplicated code paths.
+        df_source: pd.DataFrame | None = None
 
-        if df_full is None or df_full.empty:
-            return pd.DataFrame()
+        if interval != "1d":
+            # Expand start/end to ensure full weeks/months are present
+            # before resampling so we don't drop partial periods.
+            if interval == "1wk":
+                # include the previous 6 days to contain the full week
+                fetch_start = start_dt - timedelta(days=6)
+                fetch_end = end_dt + timedelta(days=6)
+            elif interval == "1mo":
+                # include an extra month on each side to ensure month-end coverage
+                fetch_start = start_dt - timedelta(days=31)
+                fetch_end = end_dt + timedelta(days=31)
+            else:
+                # Fallback: fetch a bit of padding for unknown coarse intervals
+                fetch_start = start_dt - timedelta(days=7)
+                fetch_end = end_dt + timedelta(days=7)
 
-        # Slice to requested date range, and guard against duplicates and ensure sorted
-        df = df_full.loc[(df_full.index >= start_dt) & (df_full.index <= end_dt)]
+            df_daily = self._ensure_coverage(
+                ticker=ticker,
+                start=fetch_start,
+                end=fetch_end,
+                interval="1d",
+                auto_adjust=auto_adjust,
+                local_only=local_only,
+            )
+
+            if df_daily is None or df_daily.empty:
+                return pd.DataFrame()
+
+            df_source = self._aggregate_daily_to_interval(df_daily, interval)
+        else:
+            # interval == '1d'
+            df_full = self._ensure_coverage(
+                ticker=ticker,
+                start=start_dt,
+                end=end_dt,
+                interval=interval,
+                auto_adjust=auto_adjust,
+                local_only=local_only,
+            )
+
+            if df_full is None or df_full.empty:
+                return pd.DataFrame()
+
+            df_source = df_full
+
+        # Common post-processing: slice to requested date range and clean duplicates
+        df = df_source.loc[(df_source.index >= start_dt) & (df_source.index <= end_dt)]
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
 
@@ -147,6 +186,9 @@ class MarketDataStore:
         """
         Save OHLCV to disk and, if enabled, update in-memory cache.
         """
+        if interval != "1d":
+            raise ValueError("Only 1d supported in _save_cached_df")
+
         tdir = self._ticker_dir(ticker, interval)
         tdir.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +219,12 @@ class MarketDataStore:
         interval: str,
         auto_adjust: bool,
     ) -> pd.DataFrame:
+        """
+        Fetch OHLCV for (ticker, interval) from the online source.
+        Only supports 'yfinance' for now.
+        - start: inclusive
+        - end: inclusive for '1d' intervals, exclusive for coarser intervals
+        """
         if self.source != "yfinance":
             raise NotImplementedError("Only yfinance source currently supported")
 
@@ -187,7 +235,9 @@ class MarketDataStore:
         df = yf.download(
             tickers=ticker,
             start=start,
-            end=end,
+            end=(
+                end + timedelta(days=1) if interval == "1d" else end
+            ),  # <--- IMPORTANT: yfinance is exclusive of end date
             interval=interval,
             auto_adjust=auto_adjust,
             progress=False,
@@ -212,8 +262,8 @@ class MarketDataStore:
         # Normalize column names (remove spaces, title-case)
         df = df.rename(columns=lambda c: c.replace(" ", "").title())
 
-        # Ensure DatetimeIndex
-        df.index = pd.to_datetime(df.index)
+        # Ensure DatetimeIndex and force tz-naive
+        df.index = pd.to_datetime(df.index).tz_localize(None)
         df = df.sort_index()
 
         return df
@@ -231,6 +281,9 @@ class MarketDataStore:
         Ensure that cached data covers [start, end] for (ticker, interval).
         May fetch missing segments online (unless local_only).
         """
+        if interval != "1d":
+            raise ValueError("Only 1d supported in _ensure_coverage")
+
         df_cached = self._load_cached_df(ticker, interval)
 
         # If running in local-only mode, never attempt to fetch online.
@@ -260,7 +313,9 @@ class MarketDataStore:
 
             # right gap (note +1 day to avoid overlapping last cached bar)
             if end > cached_end:
-                missing_right_start = cached_end + timedelta(days=1) if interval == "1d" else cached_end
+                missing_right_start = (
+                    cached_end + timedelta(days=1) if interval == "1d" else cached_end
+                )
                 if missing_right_start < end:
                     df_right = self._fetch_online(
                         ticker, missing_right_start, end, interval, auto_adjust
@@ -279,3 +334,68 @@ class MarketDataStore:
 
         self._save_cached_df(ticker, interval, df_combined)
         return df_combined
+
+    def _aggregate_daily_to_interval(
+        self, df_daily: pd.DataFrame, interval: str
+    ) -> pd.DataFrame:
+        """
+        Aggregate daily `df_daily` into a coarser `interval`.
+
+        Supported intervals: '1wk', '1mo'. For '1wk' we anchor weeks to
+        Fridays and use OHLCV aggregation. For '1mo' we aggregate month-end
+        using the same OHLCV rules.
+        """
+        if df_daily is None or df_daily.empty:
+            return pd.DataFrame()
+
+        # Ensure we have the common columns; if not present, attempt to select what exists
+        cols = [
+            c
+            for c in ["Open", "High", "Low", "Close", "Volume"]
+            if c in df_daily.columns
+        ]
+        if not cols:
+            return pd.DataFrame()
+
+        df_src = df_daily[cols]
+
+        if interval == "1wk":
+            df_agg = (
+                df_src.resample("W-FRI")
+                .agg(
+                    {
+                        "Open": "first",
+                        "High": "max",
+                        "Low": "min",
+                        "Close": "last",
+                        "Volume": "sum",
+                    }
+                )
+                .dropna()
+            )
+            print(
+                f"[MarketDataStore] Aggregated weekly data for {df_src.index.min().date()} -> {df_src.index.max().date()}"
+            )
+            return df_agg
+
+        if interval == "1mo":
+            df_agg = (
+                df_src.resample("ME")
+                .agg(
+                    {
+                        "Open": "first",
+                        "High": "max",
+                        "Low": "min",
+                        "Close": "last",
+                        "Volume": "sum",
+                    }
+                )
+                .dropna()
+            )
+            print(
+                f"[MarketDataStore] Aggregated monthly data for {df_src.index.min().date()} -> {df_src.index.max().date()}"
+            )
+            return df_agg
+
+        # Unknown coarse interval: return the daily frame (fallback)
+        return df_src
