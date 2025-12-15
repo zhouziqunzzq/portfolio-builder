@@ -697,7 +697,7 @@ class SignalEngine:
         buffer_bars: int = 5,
     ) -> pd.Series:
         """
-        20-day median volume (or configurable window).
+        20-bar median volume (or configurable window).
         """
 
         extra = window + buffer_bars

@@ -177,13 +177,15 @@ class VectorizedSignalEngine:
         price_mat = pd.concat(price_dict.values(), axis=1)
         price_mat.index = pd.to_datetime(price_mat.index)
         price_mat = price_mat.sort_index()
-        price_mat = price_mat.reindex(
-            index=pd.date_range(
-                start=price_mat.index.min(),
-                end=price_mat.index.max(),
-                freq="B",
+        # Reindex to business days only if interval is daily
+        if interval == "1d":
+            price_mat = price_mat.reindex(
+                index=pd.date_range(
+                    start=price_mat.index.min(),
+                    end=price_mat.index.max(),
+                    freq="B",
+                )
             )
-        )
 
         # Keep only our requested tickers (in canonical order)
         price_mat = price_mat.reindex(columns=tickers)
@@ -258,14 +260,14 @@ class VectorizedSignalEngine:
     # ======================================================================
 
     # -----------------------------------------------------------
-    # Get daily return matrix
+    # Get return matrix
     # -----------------------------------------------------------
     def get_returns(
         self,
         price_mat: pd.DataFrame,
     ) -> pd.DataFrame:
         """
-        Compute daily return matrix (same shape as price_mat).
+        Compute return matrix (same shape as price_mat).
         """
         if price_mat.empty:
             return price_mat
@@ -281,10 +283,10 @@ class VectorizedSignalEngine:
     ) -> Dict[int, pd.DataFrame]:
         """
         Vectorized cross-sectional time-series momentum.
-        
-        Uses row-based .shift() to count TRADING DAYS (not calendar days).
+
+        Uses row-based .shift() to count TRADING BARS.
         This matches the non-vectorized SignalEngine behavior.
-        
+
         IMPORTANT: price_mat must NOT contain NaN values, as .shift() counts
         all rows including NaNs. Call .dropna(how='all', axis=0) or .ffill()
         to clean the data before passing to this method.
@@ -301,7 +303,7 @@ class VectorizedSignalEngine:
             return mom_dict
 
         for w in lookbacks:
-            # Row-based shift = trading days (assuming no NaN rows)
+            # Row-based shift = trading bars (assuming no NaN rows)
             mom = price_mat / price_mat.shift(w) - 1.0
             mom_dict[w] = mom
 
@@ -340,6 +342,7 @@ class VectorizedSignalEngine:
             str
         ] = "SPY",  # Use a single benchmark ticker for all for now
         price_col: str = "Close",
+        interval: str = "1d",
     ) -> Dict[int, pd.DataFrame]:
         """
         Vectorized spread momentum vs benchmark.
@@ -360,7 +363,7 @@ class VectorizedSignalEngine:
             ticker=benchmark,
             start=price_mat.index.min(),
             end=price_mat.index.max(),
-            interval="1d",
+            interval=interval,
         )
         if df_bench is None or df_bench.empty:
             for w in lookbacks:
@@ -399,10 +402,11 @@ class VectorizedSignalEngine:
         price_mat: pd.DataFrame,
         window: int = 20,
         annualize: bool = True,
+        interval: str = "1d",
     ) -> pd.DataFrame:
         """
         Vectorized rolling realized volatility (Date x Ticker).
-        
+
         Uses log returns to match non-vectorized SignalEngine behavior.
         """
         if price_mat.empty:
@@ -417,7 +421,8 @@ class VectorizedSignalEngine:
         vol = log_returns.rolling(window).std()
 
         if annualize:
-            vol *= np.sqrt(252)
+            factor = self._annualize_factor_for_interval(interval)
+            vol *= np.sqrt(factor)
 
         return vol
 
@@ -426,6 +431,7 @@ class VectorizedSignalEngine:
         price_mat: pd.DataFrame,
         halflife: int = 20,
         annualize: bool = True,
+        interval: str = "1d",
     ) -> pd.DataFrame:
         """
         Vectorized EWM realized volatility (Date x Ticker).
@@ -437,9 +443,22 @@ class VectorizedSignalEngine:
         vol = returns.ewm(halflife=halflife).std()
 
         if annualize:
-            vol *= np.sqrt(252)
+            factor = self._annualize_factor_for_interval(interval)
+            vol *= np.sqrt(factor)
 
         return vol
+
+    def _annualize_factor_for_interval(self, interval: str) -> int:
+        """Return an annualization factor (periods per year) for `interval`.
+
+        Recognizes weekly and monthly-like intervals; defaults to 252 for daily.
+        """
+        lower = (interval or "1d").lower()
+        if "wk" in lower or lower.endswith("w"):
+            return 52
+        if "mo" in lower or "month" in lower:
+            return 12
+        return 252
 
     # -----------------------------------------------------------
     # Convenience for slicing large precomputed matrices

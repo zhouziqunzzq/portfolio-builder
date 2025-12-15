@@ -9,8 +9,10 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.universe_manager import UniverseManager
 from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
+from src.vec_signal_engine import VectorizedSignalEngine
 
 
 def test_mds():
@@ -102,21 +104,189 @@ def test_sig_engine():
     )
     se = SignalEngine(mds)
 
-    ticker = "QQQ"
+    ticker = "SPY"
     start = "2025-01-01"
     end = "2025-11-30"
+    interval = "1wk"
 
     last_price = se.get_series(
         ticker,
         "last_price",
         start,
         end,
-        interval="1wk",
+        interval=interval,
         price_col="Close",
     )
     print(last_price)
 
+    ret = se.get_series(
+        ticker,
+        "ret",
+        start,
+        end,
+        interval=interval,
+        window=1,
+        price_col="Close",
+        buffer_bars=10,
+    )
+    print(ret)
+
+    log_ret = se.get_series(
+        ticker,
+        "log_ret",
+        start,
+        end,
+        interval=interval,
+        window=1,
+        price_col="Close",
+        buffer_bars=10,
+    )
+    print(log_ret)
+
+    ts_mom = se.get_series(
+        ticker,
+        "ts_mom",
+        start,
+        end,
+        interval=interval,
+        window=1,
+        price_col="Close",
+        buffer_bars=10,
+    )
+    print(ts_mom)
+
+    vol = se.get_series(
+        ticker,
+        "vol",
+        start,
+        end,
+        interval=interval,
+        window=2,
+        price_col="Close",
+        buffer_bars=10,
+    )
+    print(vol)
+
+    adv = se.get_series(
+        ticker,
+        "adv",
+        start,
+        end,
+        interval=interval,
+        window=5,
+        buffer_bars=10,
+    )
+    print(adv)
+
+    median_volume = se.get_series(
+        ticker,
+        "median_volume",
+        start,
+        end,
+        interval=interval,
+        window=5,
+        buffer_bars=10,
+    )
+    print(median_volume)
+
+    spread_mom_self = se.get_series(
+        ticker,
+        "spread_mom",
+        start,
+        end,
+        interval=interval,
+        window=2,
+        benchmark="SPY",
+        buffer_bars=10,
+    )
+    print(
+        spread_mom_self
+    )  # Should be all zeros, as SPY is the benchmark and has no spread to itself
+
+    spread_mom_other = se.get_series(
+        ticker,
+        "spread_mom",
+        start,
+        end,
+        interval=interval,
+        window=2,
+        benchmark="GLD",
+        buffer_bars=10,
+    )
+    print(spread_mom_other)
+
+
+def test_vec_sig_engine():
+    data_root = Path("data/prices")
+
+    um = UniverseManager(
+        membership_csv=Path("data/sp500_membership.csv"),
+        sectors_yaml=Path("config/sectors.yml"),
+    )
+    mds = MarketDataStore(
+        str(data_root), source="yfinance", local_only=False, use_memory_cache=True
+    )
+    vse = VectorizedSignalEngine(um, mds)
+
+    tickers = ["SPY", "GLD"]
+    start = "2025-01-01"
+    end = "2025-11-30"
+    interval = "1wk"
+
+    price_mat = vse.get_price_matrix(
+        tickers,
+        start,
+        end,
+        interval=interval,
+        membership_aware=False,
+    )
+    print(price_mat)
+
+    ret_matrix = vse.get_returns(price_mat)
+    print(ret_matrix)
+
+    moms = vse.get_momentum(
+        price_mat=price_mat,
+        lookbacks=[1, 2, 3],
+    )
+    for lookback, mom in moms.items():
+        print(f"Mom {lookback}:")
+        print(mom)
+
+    ts_moms = vse.get_ts_momentum(
+        price_mat=price_mat,
+        lookbacks=[2, 3],
+    )
+    for lookback, ts_mom in ts_moms.items():
+        print(f"TS Mom {lookback}:")
+        print(ts_mom)
+
+    spread_moms = vse.get_spread_momentum(
+        price_mat=price_mat,
+        lookbacks=[1, 2],
+        benchmark="SPY",
+        interval=interval,
+    )
+    for lookback, spread_mom in spread_moms.items():
+        print(f"Spread Mom {lookback}:")
+        print(spread_mom)
+
+    vol = vse.get_volatility(
+        price_mat=price_mat,
+        window=2,
+        interval=interval,
+    )
+    print(vol)
+
+    ewm_vol = vse.get_ewm_volatility(
+        price_mat=price_mat,
+        halflife=4,
+        interval=interval,
+    )
+    print(ewm_vol)
+
 
 if __name__ == "__main__":
     # test_mds()
-    test_sig_engine()
+    # test_sig_engine()
+    test_vec_sig_engine()
