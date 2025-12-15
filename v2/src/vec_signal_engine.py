@@ -371,8 +371,11 @@ class VectorizedSignalEngine:
         bench_price = bench_price.reindex(index=price_mat.index).ffill()
 
         # Compute log returns
-        log_bench = np.log(bench_price).replace([np.inf, -np.inf], np.nan)
-        log_px = np.log(price_mat).replace([np.inf, -np.inf], np.nan)
+        # Replace zeros/inf before taking log to avoid warnings
+        bench_price_clean = bench_price.replace([0, np.inf, -np.inf], np.nan)
+        price_mat_clean = price_mat.replace([0, np.inf, -np.inf], np.nan)
+        log_bench = np.log(bench_price_clean)
+        log_px = np.log(price_mat_clean)
 
         for w in lookbacks:
             ret_i = log_px - log_px.shift(w)
@@ -406,7 +409,11 @@ class VectorizedSignalEngine:
             return price_mat
 
         # Use log returns to match non-vec SignalEngine
-        log_returns = np.log(price_mat / price_mat.shift(1))
+        # Handle zeros and inf/nan from division
+        price_ratio = price_mat / price_mat.shift(1)
+        # Replace inf/nan/zeros with NaN to avoid log warnings
+        price_ratio = price_ratio.replace([0, np.inf, -np.inf], np.nan)
+        log_returns = np.log(price_ratio)
         vol = log_returns.rolling(window).std()
 
         if annualize:

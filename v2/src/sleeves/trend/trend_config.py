@@ -80,10 +80,11 @@ class TrendConfig:
     sector_cs_weight: float = 1.0  # usually keep at 1.0
     sector_ts_weight: float = 0.0
 
-    # Sector weights precomputation knobs
-    # If set to "daily", apply smoothing on the daily sector weights
-    # If set to "rebalance_dates", resample to rebalance dates before applying smoothing - this is how non-vectorized mode works
-    precompute_sector_smoothing_mode: str = "rebalance_dates"  # "daily" | "rebalance_dates"
+    # Sector weights smoothing frequency
+    # If set to "daily", apply smoothing on the daily sector weights by interpolating between rebalance dates
+    # If set to "rebalance_dates", apply smoothing on the requested rebalance dates without interpolation
+    # Note: If set to anything other than "rebalance_dates", recommand use with precompute mode for performance
+    sector_smoothing_freq: str = "rebalance_dates"  # "daily" | "rebalance_dates"
 
     # ------------------------------------------------------------------
     # Stock selection within each sector
