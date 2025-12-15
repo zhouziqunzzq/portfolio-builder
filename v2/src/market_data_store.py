@@ -38,9 +38,9 @@ class MarketDataStore:
         self.local_only = local_only
 
         # In-memory cache of already-loaded OHLCV data.
-        # Key: (ticker_upper, interval) -> pd.DataFrame
+        # Key: (ticker_upper, interval, 'adj'|'raw') -> pd.DataFrame
         self.use_memory_cache = bool(use_memory_cache)
-        self._memory_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        self._memory_cache: dict[tuple[str, str, str], pd.DataFrame] = {}
 
     # ---------- public API ----------
 
@@ -118,45 +118,53 @@ class MarketDataStore:
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
 
-    def has_cached(self, ticker: str, interval: str = "1d") -> bool:
+    def has_cached(
+        self, ticker: str, interval: str = "1d", auto_adjust: bool = True
+    ) -> bool:
         """
         Return True if we have any cached data for (ticker, interval),
         either in memory (if enabled) or on disk.
         """
-        key = self._cache_key(ticker, interval)
+        key = self._cache_key(ticker, interval, auto_adjust)
         if self.use_memory_cache and key in self._memory_cache:
             return True
-        return self._data_path(ticker, interval).exists()
+        return self._data_path(ticker, interval, auto_adjust).exists()
 
-    def get_cached_coverage(self, ticker: str, interval: str = "1d"):
-        df = self._load_cached_df(ticker, interval)
+    def get_cached_coverage(
+        self, ticker: str, interval: str = "1d", auto_adjust: bool = True
+    ):
+        df = self._load_cached_df(ticker, interval, auto_adjust)
         if df is None or df.empty:
             return None
         return df.index.min(), df.index.max()
 
     # ---------- internal helpers ----------
 
-    def _cache_key(self, ticker: str, interval: str) -> tuple[str, str]:
-        return (ticker.upper(), interval)
+    def _cache_key(
+        self, ticker: str, interval: str, auto_adjust: bool = True
+    ) -> tuple[str, str, str]:
+        return (ticker.upper(), interval, "adj" if auto_adjust else "raw")
 
-    def _ticker_dir(self, ticker: str, interval: str) -> Path:
-        return self.data_root / "ohlcv" / interval / ticker.upper()
+    def _ticker_dir(self, ticker: str, interval: str, auto_adjust: bool = True) -> Path:
+        group = "adj" if auto_adjust else "raw"
+        return self.data_root / "ohlcv" / group / interval / ticker.upper()
 
-    def _data_path(self, ticker: str, interval: str) -> Path:
-        return self._ticker_dir(ticker, interval) / "data.parquet"
+    def _data_path(self, ticker: str, interval: str, auto_adjust: bool = True) -> Path:
+        return self._ticker_dir(ticker, interval, auto_adjust) / "data.parquet"
 
-    def _meta_path(self, ticker: str, interval: str) -> Path:
-        return self._ticker_dir(ticker, interval) / "meta.json"
+    def _meta_path(self, ticker: str, interval: str, auto_adjust: bool = True) -> Path:
+        return self._ticker_dir(ticker, interval, auto_adjust) / "meta.json"
 
-    def _load_cached_df(self, ticker: str, interval: str) -> pd.DataFrame | None:
+    def _load_cached_df(
+        self, ticker: str, interval: str, auto_adjust: bool = True
+    ) -> pd.DataFrame | None:
         """
         Load OHLCV for (ticker, interval) from in-memory cache (if enabled) or disk.
 
-        NOTE: The cache does not distinguish auto_adjust variants; behavior is
-        consistent with the existing implementation which stores a single
-        adjusted/unadjusted variant in the parquet.
+        NOTE: The cache now stores separate adjusted/unadjusted variants
+        under distinct paths so `auto_adjust` is respected when loading.
         """
-        key = self._cache_key(ticker, interval)
+        key = self._cache_key(ticker, interval, auto_adjust)
 
         # First, try in-memory cache
         if self.use_memory_cache and key in self._memory_cache:
@@ -167,7 +175,7 @@ class MarketDataStore:
             return df
 
         # Fallback to disk
-        path = self._data_path(ticker, interval)
+        path = self._data_path(ticker, interval, auto_adjust)
         if not path.exists():
             return None
 
@@ -182,33 +190,36 @@ class MarketDataStore:
 
         return df
 
-    def _save_cached_df(self, ticker: str, interval: str, df: pd.DataFrame) -> None:
+    def _save_cached_df(
+        self, ticker: str, interval: str, df: pd.DataFrame, auto_adjust: bool = True
+    ) -> None:
         """
         Save OHLCV to disk and, if enabled, update in-memory cache.
         """
         if interval != "1d":
             raise ValueError("Only 1d supported in _save_cached_df")
 
-        tdir = self._ticker_dir(ticker, interval)
+        tdir = self._ticker_dir(ticker, interval, auto_adjust)
         tdir.mkdir(parents=True, exist_ok=True)
 
         df_sorted = df.sort_index()
-        df_sorted.to_parquet(self._data_path(ticker, interval))
+        df_sorted.to_parquet(self._data_path(ticker, interval, auto_adjust))
 
         # Update memory cache
         if self.use_memory_cache:
-            key = self._cache_key(ticker, interval)
+            key = self._cache_key(ticker, interval, auto_adjust)
             self._memory_cache[key] = df_sorted
 
         meta = {
             "ticker": ticker.upper(),
             "interval": interval,
+            "adjusted": bool(auto_adjust),
             "start": df_sorted.index.min().strftime("%Y-%m-%d"),
             "end": df_sorted.index.max().strftime("%Y-%m-%d"),
             "last_updated": datetime.utcnow().isoformat() + "Z",
             "source": self.source,
         }
-        with open(self._meta_path(ticker, interval), "w") as f:
+        with open(self._meta_path(ticker, interval, auto_adjust), "w") as f:
             json.dump(meta, f, indent=2)
 
     def _fetch_online(
@@ -284,7 +295,7 @@ class MarketDataStore:
         if interval != "1d":
             raise ValueError("Only 1d supported in _ensure_coverage")
 
-        df_cached = self._load_cached_df(ticker, interval)
+        df_cached = self._load_cached_df(ticker, interval, auto_adjust)
 
         # If running in local-only mode, never attempt to fetch online.
         if local_only:
@@ -332,7 +343,7 @@ class MarketDataStore:
         if df_combined is None or df_combined.empty:
             return pd.DataFrame()
 
-        self._save_cached_df(ticker, interval, df_combined)
+        self._save_cached_df(ticker, interval, df_combined, auto_adjust)
         return df_combined
 
     def _aggregate_daily_to_interval(

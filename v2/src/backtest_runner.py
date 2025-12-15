@@ -801,7 +801,12 @@ def main() -> int:
     # 1) Rebalance dates must exist in exec price index (open prices available)
     missing = rebalance_target_weights.index.difference(exec_price_mat.index)
     if not missing.empty:
-        print("Missing exec prices for rebalance dates:", list(missing[:10]), "count=", len(missing))
+        print(
+            "Missing exec prices for rebalance dates:",
+            list(missing[:10]),
+            "count=",
+            len(missing),
+        )
     # 2) Ensure exec prices are not forward-filled across missing days (dangerous)
     # (depends on how get_price_matrix behaves)
 
@@ -991,6 +996,7 @@ def main() -> int:
             plot_trend_status(rebalance_contexts, show=show)
         except Exception as e:
             print(f"[backtest_v2] Failed to plot trend status: {e}")
+
     # Save backtest results to CSV
     out_dir = Path("data").joinpath("backtests").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -999,6 +1005,14 @@ def main() -> int:
     result.to_csv(out_path)
     print(f"[backtest_v2] Saved detailed backtest result to: {out_path}")
 
+    # Also save summary stats to a separate CSV for easy inspection
+    stats_path = out_dir / f"backtest_{stamp}_stats.csv"
+    try:
+        # Serialize stats as a single-row CSV; convert to DataFrame to handle mixed types
+        pd.DataFrame([stats]).to_csv(stats_path, index=False)
+        print(f"[backtest_v2] Saved backtest stats to: {stats_path}")
+    except Exception as e:
+        print(f"[backtest_v2] Failed to save stats CSV: {e}")
     return 0
 
 
