@@ -424,6 +424,34 @@ class SignalEngine:
 
         return mom
 
+    def _compute_ts_mom_sharpe_like_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        window: int = 252,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        log_ret = self.get_series(
+            ticker,
+            "log_ret",
+            start,
+            end,
+            interval,
+            window=1,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+
+        mu = log_ret.rolling(window=window).mean()
+        sigma = log_ret.rolling(window=window).std()
+        ts_raw = (mu.div(sigma) * np.sqrt(window)).replace([np.inf, -np.inf], np.nan)
+        ts_raw.name = f"ts_mom_sharpe_like_{window}"
+
+        return ts_raw
+
     def _compute_vol_full(
         self,
         ticker: str,

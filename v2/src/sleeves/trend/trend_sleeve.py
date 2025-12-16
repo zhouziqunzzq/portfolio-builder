@@ -108,7 +108,9 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
-                print(f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation.")
+                print(
+                    f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation."
+                )
                 return {}
 
         # ---------- Compute or extract stock scores and sector scores ----------
@@ -185,15 +187,15 @@ class TrendSleeve:
         if stock_scores.empty or sector_scores.empty:
             return {}
 
-        # Compute sector scores for daily smoothing if needed
-        smoothing_freq = getattr(cfg, "sector_smoothing_freq", "rebalance_dates")
+        # Compute sector scores for smoothing if needed
+        smoothing_freq = getattr(cfg, "sector_smoothing_freq", "rebalance")
         intermediate_sector_scores = None
         if (
-            smoothing_freq == "daily"
+            smoothing_freq == "signal"
             and self.state.last_as_of is not None
             and self.state.last_sector_weights is not None
         ):
-            # Check if we'll need daily interpolation
+            # Check if we'll need interpolation
             gap = (as_of - self.state.last_as_of).days
             if gap > 0 and gap <= np.ceil(2 * self._approx_rebalance_days):
                 # Compute scores for [last_as_of+1, as_of]
@@ -362,6 +364,11 @@ class TrendSleeve:
                     # Use the last available value
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
                     sigs.append(mom)
+
+                # --- Multi-horizon time-series momentum ---
+                if cfg.use_ts_mom:
+                    # TODO: Implement ts_mom for non-vectorized path
+                    raise NotImplementedError("ts_mom for non-vectorized path")
 
                 # --- Multi-horizon spread momentum ---
                 if cfg.use_spread_mom:
@@ -690,12 +697,13 @@ class TrendSleeve:
                 smoothed_pre_topk = w_capped
             else:
                 # Normal smoothing case
-                smoothing_freq = getattr(
-                    cfg, "sector_smoothing_freq", "rebalance_dates"
-                )
+                smoothing_freq = getattr(cfg, "sector_smoothing_freq", "rebalance")
 
-                if smoothing_freq == "daily" and intermediate_sector_scores is not None:
-                    # Daily interpolation: recompute target weights for each day
+                if (
+                    smoothing_freq == "signal"
+                    and intermediate_sector_scores is not None
+                ):
+                    # interpolation: recompute target weights for each signal date
                     smoothed = self.state.last_sector_weights
                     beta = cfg.sector_smoothing_beta
 
@@ -710,18 +718,18 @@ class TrendSleeve:
                     # Use provided sector scores for each day
                     for date in daily_dates:
                         date_key = pd.Timestamp(date).normalize()
-                        if date_key in intermediate_sector_scores:
-                            sector_scores_day = intermediate_sector_scores[date_key]
+                        if date_key in intermediate_sector_scores:  # On signal dates
+                            sector_scores_sig = intermediate_sector_scores[date_key]
 
-                            if not sector_scores_day.empty:
+                            if not sector_scores_sig.empty:
                                 print(
-                                    f"[TrendSleeve] Applying daily sector weights smoothing for {date_key.date()}"
+                                    f"[TrendSleeve] Applying sector weights smoothing for {date_key.date()}"
                                 )
                                 # Apply softmax and caps for this day
-                                w_soft_day = self._softmax(sector_scores_day)
+                                w_soft_day = self._softmax(sector_scores_sig)
                                 w_capped_day = self._apply_caps(w_soft_day)
 
-                                # Apply daily smoothing
+                                # Apply smoothing
                                 smoothed = smoothed.reindex(w_capped_day.index).fillna(
                                     0.0
                                 )
@@ -730,10 +738,11 @@ class TrendSleeve:
                                 if total > 0:
                                     smoothed = smoothed / total
                         # If date not in scores dict, skip that day (keep prev smoothed)
+                        # This makes sure smoothing is applied only on signal dates
 
                     smoothed_pre_topk = smoothed
                 else:
-                    # "rebalance_dates": single-step smoothing (original behavior)
+                    # "rebalance": single-step smoothing (original behavior)
                     prev = self.state.last_sector_weights.reindex(
                         w_capped.index
                     ).fillna(0.0)
@@ -889,6 +898,14 @@ class TrendSleeve:
         # Momentum matrices (CS-momentum)
         for w in cfg.mom_windows:
             feature_mats[f"mom_{w}"] = cs_mom_dict[w]
+        # Momentum matrices (TS-momentum)
+        if cfg.use_ts_mom:
+            for w in cfg.ts_mom_windows:
+                feature_mats[f"ts_mom_{w}"] = ts_mom_dict[w]
+        # Spread-momentum matrices
+        if cfg.use_spread_mom:
+            for w in cfg.spread_mom_windows:
+                feature_mats[f"spread_mom_{w}"] = spread_mom_dict[w]
         # Volatility matrix
         feature_mats["vol"] = vol_mat
 
@@ -931,10 +948,10 @@ class TrendSleeve:
 
         # --------------------------------------------------------
         # 2) Z scoring (winsorized if enabled) *per date*, cross-sectionally (column-wise)
-        # NOTE: this applies ONLY to CS-mom and vol, NOT TS-mom.
         # --------------------------------------------------------
         z_mats = {}
 
+        # CS-momentum Z-score (column-wise)
         for w in cfg.mom_windows:
             mat = feature_mats[f"mom_{w}"]
 
@@ -944,6 +961,18 @@ class TrendSleeve:
             else:
                 z = zscore_matrix_column_wise(mat)
             z_mats[f"z_mom_{w}"] = z
+
+        # TS-momentum Z-score (column-wise)
+        if cfg.use_ts_mom:
+            for w in cfg.ts_mom_windows:
+                mat = feature_mats[f"ts_mom_{w}"]
+
+                # apply rowwise z-scoring if enabled
+                if cfg.use_zscore_winsorization:
+                    z = windorized_zscore_matrix_column_wise(mat, clip=cfg.zscore_clip)
+                else:
+                    z = zscore_matrix_column_wise(mat)
+                z_mats[f"ts_mom_{w}"] = z
 
         # Vol Z-score (column-wise)
         if cfg.use_zscore_winsorization:
@@ -958,7 +987,7 @@ class TrendSleeve:
         # --------------------------------------------------------
         # 3) Composite scores
         # --------------------------------------------------------
-        # Weighted momentum score
+        # Weighted CS-momentum score
         mom_part = None
         for w, wt in zip(cfg.mom_windows, cfg.mom_weights):
             if mom_part is None:
@@ -972,21 +1001,21 @@ class TrendSleeve:
         # CS-momentum component (after cs_weight)
         cs_stock_score_mat = base_score * cfg.cs_weight
 
-        # TS-momentum contribution (raw, absolute)
+        # Weighted TS-momentum score
         # ts_mom_windows / ts_mom_weights are independent of mom_windows.
         ts_stock_score_mat = None  # will hold pure TS component (after ts_weight)
         ts_stock_score_mat_raw = None  # will hold raw TS component before weighting
         if cfg.use_ts_mom and ts_mom_dict:
             ts_part = None
             for w, wt in zip(cfg.ts_mom_windows, cfg.ts_mom_weights):
-                ts_mat = ts_mom_dict[w]
+                ts_mat_z = z_mats[f"ts_mom_{w}"]
                 # ensure same index/columns as base_score
-                ts_mat = ts_mat.reindex_like(base_score)
+                ts_mat_z = ts_mat_z.reindex_like(base_score)
 
                 if ts_part is None:
-                    ts_part = wt * ts_mat
+                    ts_part = wt * ts_mat_z
                 else:
-                    ts_part += wt * ts_mat
+                    ts_part += wt * ts_mat_z
             ts_stock_score_mat_raw = ts_part
             # TS-mom stock component (after ts_weight)
             ts_stock_score_mat = cfg.ts_weight * ts_part
@@ -998,7 +1027,7 @@ class TrendSleeve:
         if cfg.use_spread_mom and spread_mom_dict:
             spread_part = None
             for w, wt in zip(cfg.spread_mom_windows, cfg.spread_mom_window_weights):
-                smat = spread_mom_dict[w]
+                smat = feature_mats[f"spread_mom_{w}"]
                 # ensure same index/columns as base_score
                 smat = smat.reindex_like(base_score)
 
@@ -1424,6 +1453,9 @@ class TrendSleeve:
         # Fetch clean price data without membership masking to ensure
         # signal calculations (especially .shift() operations) work correctly.
         # We'll apply membership masking AFTER signal calculation.
+        print(
+            f"[TrendSleeve] Precomputing price matrix from {warmup_start.date()} to {end_ts.date()}"
+        )
         price_mat = self.um.get_price_matrix(
             price_loader=self.mds,
             start=warmup_start,
@@ -1440,27 +1472,6 @@ class TrendSleeve:
             self._cached_stock_scores_mat = pd.DataFrame()
             self._cached_sector_scores_mat = pd.DataFrame()
             return pd.DataFrame()
-
-        # Use a reference ticker to define trading days (to match non-vec SignalEngine behavior)
-        # The non-vec SignalEngine uses mds.get_ohlcv() which returns only actual trading days
-        # To ensure .shift() operations match exactly, we use the same trading day calendar
-        # reference_ticker = "AAPL"  # Use a liquid ticker typically in the universe
-        # if reference_ticker not in price_mat.columns:
-        #     # Fallback: use the first ticker with the most non-NaN values
-        #     non_nan_counts = price_mat.notna().sum()
-        #     reference_ticker = non_nan_counts.idxmax()
-
-        # # Get reference ticker's trading days (dates where it has non-NaN prices)
-        # ref_dates = price_mat[reference_ticker].dropna().index
-
-        # # Reindex price matrix to only include reference dates
-        # # This ensures .shift() operations count the same trading days as non-vec path
-        # price_mat = price_mat.reindex(index=ref_dates)
-
-        # Now forward-fill remaining NaN values
-        # Forward-fill is valid (stock keeps last price until next update)
-        # DO NOT use bfill() - it creates artificial history for new stocks
-        # price_mat = price_mat.ffill()
 
         # Normalize tickers to uppercase and align sector_map to columns
         price_mat.columns = [c.upper() for c in price_mat.columns]
@@ -1585,14 +1596,14 @@ class TrendSleeve:
     def _infer_abs_days_from_window_size(window_size: int, signal_interval: str) -> int:
         if window_size <= 0:
             return 0
-        freq = signal_interval.upper().strip()
-        if freq.endswith("D") and freq[:-1].isdigit():
+        freq = signal_interval.lower().strip()
+        if freq.endswith("d") and freq[:-1].isdigit():
             return (
                 window_size * int(freq[:-1]) * (365 / 252)
             )  # trading days to calendar days
-        if freq.startswith("W"):
+        if freq.endswith("wk"):
             return window_size * 7
-        if freq.startswith("M"):
+        if freq.endswith("mo"):
             return window_size * 30
         # if freq.startswith("Q"):
         #     return window_size * 90

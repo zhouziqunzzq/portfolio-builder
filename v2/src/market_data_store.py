@@ -84,6 +84,9 @@ class MarketDataStore:
                 fetch_start = start_dt - timedelta(days=7)
                 fetch_end = end_dt + timedelta(days=7)
 
+            # print(
+            #     f"[MarketDataStore] Fetching daily bars for {ticker} {fetch_start.date()} -> {fetch_end.date()}"
+            # )
             df_daily = self._ensure_coverage(
                 ticker=ticker,
                 start=fetch_start,
@@ -96,7 +99,11 @@ class MarketDataStore:
             if df_daily is None or df_daily.empty:
                 return pd.DataFrame()
 
-            df_source = self._aggregate_daily_to_interval(df_daily, interval, ticker=ticker)
+            # Slice to requested date range and aggregate to requested interval
+            df_daily_sliced = df_daily.loc[(df_daily.index >= start_dt) & (df_daily.index <= end_dt)]
+            df_source = self._aggregate_daily_to_interval(
+                df_daily_sliced, interval, ticker=ticker
+            )
         else:
             # interval == '1d'
             df_full = self._ensure_coverage(
@@ -347,8 +354,10 @@ class MarketDataStore:
         return df_combined
 
     def _aggregate_daily_to_interval(
-        self, df_daily: pd.DataFrame, interval: str,
-        ticker: str = "", # optional, for logging only
+        self,
+        df_daily: pd.DataFrame,
+        interval: str,
+        ticker: str = "",  # optional, for logging only
     ) -> pd.DataFrame:
         """
         Aggregate daily `df_daily` into a coarser `interval`.

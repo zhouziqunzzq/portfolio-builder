@@ -26,6 +26,11 @@ from vec_signal_engine import VectorizedSignalEngine
 from regime_engine import RegimeEngine
 from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
+from sleeves.trend.trend_configs import (
+    TREND_CONFIG_DAILY,
+    TREND_CONFIG_WEEKLY,
+    TREND_CONFIG_MONTHLY,
+)
 from sleeves.sideways.sideways_sleeve import SidewaysSleeve
 from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -258,7 +263,9 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         mds=mds,
         signals=signals,
         vec_engine=vec_engine,
-        config=None,  # default TrendConfig
+        # config=TREND_CONFIG_MONTHLY,
+        config=TREND_CONFIG_WEEKLY,
+        # config=TREND_CONFIG_DAILY,
     )
     sideways = SidewaysSleeve(
         mds=mds,

@@ -82,10 +82,10 @@ class TrendConfig:
     sector_ts_weight: float = 0.0
 
     # Sector weights smoothing frequency
-    # If set to "daily", apply smoothing on the daily sector weights by interpolating between rebalance dates
-    # If set to "rebalance_dates", apply smoothing on the requested rebalance dates without interpolation
-    # Note: If set to anything other than "rebalance_dates", recommand use with precompute mode for performance
-    sector_smoothing_freq: str = "rebalance_dates"  # "daily" | "rebalance_dates"
+    # If set to "signal", apply smoothing based on the signal frequency with interpolation between rebalance dates
+    # If set to "rebalance", apply smoothing on the requested rebalance dates without interpolation
+    # Note: If set to "signal", recommand use with precompute mode for performance
+    sector_smoothing_freq: str = "rebalance"  # "signal" | "rebalance"
 
     # ------------------------------------------------------------------
     # Stock selection within each sector

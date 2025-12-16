@@ -324,12 +324,14 @@ class VectorizedSignalEngine:
                 ts_dict[w] = pd.DataFrame(index=price_mat.index)
             return ts_dict
 
-        rets = price_mat.pct_change(fill_method=None)
+        # log returns (optional but clean)
+        rets = np.log(price_mat).diff()
 
         for w in lookbacks:
             mu = rets.rolling(w).mean()
             sigma = rets.rolling(w).std()
-            ts_raw = mu.div(sigma).replace([np.inf, -np.inf], np.nan)
+            # Make sure to use sqrt(w) to make "Sharpe-like" ts-mom comparable across windows
+            ts_raw = (mu.div(sigma) * np.sqrt(w)).replace([np.inf, -np.inf], np.nan)
             ts_dict[w] = ts_raw
 
         return ts_dict
