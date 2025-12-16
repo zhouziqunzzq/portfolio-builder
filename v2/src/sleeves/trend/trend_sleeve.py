@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import traceback
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -94,7 +95,6 @@ class TrendSleeve:
         start_for_signals: datetime | str,
         regime: str = "bull",
     ) -> Dict[str, float]:
-
         as_of = pd.to_datetime(as_of)
         start_for_signals = pd.to_datetime(start_for_signals)
 
@@ -108,6 +108,7 @@ class TrendSleeve:
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
+                print(f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation.")
                 return {}
 
         # ---------- Compute or extract stock scores and sector scores ----------
@@ -117,8 +118,22 @@ class TrendSleeve:
         if (
             self._cached_stock_scores_mat is not None
             and not self._cached_stock_scores_mat.empty
-            and date_key in self._cached_stock_scores_mat.index
+            and date_key >= self._cached_stock_scores_mat.index.min()
+            and date_key <= self._cached_stock_scores_mat.index.max()
         ):
+            stock_as_of = self.get_closest_date_on_or_before(
+                date_key, self._cached_stock_scores_mat.index
+            )
+            sector_as_of = self.get_closest_date_on_or_before(
+                date_key, self._cached_sector_scores_mat.index
+            )
+            if stock_as_of != sector_as_of:
+                print(
+                    f"Warning: Stock and sector scores are out of sync at {date_key.date()} (stock: {stock_as_of.date()}, sector: {sector_as_of.date()})"
+                )
+            date_key = stock_as_of  # Use the closest available date
+            print(f"Using cached scores for {date_key.date()}")
+
             # Extract from cache
             stock_scores_series = self._cached_stock_scores_mat.loc[date_key]
             sector_scores = self._cached_sector_scores_mat.loc[date_key].dropna()
@@ -134,10 +149,17 @@ class TrendSleeve:
                     and "vol" in self._cached_feature_mats
                 ):
                     vol_mat = self._cached_feature_mats["vol"]
-                    vol_mat_daily = vol_mat.asfreq("D", method="ffill")
-                    if date_key in vol_mat_daily.index:
-                        vol_series = vol_mat_daily.loc[date_key]
-                        stock_scores["vol"] = vol_series.reindex(stock_scores.index)
+                    vol_as_of = self.get_closest_date_on_or_before(
+                        date_key, vol_mat.index
+                    )
+                    if vol_as_of != date_key:
+                        print(
+                            f"Warning: Vol data is out of sync at {date_key.date()} (vol: {vol_as_of.date()})"
+                        )
+                    # vol_mat_daily = vol_mat.asfreq("D", method="ffill")
+                    # if date_key in vol_mat_daily.index:
+                    vol_series = vol_mat.loc[vol_as_of]
+                    stock_scores["vol"] = vol_series.reindex(stock_scores.index)
                 else:
                     # Fallback: compute vol on-the-fly if cache not available
                     universe = stock_scores.index.tolist()
@@ -272,9 +294,11 @@ class TrendSleeve:
         min_median_vol = getattr(cfg, "min_median_volume", None)
         min_price = getattr(cfg, "min_price", None)
 
+        signal_as_of: Optional[pd.Timestamp] = None
         for t in tickers:
             try:
                 row = {"ticker": t}
+                sigs: List[pd.Series | None] = []
 
                 # --- Liquidity metrics ---
                 adv_start = end - pd.Timedelta(days=adv_window) - buffer
@@ -283,6 +307,7 @@ class TrendSleeve:
                     "adv",
                     start=adv_start,
                     end=end,
+                    interval=cfg.signals_interval,
                     window=adv_window,
                 )
                 mv_start = end - pd.Timedelta(days=mv_window) - buffer
@@ -291,6 +316,7 @@ class TrendSleeve:
                     "median_volume",
                     start=mv_start,
                     end=end,
+                    interval=cfg.signals_interval,
                     window=mv_window,
                 )
                 px_start = end - buffer
@@ -299,12 +325,14 @@ class TrendSleeve:
                     "last_price",
                     start=px_start,
                     end=end,
+                    interval=cfg.signals_interval,
                 )
 
                 # Use the last available values
                 adv_val = adv.iloc[-1] if not adv.empty else np.nan
                 mv_val = mv.iloc[-1] if not mv.empty else np.nan
                 px_val = px.iloc[-1] if not px.empty else np.nan
+                sigs.extend([adv, mv, px])
 
                 # Hard liquidity filters (if thresholds provided)
                 if min_price is not None and (np.isnan(px_val) or px_val < min_price):
@@ -328,10 +356,12 @@ class TrendSleeve:
                         "ts_mom",
                         start=mom_start,
                         end=end,
+                        interval=cfg.signals_interval,
                         window=w,
                     )
                     # Use the last available value
                     row[f"mom_{w}"] = mom.iloc[-1] if not mom.empty else np.nan
+                    sigs.append(mom)
 
                 # --- Multi-horizon spread momentum ---
                 if cfg.use_spread_mom:
@@ -343,6 +373,7 @@ class TrendSleeve:
                             "spread_mom",
                             start=smom_start,
                             end=end,
+                            interval=cfg.signals_interval,
                             window=w,
                             benchmark=benchmark,
                         )
@@ -350,6 +381,7 @@ class TrendSleeve:
                         row[f"spread_mom_{w}"] = (
                             smom.iloc[-1] if not smom.empty else np.nan
                         )
+                        sigs.append(smom)
 
                 # --- Realized volatility ---
                 vol_mode = getattr(cfg, "vol_mode", "rolling")
@@ -361,10 +393,12 @@ class TrendSleeve:
                         "vol",
                         start=vol_start,
                         end=end,
+                        interval=cfg.signals_interval,
                         window=cfg.vol_window,
                     )
                     # Use the last available value
                     vol_val = vol.iloc[-1] if not vol.empty else np.nan
+                    sigs.append(vol)
                 elif vol_mode == "ewm":
                     # NEW: EM-vol from last_price series
                     # Use a longer lookback window to make sure we have enough px data
@@ -375,17 +409,37 @@ class TrendSleeve:
                         "ewm_vol",
                         start=vol_start,
                         end=end,
+                        interval=cfg.signals_interval,
                         halflife=ewm_halflife,
                     )
                     vol_val = vol.iloc[-1] if not vol.empty else np.nan
+                    sigs.append(vol)
                 else:
                     raise ValueError(f"Unknown vol_mode: {vol_mode}")
-
                 row["vol"] = vol_val
+
+                # Record signal as-of date for debugging
+                for s in sigs:
+                    if signal_as_of is None:
+                        signal_as_of = s.index.max()
+                        continue
+                    if s is not None and not s.empty:
+                        s_as_of = s.index.max()
+                        if signal_as_of is not None and signal_as_of != s_as_of:
+                            print(
+                                f"Warning: {t} signal data is out of sync at {end.date()} (adv: {s_as_of.date()})"
+                            )
+                        signal_as_of = max(signal_as_of, s.index.max())
+
                 rows.append(row)
 
-            except Exception:
+            except Exception as e:
                 # For robustness: skip this ticker if anything fails
+                # Print stacktrace for debugging
+                print(
+                    f"Warning: Failed to compute signals for {t} at {end.date()}: {e}"
+                )
+                traceback.print_exc()
                 continue
 
         if not rows:
@@ -399,6 +453,7 @@ class TrendSleeve:
         # Drop rows missing key signal inputs
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=keep_cols, how="any")
 
+        print(f"Using signal data as-of {signal_as_of.date()}")
         return df
 
     # ------------------------------------------------------------------
@@ -485,6 +540,7 @@ class TrendSleeve:
         Returns dict mapping date -> sector_scores (does not modify caches).
         """
         result = {}
+        date_range = self._get_trading_calendar(start_date, end_date, interval="1d")
 
         # If both caches exist, extract from cache (vec path)
         if (
@@ -492,7 +548,6 @@ class TrendSleeve:
             and not self._cached_sector_scores_mat.empty
         ):
             # Extract sector scores from cache for the date range
-            date_range = pd.date_range(start=start_date, end=end_date, freq="D")
             for date in date_range:
                 date_key = pd.Timestamp(date).normalize()
                 if date_key in self._cached_sector_scores_mat.index:
@@ -504,8 +559,6 @@ class TrendSleeve:
             return result
 
         # Cache missing - compute using non-vec logic (without caching)
-        date_range = pd.date_range(start=start_date, end=end_date, freq="D")
-
         for date in date_range:
             print(
                 f"[TrendSleeve] Computing sector scores for {date.date()} for sector weights interpolation"
@@ -646,9 +699,13 @@ class TrendSleeve:
                     smoothed = self.state.last_sector_weights
                     beta = cfg.sector_smoothing_beta
 
-                    # Generate daily dates from last_as_of + 1 day to as_of
+                    # Generate trading dates from last_as_of + 1 day to as_of
                     start_date = self.state.last_as_of + pd.Timedelta(days=1)
-                    daily_dates = pd.date_range(start=start_date, end=as_of, freq="D")
+                    daily_dates = self._get_trading_calendar(
+                        start_date,
+                        as_of,
+                        interval="1d",
+                    )
 
                     # Use provided sector scores for each day
                     for date in daily_dates:
@@ -657,9 +714,9 @@ class TrendSleeve:
                             sector_scores_day = intermediate_sector_scores[date_key]
 
                             if not sector_scores_day.empty:
-                                # print(
-                                #     f"[TrendSleeve] Applying daily sector weights smoothing for {date_key.date()}"
-                                # )
+                                print(
+                                    f"[TrendSleeve] Applying daily sector weights smoothing for {date_key.date()}"
+                                )
                                 # Apply softmax and caps for this day
                                 w_soft_day = self._softmax(sector_scores_day)
                                 w_capped_day = self._apply_caps(w_soft_day)
@@ -1356,7 +1413,7 @@ class TrendSleeve:
                 window_candidates.append(w_val)
         max_window = max(window_candidates) if window_candidates else 0
         max_window_abs_days = int(
-            max_window * (365 / 252)
+            self._infer_abs_days_from_window_size(max_window, cfg.signals_interval)
         )  # convert trading days to calendar days
         warmup_days = max_window_abs_days + sector_weight_smoothing_days
         warmup_start = start_ts - pd.Timedelta(days=warmup_days)
@@ -1372,7 +1429,7 @@ class TrendSleeve:
             start=warmup_start,
             end=end_ts,
             tickers=self.um.tickers,
-            interval="1d",
+            interval=cfg.signals_interval,
             auto_apply_membership_mask=False,  # Changed: Don't mask prices
             local_only=getattr(self.mds, "local_only", False),
         )
@@ -1387,23 +1444,23 @@ class TrendSleeve:
         # Use a reference ticker to define trading days (to match non-vec SignalEngine behavior)
         # The non-vec SignalEngine uses mds.get_ohlcv() which returns only actual trading days
         # To ensure .shift() operations match exactly, we use the same trading day calendar
-        reference_ticker = "AAPL"  # Use a liquid ticker typically in the universe
-        if reference_ticker not in price_mat.columns:
-            # Fallback: use the first ticker with the most non-NaN values
-            non_nan_counts = price_mat.notna().sum()
-            reference_ticker = non_nan_counts.idxmax()
+        # reference_ticker = "AAPL"  # Use a liquid ticker typically in the universe
+        # if reference_ticker not in price_mat.columns:
+        #     # Fallback: use the first ticker with the most non-NaN values
+        #     non_nan_counts = price_mat.notna().sum()
+        #     reference_ticker = non_nan_counts.idxmax()
 
-        # Get reference ticker's trading days (dates where it has non-NaN prices)
-        ref_dates = price_mat[reference_ticker].dropna().index
+        # # Get reference ticker's trading days (dates where it has non-NaN prices)
+        # ref_dates = price_mat[reference_ticker].dropna().index
 
-        # Reindex price matrix to only include reference dates
-        # This ensures .shift() operations count the same trading days as non-vec path
-        price_mat = price_mat.reindex(index=ref_dates)
+        # # Reindex price matrix to only include reference dates
+        # # This ensures .shift() operations count the same trading days as non-vec path
+        # price_mat = price_mat.reindex(index=ref_dates)
 
         # Now forward-fill remaining NaN values
         # Forward-fill is valid (stock keeps last price until next update)
         # DO NOT use bfill() - it creates artificial history for new stocks
-        price_mat = price_mat.ffill()
+        # price_mat = price_mat.ffill()
 
         # Normalize tickers to uppercase and align sector_map to columns
         price_mat.columns = [c.upper() for c in price_mat.columns]
@@ -1454,22 +1511,22 @@ class TrendSleeve:
         # --------------------------------------------------
         # Forward-fill stock scores to daily frequency to handle non-trading days
         # (e.g., 2025-01-01 should use scores from 2024-12-31)
-        stock_score_mat_daily = stock_score_mat.asfreq("D", method="ffill")
-        sector_scores_mat_daily = sector_scores_mat.asfreq("D", method="ffill")
+        # stock_score_mat_daily = stock_score_mat.asfreq("D", method="ffill")
+        # sector_scores_mat_daily = sector_scores_mat.asfreq("D", method="ffill")
 
-        # Slice to [start, end] (drop warmup portion)
-        stock_score_mat_daily = stock_score_mat_daily.loc[
-            (stock_score_mat_daily.index >= start_ts)
-            & (stock_score_mat_daily.index <= end_ts)
+        # Slice to [warmup_start, end]
+        # Keep warmup period to ensure the first rebalance date has proper signals
+        stock_score_mat = stock_score_mat.loc[
+            (stock_score_mat.index >= warmup_start) & (stock_score_mat.index <= end_ts)
         ]
-        sector_scores_mat_daily = sector_scores_mat_daily.loc[
-            (sector_scores_mat_daily.index >= start_ts)
-            & (sector_scores_mat_daily.index <= end_ts)
+        sector_scores_mat = sector_scores_mat.loc[
+            (sector_scores_mat.index >= warmup_start)
+            & (sector_scores_mat.index <= end_ts)
         ]
 
         # Cache the scores for use in generate_target_weights_for_date
-        self._cached_stock_scores_mat = stock_score_mat_daily.copy()
-        self._cached_sector_scores_mat = sector_scores_mat_daily.copy()
+        self._cached_stock_scores_mat = stock_score_mat.copy()
+        self._cached_sector_scores_mat = sector_scores_mat.copy()
 
         return pd.DataFrame()
 
@@ -1480,6 +1537,31 @@ class TrendSleeve:
     # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
+
+    def _get_trading_calendar(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        reference_ticker: Optional[str] = "SPY",
+        interval: str = "1d",
+    ) -> pd.DatetimeIndex:
+        if self.mds is None:
+            raise ValueError("mds is not set; cannot get trading calendar.")
+
+        # Fetch OHLCV data for the reference ticker to determine trading days
+        ohlcv = self.mds.get_ohlcv(
+            ticker=reference_ticker,
+            start=start,
+            end=end,
+            interval=interval,
+            local_only=getattr(self.mds, "local_only", False),
+        )
+        # Ensure the index is a DatetimeIndex, sorted, and within the specified range
+        if not isinstance(ohlcv.index, pd.DatetimeIndex):
+            ohlcv.index = pd.to_datetime(ohlcv.index)
+        ohlcv.index = ohlcv.index.sort_values()
+        ohlcv.index = ohlcv.index[(ohlcv.index >= start) & (ohlcv.index <= end)]
+        return ohlcv.index
 
     @staticmethod
     def _infer_approx_rebalance_days(freq: str) -> int:
@@ -1498,3 +1580,30 @@ class TrendSleeve:
         if f.startswith("A") or f.startswith("Y"):
             return 365
         return 30
+
+    @staticmethod
+    def _infer_abs_days_from_window_size(window_size: int, signal_interval: str) -> int:
+        if window_size <= 0:
+            return 0
+        freq = signal_interval.upper().strip()
+        if freq.endswith("D") and freq[:-1].isdigit():
+            return (
+                window_size * int(freq[:-1]) * (365 / 252)
+            )  # trading days to calendar days
+        if freq.startswith("W"):
+            return window_size * 7
+        if freq.startswith("M"):
+            return window_size * 30
+        # if freq.startswith("Q"):
+        #     return window_size * 90
+        # if freq.startswith("A") or freq.startswith("Y"):
+        #     return window_size * 365
+
+        raise ValueError(f"Unknown signal interval: {signal_interval}")
+        # return window_size * 30
+
+    @staticmethod
+    def get_closest_date_on_or_before(
+        date: pd.Timestamp, dates: pd.DatetimeIndex
+    ) -> pd.Timestamp:
+        return dates[dates <= date].max()

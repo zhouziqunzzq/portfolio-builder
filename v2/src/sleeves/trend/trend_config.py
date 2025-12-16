@@ -17,6 +17,7 @@ class TrendConfig:
     # ------------------------------------------------------------------
     # Signals / stock scoring
     # ------------------------------------------------------------------
+    signals_interval: str = "1d"  # "1d" | "1wk" | "1mo"
     # Extra days of data to fetch for signals; Only used in non-vectorized mode
     signals_extra_buffer_days: int = 30
 

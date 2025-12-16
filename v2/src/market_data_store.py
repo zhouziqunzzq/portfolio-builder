@@ -96,7 +96,7 @@ class MarketDataStore:
             if df_daily is None or df_daily.empty:
                 return pd.DataFrame()
 
-            df_source = self._aggregate_daily_to_interval(df_daily, interval)
+            df_source = self._aggregate_daily_to_interval(df_daily, interval, ticker=ticker)
         else:
             # interval == '1d'
             df_full = self._ensure_coverage(
@@ -347,7 +347,8 @@ class MarketDataStore:
         return df_combined
 
     def _aggregate_daily_to_interval(
-        self, df_daily: pd.DataFrame, interval: str
+        self, df_daily: pd.DataFrame, interval: str,
+        ticker: str = "", # optional, for logging only
     ) -> pd.DataFrame:
         """
         Aggregate daily `df_daily` into a coarser `interval`.
@@ -385,7 +386,7 @@ class MarketDataStore:
                 .dropna()
             )
             print(
-                f"[MarketDataStore] Aggregated weekly data for {df_src.index.min().date()} -> {df_src.index.max().date()}"
+                f"[MarketDataStore] Aggregated weekly data for {ticker} {df_src.index.min().date()} -> {df_src.index.max().date()}"
             )
             return df_agg
 
@@ -404,7 +405,7 @@ class MarketDataStore:
                 .dropna()
             )
             print(
-                f"[MarketDataStore] Aggregated monthly data for {df_src.index.min().date()} -> {df_src.index.max().date()}"
+                f"[MarketDataStore] Aggregated monthly data for {ticker} {df_src.index.min().date()} -> {df_src.index.max().date()}"
             )
             return df_agg
 
