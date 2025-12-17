@@ -32,6 +32,7 @@ from sleeves.trend.trend_configs import (
     TREND_CONFIG_MONTHLY,
 )
 from sleeves.sideways.sideways_sleeve import SidewaysSleeve
+from sleeves.sideways_mr.sideways_mr import SidewaysMRSleeve
 from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
@@ -272,6 +273,11 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         signals=signals,
         config=None,  # default SidewaysConfig
     )
+    sideways_mr = SidewaysMRSleeve(
+        mds=mds,
+        signals=signals,
+        config=None,  # default SidewaysMRConfig
+    )
     fast_alpha = FastAlphaSleeve(
         universe=um,
         mds=mds,
@@ -289,6 +295,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
             "defensive": defensive,
             "trend": trend,
             "sideways": sideways,
+            "sideways_mr": sideways_mr,
             "fast_alpha": fast_alpha,
         },
         config=ms_config,

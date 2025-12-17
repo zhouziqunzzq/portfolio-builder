@@ -138,9 +138,10 @@ class SignalEngine:
         # - returned series is empty
         # - returned series end drifts too far from requested end date
         if rst_series.empty:
-            print(
-                f"[SignalEngine] WARNING: returned empty series for {ticker} {signal} from {start} to {end} (interval={interval}, params={params})"
-            )
+            # print(
+            #     f"[SignalEngine] WARNING: returned empty series for {ticker} {signal} from {pd.to_datetime(start).date()} to {pd.to_datetime(end).date()} (interval={interval}, params={params})"
+            # )
+            pass
         else:
             requested_end = pd.to_datetime(end)
             actual_end = rst_series.index.max()
@@ -765,12 +766,11 @@ class SignalEngine:
             interval=interval,
         )
         if df.empty or price_col not in df:
-            return pd.Series(dtype=float)
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
 
         price = df[price_col].astype(float)
         price.name = "last_price"
         # print(f"[SignalEngine] _compute_last_price_full: Retrieved {len(price)} data points for {ticker} from {start.date()} to {end.date()}")
-        # print(price.tail())
         return price
 
     # ----------------------------------------------------------------------
@@ -835,6 +835,132 @@ class SignalEngine:
         spread_mom.name = f"spread_mom_{benchmark}_{window}"
 
         return spread_mom
+
+    def _compute_log_spread_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "1d",
+        price_col: str = "Close",
+        benchmark: str = "SPY",
+        buffer_bars: int = 5,
+    ) -> pd.Series:
+        """
+        Log spread = log(P_ticker / P_benchmark)
+                   = log(P_ticker) - log(P_benchmark)
+        """
+        extra = buffer_bars
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df_ticker = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        df_benchmark = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+
+        if df_ticker.empty or df_benchmark.empty:
+            return pd.Series(dtype=float)
+
+        price_ticker = df_ticker[price_col].astype(float)
+        price_benchmark = df_benchmark[price_col].astype(float)
+
+        # Align on common dates
+        prices = pd.concat(
+            [
+                price_ticker.rename("pt"),
+                price_benchmark.rename("pb"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+
+        if prices.empty:
+            return pd.Series(dtype=float)
+
+        log_spread = np.log(prices["pt"]) - np.log(prices["pb"])
+        log_spread.name = f"log_spread_{benchmark}"
+
+        return log_spread
+
+    def _compute_log_spread_beta_hedged_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "1d",
+        price_col: str = "Close",
+        benchmark: str = "SPY",
+        hedge_window: int = 63,
+        buffer_bars: int = 5,
+    ) -> pd.Series:
+        """
+        Log spread beta-hedged = log(P_ticker / P_benchmark^beta)
+                   = log(P_ticker) - beta * log(P_benchmark)
+        Where beta is the rolling beta of ticker vs benchmark.
+        """
+        extra = buffer_bars + hedge_window * 2
+        start_for_data = self._calc_start_for_data(start, extra, interval)
+
+        df_ticker = self.mds.get_ohlcv(
+            ticker=ticker,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+        df_benchmark = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=start_for_data,
+            end=end,
+            interval=interval,
+        )
+
+        if df_ticker.empty or df_benchmark.empty:
+            return pd.Series(dtype=float)
+
+        price_ticker = df_ticker[price_col].astype(float)
+        price_benchmark = df_benchmark[price_col].astype(float)
+
+        # Align on common dates
+        prices = pd.concat(
+            [
+                price_ticker.rename("pt"),
+                price_benchmark.rename("pb"),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna()
+
+        if prices.empty or len(prices) < hedge_window + 2:
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+
+        lp_s = np.log(prices["pt"])
+        lp_b = np.log(prices["pb"])
+
+        # use log returns for beta
+        r_s = lp_s.diff()
+        r_b = lp_b.diff()
+
+        # rolling beta = cov(rs, rb)/var(rb)
+        cov = r_s.rolling(hedge_window).cov(r_b)
+        var = r_b.rolling(hedge_window).var()
+        beta = cov / (var + 1e-12)
+
+        # residualized spread (level)
+        spread = lp_s - beta * lp_b
+
+        # optional: remove rolling mean so z-score is purely about deviations
+        spread = spread - spread.rolling(hedge_window).mean()
+
+        spread.name = f"log_spread_betahedged_{benchmark}"
+        return spread.dropna()
 
     # ----------------------------------------------------------------------
     # Bollinger signals
