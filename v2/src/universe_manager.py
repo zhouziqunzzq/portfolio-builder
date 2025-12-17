@@ -804,6 +804,8 @@ class UniverseManager:
                 return s
             except Exception as e:
                 self.log.warning(f"Failed loading price for {sym}: {e}")
+                import traceback
+                traceback.print_exc()
                 return None
 
         if auto_apply_membership_mask:

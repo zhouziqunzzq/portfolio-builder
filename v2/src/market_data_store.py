@@ -100,7 +100,9 @@ class MarketDataStore:
                 return pd.DataFrame()
 
             # Slice to requested date range and aggregate to requested interval
-            df_daily_sliced = df_daily.loc[(df_daily.index >= start_dt) & (df_daily.index <= end_dt)]
+            df_daily_sliced = df_daily.loc[
+                (df_daily.index >= start_dt) & (df_daily.index <= end_dt)
+            ]
             df_source = self._aggregate_daily_to_interval(
                 df_daily_sliced, interval, ticker=ticker
             )
@@ -121,6 +123,8 @@ class MarketDataStore:
             df_source = df_full
 
         # Common post-processing: slice to requested date range and clean duplicates
+        if df_source is None or df_source.empty:
+            return pd.DataFrame()
         df = df_source.loc[(df_source.index >= start_dt) & (df_source.index <= end_dt)]
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
