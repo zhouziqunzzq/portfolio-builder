@@ -19,12 +19,14 @@ if str(_ROOT_SRC) not in sys.path:
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
+from sleeves.common.rebalance_helpers import should_rebalance
+from context.rebalance import RebalanceContext
 from .defensive_config import DefensiveConfig
 
 
 @dataclass
 class DefensiveState:
-    last_rebalance: Optional[pd.Timestamp] = None
+    last_rebalance_ts: Optional[pd.Timestamp] = None
     last_weights: Optional[Dict[str, float]] = None
 
 
@@ -152,10 +154,29 @@ class DefensiveSleeve:
         as_of: datetime | str,
         start_for_signals: datetime | str,
         regime: str = "bull",
+        rebalance_ctx: Optional[RebalanceContext] = None,
     ) -> Dict[str, float]:
-
         as_of = pd.to_datetime(as_of)
         start_for_signals = pd.to_datetime(start_for_signals)
+        cfg = self.config
+
+        # ---------- Rebalance timing check ----------
+        # Note: We need this because the global scheduler may call this function
+        # more frequently than the sleeve's intended rebalance frequency.
+        # If it's not time to rebalance yet, we return the last weights.
+        if self.state.last_weights is not None and not should_rebalance(
+            self.state.last_rebalance_ts,
+            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
+            cfg.rebalance_freq,
+        ):
+            print(
+                f"[DefensiveSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+            )
+            return self.state.last_weights
+        # Otherwise, proceed to compute new weights
+        print(
+            f"[DefensiveSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        )
 
         # Use as_of when building universe so membership is date-aware
         universe = self.get_defensive_universe(as_of=as_of)
@@ -178,7 +199,9 @@ class DefensiveSleeve:
         weights = self.allocate_by_asset_class(scored, regime)
         # print(f"[DefensiveSleeve] Weights ({as_of.date()}): {weights}")
 
-        self.state.last_rebalance = as_of
+        self.state.last_rebalance_ts = (
+            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
+        )
         self.state.last_weights = weights
         return weights
 

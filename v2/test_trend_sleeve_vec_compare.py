@@ -654,9 +654,9 @@ def test_trend_sleeve_comparison():
     print("\n   Computing non-vectorized sector weights (no smoothing)...")
     
     # Temporarily clear state to avoid smoothing
-    prev_state_as_of = sleeve_non_vec.state.last_as_of
+    prev_state_as_of = sleeve_non_vec.state.last_rebalance_ts
     prev_state_weights = sleeve_non_vec.state.last_sector_weights
-    sleeve_non_vec.state.last_as_of = None
+    sleeve_non_vec.state.last_rebalance_ts = None
     sleeve_non_vec.state.last_sector_weights = None
     
     sector_weights_non_vec = sleeve_non_vec._compute_smoothed_sector_weights(
@@ -665,7 +665,7 @@ def test_trend_sleeve_comparison():
     )
     
     # Restore state
-    sleeve_non_vec.state.last_as_of = prev_state_as_of
+    sleeve_non_vec.state.last_rebalance_ts = prev_state_as_of
     sleeve_non_vec.state.last_sector_weights = prev_state_weights
     
     print(f"   Non-vec sector weights:\n{sector_weights_non_vec.sort_values(ascending=False)}")

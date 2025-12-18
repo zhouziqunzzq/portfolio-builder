@@ -10,11 +10,13 @@ if str(_ROOT_SRC) not in sys.path:
 
 from sleeves.trend.trend_config import TrendConfig
 
+# Trend sleeve config for daily bars
 TREND_CONFIG_DAILY = TrendConfig(
     signals_interval="1d",
     # Keep the rest of the configuration default
 )
 
+# Trend sleeve config for weekly bars
 TREND_CONFIG_WEEKLY = TrendConfig(
     signals_interval="1wk",
     # CS-momentum
@@ -41,7 +43,7 @@ TREND_CONFIG_WEEKLY = TrendConfig(
     vol_penalty=0.3,  # keep default; weekly already reduces noise
     # Non-vectorized mode buffer: weekly windows need more history
     signals_extra_buffer_days=90,
-    # Rebalance intent (even if global scheduler overrides)
+    # Rebalance intent
     rebalance_freq="M",
     # Sector weighting
     sector_cs_weight=1.0,
@@ -52,6 +54,9 @@ TREND_CONFIG_WEEKLY = TrendConfig(
     # Everything else: keep defaults (sector weighting, top-k, gating, etc.)
 )
 
+# Trend sleeve config for monthly bars
+# Note: Monthly config lags too much in the backtests, so treat this as
+# experimental / diagnostic only for now.
 TREND_CONFIG_MONTHLY = TrendConfig(
     signals_interval="1mo",
     # --------------------------------------------------

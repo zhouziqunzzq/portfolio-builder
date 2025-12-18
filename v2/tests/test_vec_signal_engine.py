@@ -46,12 +46,12 @@ def test_get_ts_momentum_table_driven():
             for w in lookbacks:
                 expected[w] = pd.DataFrame(index=price.index)
         else:
-            rets = price.pct_change(fill_method=None)
+            rets = np.log(price).diff()
             print(f"Returns:\n{rets}\n")
             for w in lookbacks:
                 mu = rets.rolling(w).mean()
                 sigma = rets.rolling(w).std()
-                ts_raw = mu.div(sigma).replace([np.inf, -np.inf], np.nan)
+                ts_raw = (mu.div(sigma) * np.sqrt(w)).replace([np.inf, -np.inf], np.nan)
                 expected[w] = ts_raw
                 print(f"Lookback {w}:")
                 print(f"mu:\n{mu}\nsigma:\n{sigma}\nts_raw:\n{ts_raw}\n")

@@ -73,7 +73,7 @@ def main():
     vec_weights = sleeve_vec.precompute(
         start="2025-06-01",
         end="2025-12-31",
-        rebalance_dates=rebalance_dates,
+        sample_dates=rebalance_dates,
     )
     
     print(f"\nPrecomputed weights shape: {vec_weights.shape}")

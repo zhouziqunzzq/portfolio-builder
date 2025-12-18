@@ -24,6 +24,7 @@ from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
 from vec_signal_engine import VectorizedSignalEngine
 from regime_engine import RegimeEngine
+from context.rebalance import RebalanceContext
 from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
 from sleeves.trend.trend_configs import (
@@ -92,8 +93,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
-        "--rebalance-frequency",
-        dest="rebalance_frequency",
+        "--sample-frequency",
+        dest="sample_frequency",
         choices=[
             "monthly",
             "bi-weekly",
@@ -104,7 +105,10 @@ def parse_args() -> argparse.Namespace:
         ],
         default="monthly",
         help=(
-            "Rebalance frequency: 'monthly' (business month-start), "
+            "Sample frequency: How often the allocator is called to generate new target weights. "
+            "Note that this is separate from each sleeve's internal rebalance frequency. "
+            "Options:"
+            "'monthly' (business month-start), "
             "'bi-weekly' (every 2 weeks, anchored to Mondays), "
             "'weekly' (every week, anchored to Mondays), "
             "'semi-monthly' (2x per month: business month-start and mid-month Monday), "
@@ -235,8 +239,8 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
 
     # Signals
     should_disable_cache_margin = False
-    if args.rebalance_frequency in ("daily", "semi-weekly"):
-        # For high-frequency rebalancing, disable cache margin to avoid
+    if args.sample_frequency in ("daily", "semi-weekly"):
+        # For high-frequency sampling, disable cache margin to avoid
         # missing signals on tight windows.
         should_disable_cache_margin = True
     signals = SignalEngine(
@@ -318,13 +322,13 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
 # ---------------------------------------------------------------------
 
 
-def build_rebalance_schedule(
+def build_sampling_schedule(
     start: pd.Timestamp,
     end: pd.Timestamp,
     frequency: str = "monthly",
 ) -> pd.DatetimeIndex:
     """
-    Build a rebalance schedule between `start` and `end` according to `frequency`.
+    Build a sampling schedule between `start` and `end` according to `frequency`.
 
     Supported frequencies:
     - "monthly": business month-start (freq="BMS")
@@ -405,16 +409,16 @@ def generate_target_weights(
     allocator: MultiSleeveAllocator,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    rebalance_schedule: pd.DatetimeIndex,
+    sample_schedule: pd.DatetimeIndex,
     signal_delay_days: Optional[int] = 0,
 ) -> tuple[pd.DataFrame, Dict[pd.Timestamp, Dict[str, Any]]]:
     """
-    Call MultiSleeveAllocator on each rebalance date and build
+    Call MultiSleeveAllocator on each sample date and build
     a Date x Ticker matrix of target weights.
     """
-    schedule = rebalance_schedule
+    schedule = sample_schedule
     if schedule.empty:
-        raise ValueError(f"No rebalance dates between {start.date()} and {end.date()}")
+        raise ValueError(f"No sample dates between {start.date()} and {end.date()}")
 
     all_tickers: set[str] = set()
     rows: Dict[pd.Timestamp, Dict[str, float]] = {}
@@ -428,7 +432,10 @@ def generate_target_weights(
         print(
             f"[backtest_v2] Generating weights for {as_of.date()} (using data as of {as_of_shifted.date()})"
         )
-        w, ctx = allocator.generate_global_target_weights(as_of_shifted)
+        w, ctx = allocator.generate_global_target_weights(
+            as_of_shifted,
+            rebalance_ctx=RebalanceContext(rebalance_ts=as_of),
+        )
         rows[as_of] = w
         contexts[as_of] = ctx
         all_tickers.update(w.keys())
@@ -598,29 +605,29 @@ def build_execution_price_matrix(
     return exec_mat
 
 
-def shift_rebalance_dates_to_trading_calendar(
-    rebalance_dates: pd.DatetimeIndex, trading_calendar: pd.DatetimeIndex
+def shift_dates_to_trading_calendar(
+    dates: pd.DatetimeIndex, trading_calendar: pd.DatetimeIndex
 ) -> pd.DatetimeIndex:
     """
-    Shift each date in `rebalance_dates` forward to the next available
+    Shift each date in `dates` forward to the next available
     date in `trading_calendar` (both treated as normalized dates).
 
-    If a rebalance date falls on a non-trading day, the next trading day
+    If a sample date falls on a non-trading day, the next trading day
     on or after that date is used. If no trading day exists after a
-    rebalance date (i.e., it's after the last trading date), that
-    rebalance date is dropped.
+    sample date (i.e., it's after the last trading date), that
+    sample date is dropped.
     Returns a deduplicated, ordered `DatetimeIndex` of shifted dates.
     """
-    if rebalance_dates.empty:
-        return rebalance_dates
+    if dates.empty:
+        return dates
 
     # Normalize and sort trading calendar
     trading = pd.DatetimeIndex(sorted(pd.to_datetime(trading_calendar).normalize()))
     if len(trading) == 0:
-        return rebalance_dates
+        return dates
 
     shifted: list[pd.Timestamp] = []
-    for d in rebalance_dates:
+    for d in dates:
         dn = pd.Timestamp(d).normalize()
         if dn in trading:
             shifted.append(dn)
@@ -630,12 +637,12 @@ def shift_rebalance_dates_to_trading_calendar(
                 newd = trading[pos]
                 shifted.append(newd)
                 print(
-                    f"[backtest_v2] Shifted rebalance date {dn.date()} -> {newd.date()}"
+                    f"[backtest_v2] Shifted sample date {dn.date()} -> {newd.date()}"
                 )
             else:
                 # No trading day after this date in the calendar; skip it
                 print(
-                    f"[backtest_v2] Dropping rebalance date {dn.date()}: no later trading day available"
+                    f"[backtest_v2] Dropping sample date {dn.date()}: no later trading day available"
                 )
 
     # Deduplicate while preserving order
@@ -709,33 +716,33 @@ def main() -> int:
     bench_series = None
     bench_returns = None
 
-    # Build rebalance schedule early for precompute (frequency from CLI)
-    rebalance_schedule = build_rebalance_schedule(
-        start=start_dt, end=end_dt, frequency=args.rebalance_frequency
+    # Build sample schedule early for precompute (frequency from CLI)
+    sample_schedule = build_sampling_schedule(
+        start=start_dt, end=end_dt, frequency=args.sample_frequency
     )
-    if rebalance_schedule.empty:
-        print("No rebalance dates in window; aborting.")
+    if sample_schedule.empty:
+        print("No sample dates in window; aborting.")
         return 0
-    # Shift rebalance dates to next trading day if needed using benchmark calendar
+    # Shift sample dates to next trading day if needed using benchmark calendar
     if df_bench is not None and not df_bench.empty:
-        orig_count = len(rebalance_schedule)
-        rebalance_schedule = shift_rebalance_dates_to_trading_calendar(
-            rebalance_schedule, df_bench.index
+        orig_count = len(sample_schedule)
+        sample_schedule = shift_dates_to_trading_calendar(
+            sample_schedule, df_bench.index
         )
-        new_count = len(rebalance_schedule)
+        new_count = len(sample_schedule)
         if new_count != orig_count:
             print(
-                f"[backtest_v2] Rebalance schedule adjusted: {orig_count} -> {new_count} dates after shifting to trading calendar"
+                f"[backtest_v2] Sample schedule adjusted: {orig_count} -> {new_count} dates after shifting to trading calendar"
             )
     else:
         print(
-            "[backtest_v2] No benchmark calendar available; skipping rebalance date shifting."
+            "[backtest_v2] No benchmark calendar available; skipping sample date shifting."
         )
 
     # Shift to prior day for lookahead bias free precompute
-    rebalance_schedule_shifted = rebalance_schedule - pd.Timedelta(days=1)
-    # Apply any signal delay to rebalance schedule
-    rebalance_schedule_shifted = rebalance_schedule_shifted - pd.Timedelta(
+    sample_schedule_shifted = sample_schedule - pd.Timedelta(days=1)
+    # Apply any signal delay to sample schedule
+    sample_schedule_shifted = sample_schedule_shifted - pd.Timedelta(
         days=args.signal_delay_days
     )
 
@@ -749,7 +756,7 @@ def main() -> int:
             allocator.precompute(
                 start=start_dt,
                 end=end_dt,
-                rebalance_dates=list(rebalance_schedule_shifted),
+                sample_dates=list(sample_schedule_shifted),
                 warmup_buffer=30,
             )
             print("[backtest_v2] Sleeve precompute phase completed.")
@@ -763,7 +770,7 @@ def main() -> int:
         allocator=allocator,
         start=start_dt,
         end=end_dt,
-        rebalance_schedule=rebalance_schedule,
+        sample_schedule=sample_schedule,
         signal_delay_days=args.signal_delay_days,
     )
 

@@ -23,6 +23,7 @@ from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
 from vec_signal_engine import VectorizedSignalEngine
+from context.rebalance import RebalanceContext
 from utils.stats import (
     zscore,
     winsorized_zscore,
@@ -31,14 +32,21 @@ from utils.stats import (
     sector_mean_snapshot,
     sector_mean_matrix,
 )
+from sleeves.common.rebalance_helpers import (
+    should_rebalance,
+    infer_approx_rebalance_days,
+)
 from .trend_config import TrendConfig
 
 
 @dataclass
 class TrendState:
-    last_as_of: Optional[pd.Timestamp] = None
+    # Timestamp of last rebalance
+    last_rebalance_ts: Optional[pd.Timestamp] = None
     # Latent smoothed sector weights (before top-k)
     last_sector_weights: Optional[pd.Series] = None
+    # Stock weights from last rebalance
+    last_stock_weights: Optional[Dict[str, float]] = None
 
 
 class TrendSleeve:
@@ -69,7 +77,7 @@ class TrendSleeve:
         self.config = config or TrendConfig()
         self.state = TrendState()
 
-        self._approx_rebalance_days = self._infer_approx_rebalance_days(
+        self._approx_rebalance_days = infer_approx_rebalance_days(
             self.config.rebalance_freq
         )
 
@@ -94,12 +102,44 @@ class TrendSleeve:
         as_of: datetime | str,
         start_for_signals: datetime | str,
         regime: str = "bull",
+        rebalance_ctx: Optional[RebalanceContext] = None,
     ) -> Dict[str, float]:
+        """
+        Generate target stock weights for the given as-of date.
+        Args:
+            as_of (datetime | str): As-of date for weight generation. Signals should NEVER use data
+                from after this date (i.e., no lookahead).
+            start_for_signals (datetime | str): Start date for signal computation.
+            regime (str): Current market regime for gating.
+            rebalance_ctx (Optional[RebalanceContext]): Rebalance context. Note that the context
+                may contain a rebalance timestamp that is different from `as_of` (usually later),
+                which should be ONLY used for rebalance timing checks and NOT for signal computation.
+        Returns:
+            Dict[str, float]: Target stock weights (ticker -> weight).
+        """
         as_of = pd.to_datetime(as_of)
         start_for_signals = pd.to_datetime(start_for_signals)
 
         cfg = self.config
         regime_key = (regime or "").lower()
+
+        # # ---------- Rebalance timing check ----------
+        # # Note: We need this because the global scheduler may call this function
+        # # more frequently than the sleeve's intended rebalance frequency.
+        # # If it's not time to rebalance yet, we return the last weights.
+        # if self.state.last_stock_weights is not None and not should_rebalance(
+        #     self.state.last_rebalance_ts,
+        #     rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
+        #     cfg.rebalance_freq,
+        # ):
+        #     print(
+        #         f"[TrendSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        #     )
+        #     return self.state.last_stock_weights
+        # # Otherwise, proceed to compute new weights
+        # print(
+        #     f"[TrendSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        # )
 
         # ---------- Regime-based gating ----------
         if cfg.use_regime_gating:
@@ -112,6 +152,24 @@ class TrendSleeve:
                     f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation."
                 )
                 return {}
+        
+        # ---------- Rebalance timing check ----------
+        # Note: We need this because the global scheduler may call this function
+        # more frequently than the sleeve's intended rebalance frequency.
+        # If it's not time to rebalance yet, we return the last weights.
+        if self.state.last_stock_weights is not None and not should_rebalance(
+            self.state.last_rebalance_ts,
+            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
+            cfg.rebalance_freq,
+        ):
+            print(
+                f"[TrendSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+            )
+            return self.state.last_stock_weights
+        # Otherwise, proceed to compute new weights
+        print(
+            f"[TrendSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        )
 
         # ---------- Compute or extract stock scores and sector scores ----------
         date_key = as_of.normalize()
@@ -192,14 +250,14 @@ class TrendSleeve:
         intermediate_sector_scores = None
         if (
             smoothing_freq == "signal"
-            and self.state.last_as_of is not None
+            and self.state.last_rebalance_ts is not None
             and self.state.last_sector_weights is not None
         ):
             # Check if we'll need interpolation
-            gap = (as_of - self.state.last_as_of).days
+            gap = (as_of - self.state.last_rebalance_ts).days
             if gap > 0 and gap <= np.ceil(2 * self._approx_rebalance_days):
                 # Compute scores for [last_as_of+1, as_of]
-                start_date = self.state.last_as_of + pd.Timedelta(days=1)
+                start_date = self.state.last_rebalance_ts + pd.Timedelta(days=1)
                 intermediate_sector_scores = self._compute_sector_scores_for_range(
                     start_date, as_of, start_for_signals
                 )
@@ -220,6 +278,13 @@ class TrendSleeve:
 
         # Normalize
         stock_weights = {t: w / total for t, w in stock_weights.items()}
+
+        # Don't forget to update state for a successful rebalance
+        self.state.last_rebalance_ts = (
+            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
+        )
+        self.state.last_stock_weights = stock_weights
+
         return stock_weights
 
     # ------------------------------------------------------------------
@@ -683,11 +748,14 @@ class TrendSleeve:
         w_capped = self._apply_caps(w_soft)
 
         # 3) Time-based smoothing vs previous (on full uncropped vector)
-        if self.state.last_as_of is None or self.state.last_sector_weights is None:
+        if (
+            self.state.last_rebalance_ts is None
+            or self.state.last_sector_weights is None
+        ):
             # First time: no smoothing, just use capped weights
             smoothed_pre_topk = w_capped
         else:
-            gap = (as_of - self.state.last_as_of).days
+            gap = (as_of - self.state.last_rebalance_ts).days
 
             if gap <= 0:
                 # Same day or out-of-order: don't smooth, just use new capped weights
@@ -708,7 +776,7 @@ class TrendSleeve:
                     beta = cfg.sector_smoothing_beta
 
                     # Generate trading dates from last_as_of + 1 day to as_of
-                    start_date = self.state.last_as_of + pd.Timedelta(days=1)
+                    start_date = self.state.last_rebalance_ts + pd.Timedelta(days=1)
                     daily_dates = self._get_trading_calendar(
                         start_date,
                         as_of,
@@ -759,7 +827,7 @@ class TrendSleeve:
         smoothed_out = self._top_k(smoothed_pre_topk)
 
         # 5) Update state with pre-top-k smoothed weights (latent preference)
-        self.state.last_as_of = as_of
+        self.state.last_rebalance_ts = as_of
         self.state.last_sector_weights = smoothed_pre_topk.copy()
 
         return smoothed_out
@@ -1385,7 +1453,7 @@ class TrendSleeve:
         self,
         start: datetime | str,
         end: datetime | str,
-        rebalance_dates: Optional[List[datetime | str]] = None,
+        sample_dates: Optional[List[datetime | str]] = None,
         warmup_buffer: Optional[
             int
         ] = None,  # in days; unused for vectorized trend sleeve
@@ -1404,7 +1472,7 @@ class TrendSleeve:
           3) Vectorized sector scores (Date x Sector)
           4) Vectorized sector weights (smoothing applied across time)
           5) Vectorized stock allocation (Date x Ticker weights)
-          6) Slice to [start, end]; optionally sample by provided rebalance dates
+          6) Slice to [start, end]; optionally sample by provided sample dates
 
         Caches result in `self.precomputed_weights_mat` and returns it.
         """
@@ -1575,24 +1643,6 @@ class TrendSleeve:
         return ohlcv.index
 
     @staticmethod
-    def _infer_approx_rebalance_days(freq: str) -> int:
-        if not freq:
-            return 21
-        f = freq.upper().strip()
-
-        if f.endswith("D") and f[:-1].isdigit():
-            return max(int(f[:-1]), 1)
-        if f.startswith("W"):
-            return 7
-        if f.startswith("M"):
-            return 30
-        if f.startswith("Q"):
-            return 90
-        if f.startswith("A") or f.startswith("Y"):
-            return 365
-        return 30
-
-    @staticmethod
     def _infer_abs_days_from_window_size(window_size: int, signal_interval: str) -> int:
         if window_size <= 0:
             return 0
@@ -1605,10 +1655,6 @@ class TrendSleeve:
             return window_size * 7
         if freq.endswith("mo"):
             return window_size * 30
-        # if freq.startswith("Q"):
-        #     return window_size * 90
-        # if freq.startswith("A") or freq.startswith("Y"):
-        #     return window_size * 365
 
         raise ValueError(f"Unknown signal interval: {signal_interval}")
         # return window_size * 30

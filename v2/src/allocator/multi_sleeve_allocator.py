@@ -8,7 +8,25 @@ import pandas as pd
 
 from src.regime_engine import RegimeEngine
 from src.signal_engine import SignalEngine
+from src.context.rebalance import RebalanceContext
+from src.sleeves.common.rebalance_helpers import should_rebalance
 from .multi_sleeve_config import MultiSleeveConfig
+
+
+@dataclass
+class MultiSleeveAllocatorState:
+    # Regime engine states
+    last_regime_sample_ts: Optional[pd.Timestamp] = None
+    last_regime_context: Optional[Tuple[str, Dict[str, float]]] = None
+
+    # Trend filter states
+    last_trend_sample_ts: Optional[pd.Timestamp] = None
+    last_trend_status: Optional[str] = None
+
+    last_as_of: Optional[pd.Timestamp] = None
+    last_rebalance_ts: Optional[pd.Timestamp] = None
+    last_sleeve_weights: Optional[Dict[str, float]] = None
+    last_portfolio: Optional[Dict[str, float]] = None
 
 
 class MultiSleeveAllocator:
@@ -61,12 +79,8 @@ class MultiSleeveAllocator:
                 self.enabled_sleeves.add(sleeve_name)
         print(f"[MultiSleeveAllocator] Enabled sleeves: {self.enabled_sleeves}")
 
-        # Optional state
-        self.last_as_of: Optional[pd.Timestamp] = None
-        self.last_primary_regime: Optional[str] = None
-        self.last_regime_scores: Optional[Dict[str, float]] = None
-        self.last_sleeve_weights: Optional[Dict[str, float]] = None
-        self.last_portfolio: Optional[Dict[str, float]] = None
+        # State
+        self.state = MultiSleeveAllocatorState()
 
     # ------------------------------------------------------------------
     # Public API
@@ -76,6 +90,7 @@ class MultiSleeveAllocator:
         self,
         as_of: datetime | str,
         start_for_signals: Optional[datetime | str] = None,
+        rebalance_ctx: Optional[RebalanceContext] = None,
     ) -> tuple[Dict[str, float], Dict[str, Any]]:
         """Main entry point for V2 multi-sleeve allocation.
 
@@ -90,6 +105,9 @@ class MultiSleeveAllocator:
             4) Ask each sleeve for internal weights and combine.
         """
         as_of_ts = pd.to_datetime(as_of)
+        rebalance_ts = pd.to_datetime(
+            rebalance_ctx.rebalance_ts if rebalance_ctx else as_of_ts
+        )
 
         # Figure out how much history sleeves need for signals
         if start_for_signals is None:
@@ -99,7 +117,7 @@ class MultiSleeveAllocator:
         start_for_signals_ts = pd.to_datetime(start_for_signals)
 
         # 1) Get regime context (primary label + score distribution)
-        primary_regime, regime_scores = self._get_regime_context(as_of_ts)
+        primary_regime, regime_scores = self._get_regime_context(as_of_ts, rebalance_ts)
         # print(f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}")
 
         # 2) Compute effective sleeve weights via regime-score blending
@@ -108,7 +126,7 @@ class MultiSleeveAllocator:
         )
         # Adjust sleeve weights via trend filter if enabled
         if self.config.trend_filter_enabled:
-            trend_status = self._compute_trend_filter_status(as_of_ts)
+            trend_status = self._compute_trend_filter_status(as_of_ts, rebalance_ts)
             sleeve_alloc = self._apply_trend_filter(sleeve_alloc, trend_status)
         # Build context to return to caller
         context: Dict[str, Any] = {
@@ -134,6 +152,7 @@ class MultiSleeveAllocator:
                 as_of=as_of_ts,
                 start_for_signals=start_for_signals_ts,
                 regime=primary_regime,
+                rebalance_ctx=rebalance_ctx,
             )
             if not local_weights:
                 continue
@@ -155,12 +174,9 @@ class MultiSleeveAllocator:
                 out = {t: w / total for t, w in combined.items()}
 
         # store state
-        self.last_as_of = as_of_ts
-        self.last_primary_regime = primary_regime
-        self.last_regime_scores = regime_scores
-        self.last_sleeve_weights = sleeve_alloc
-        self.last_portfolio = out
-
+        self.state.last_as_of = as_of_ts
+        self.state.last_sleeve_weights = sleeve_alloc
+        self.state.last_portfolio = out
         return out, context
 
     # ------------------------------------------------------------------
@@ -170,7 +186,7 @@ class MultiSleeveAllocator:
         self,
         start: datetime | str,
         end: datetime | str,
-        rebalance_dates: Optional[list[datetime | str]] = None,
+        sample_dates: Optional[list[datetime | str]] = None,
         warmup_buffer: int = 30,
     ) -> Dict[str, pd.DataFrame]:
         """Precompute sleeve-level weight matrices over [start, end].
@@ -183,8 +199,8 @@ class MultiSleeveAllocator:
         ----------
         start, end : datetime | str
             Target inclusive date range for final (post-warmup) weights.
-        rebalance_dates : list[datetime | str], optional
-            If provided, sleeves will sample their internal matrix to only
+        sample_dates : list[datetime | str], optional
+            If provided, sleeves may choose to sample their internal matrix to only
             those dates.
         warmup_buffer : int
             Extra days added to max signal window during sleeve warmup.
@@ -199,15 +215,13 @@ class MultiSleeveAllocator:
         if end_ts < start_ts:
             raise ValueError("end must be >= start for precompute")
 
-        if rebalance_dates is not None:
-            # Adjust start date and end date to cover all rebalance dates
-            min_rebalance_date = min(pd.to_datetime(d) for d in rebalance_dates)
-            max_rebalance_date = max(pd.to_datetime(d) for d in rebalance_dates)
-            start_ts = min(start_ts, min_rebalance_date)
-            end_ts = max(end_ts, max_rebalance_date)
-            print(
-                f"[MultiSleeveAllocator] Rebalance dates supplied: {len(rebalance_dates)}"
-            )
+        if sample_dates is not None:
+            # Adjust start date and end date to cover all sample dates
+            min_sample_date = min(pd.to_datetime(d) for d in sample_dates)
+            max_sample_date = max(pd.to_datetime(d) for d in sample_dates)
+            start_ts = min(start_ts, min_sample_date)
+            end_ts = max(end_ts, max_sample_date)
+            print(f"[MultiSleeveAllocator] Sample dates supplied: {len(sample_dates)}")
             print(
                 f"[MultiSleeveAllocator] Adjusted precompute date range to [{start_ts.date()}, {end_ts.date()}]"
             )
@@ -234,7 +248,7 @@ class MultiSleeveAllocator:
                 wmat = sleeve.precompute(
                     start=start_ts,
                     end=end_ts,
-                    rebalance_dates=rebalance_dates,
+                    sample_dates=sample_dates,
                     warmup_buffer=warmup_buffer,
                 )
                 if wmat is None or wmat.empty:
@@ -249,6 +263,7 @@ class MultiSleeveAllocator:
             except Exception as e:
                 # Print the exception and stacktrace
                 import traceback
+
                 traceback.print_exc()
                 print(f"[MultiSleeveAllocator] Sleeve '{name}' precompute failed: {e}")
                 results[name] = pd.DataFrame()
@@ -260,12 +275,23 @@ class MultiSleeveAllocator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_regime_context(self, as_of: pd.Timestamp) -> Tuple[str, Dict[str, float]]:
+    def _get_regime_context(
+        self, as_of: pd.Timestamp, rebalance_ts: pd.Timestamp
+    ) -> Tuple[str, Dict[str, float]]:
         """
         Call RegimeEngine.get_regime_frame() and return:
             - primary_regime label (string)
             - regime_scores: {regime_name -> score in [0,1], sum ~ 1}
         """
+        # Check if we should reuse last regime context
+        if self.state.last_regime_context is not None and not should_rebalance(
+            self.state.last_regime_sample_ts,
+            rebalance_ts,
+            self.config.regime_sample_freq,
+        ):
+            return self.state.last_regime_context
+        # Otherwise, proceed to compute new regime context
+
         lookback_days = self.config.regime_lookback_days
         start = as_of - timedelta(days=lookback_days)
 
@@ -306,6 +332,10 @@ class MultiSleeveAllocator:
             return primary, {primary: 1.0}
 
         regime_scores = {k: v / total for k, v in regime_scores.items()}
+
+        # Make sure to update regime states
+        self.state.last_regime_sample_ts = rebalance_ts
+        self.state.last_regime_context = (primary, regime_scores)
         return primary, regime_scores
 
     def _compute_effective_sleeve_weights(
@@ -350,6 +380,7 @@ class MultiSleeveAllocator:
     def _compute_trend_filter_status(
         self,
         as_of: pd.Timestamp,
+        rebalance_ts: pd.Timestamp,
     ) -> str:
         """
         Compute trend filter status ("risk-on" or "risk-off") based on
@@ -357,6 +388,12 @@ class MultiSleeveAllocator:
 
         Returns "risk-on" or "risk-off".
         """
+        # Reuse cached trend status if sampling frequency doesn't require recompute
+        if self.state.last_trend_status is not None and not should_rebalance(
+            self.state.last_trend_sample_ts, rebalance_ts, self.config.trend_sample_freq
+        ):
+            return self.state.last_trend_status
+
         benchmark = self.config.trend_benchmark
         window = self.config.trend_window
 
@@ -394,12 +431,16 @@ class MultiSleeveAllocator:
             # )
 
         if price_as_of is None or sma_as_of is None:
-            return "risk-on"
-
-        if price_as_of > sma_as_of:
-            return "risk-on"
+            trend_status = "risk-on"
+        elif price_as_of > sma_as_of:
+            trend_status = "risk-on"
         else:
-            return "risk-off"
+            trend_status = "risk-off"
+
+        # update cached trend state
+        self.state.last_trend_sample_ts = rebalance_ts
+        self.state.last_trend_status = trend_status
+        return trend_status
 
     def _apply_trend_filter(
         self,

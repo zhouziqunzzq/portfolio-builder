@@ -104,7 +104,7 @@ def main():
     vec_weights_mat = sleeve_vec.precompute(
         start="2025-06-02",
         end="2025-06-02",
-        rebalance_dates=[test_date],
+        sample_dates=[test_date],
     )
     
     if test_date in vec_weights_mat.index:

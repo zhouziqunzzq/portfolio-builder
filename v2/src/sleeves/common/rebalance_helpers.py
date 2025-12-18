@@ -1,0 +1,92 @@
+import pandas as pd
+
+VALID_REBALANCE_FREQS = {"D", "W", "M"}
+
+
+def should_rebalance(
+    last_rebalance_ts: pd.Timestamp | None,
+    current_ts: pd.Timestamp,
+    rebalance_freq: str,
+) -> bool:
+    """
+    Determines whether a rebalance should occur based on the last rebalance timestamp,
+    the current timestamp, and the desired rebalance frequency.
+
+    Args:
+        last_rebalance_ts (pd.Timestamp | None): Timestamp of the last rebalance.
+        current_ts (pd.Timestamp): Current timestamp.
+        rebalance_freq (str): Rebalance frequency ('D', 'W', 'M').
+
+    Returns:
+        bool: True if a rebalance should occur, False otherwise.
+    """
+    if rebalance_freq not in VALID_REBALANCE_FREQS:
+        raise ValueError(f"Invalid rebalance frequency: {rebalance_freq}")
+
+    if last_rebalance_ts is None:
+        return True  # Always rebalance if never done before
+
+    if current_ts <= last_rebalance_ts:
+        # We don't allow rebalancing "backwards" in time
+        raise ValueError("current_ts must be after last_rebalance_ts")
+
+    if rebalance_freq == "D":
+        # Daily: Check if the date has changed
+        return current_ts.date() > last_rebalance_ts.date()
+    elif rebalance_freq == "W":
+        # Weekly: Check if the ISO (year, week) has advanced. Use the ISO
+        # calendar year+week pair rather than the regular year to correctly
+        # handle weeks that cross year boundaries (e.g. 2024-12-30 -> 2025-01-02
+        # can be the same ISO week).
+        last_iso = last_rebalance_ts.isocalendar()
+        curr_iso = current_ts.isocalendar()
+        try:
+            last_iso_year, last_iso_week = last_iso.year, last_iso.week
+            curr_iso_year, curr_iso_week = curr_iso.year, curr_iso.week
+        except AttributeError:
+            # Fallback for tuple-like results
+            last_iso_year, last_iso_week = last_iso[0], last_iso[1]
+            curr_iso_year, curr_iso_week = curr_iso[0], curr_iso[1]
+
+        return (curr_iso_year, curr_iso_week) > (last_iso_year, last_iso_week)
+    elif rebalance_freq == "M":
+        # Monthly: Check if the month has changed
+        return (
+            current_ts.month > last_rebalance_ts.month
+            or current_ts.year > last_rebalance_ts.year
+        )
+
+    # Shouldn't reach here
+    raise RuntimeError("Unhandled rebalance frequency case")
+
+
+def infer_approx_rebalance_days(freq: str) -> int:
+    """
+    Infers the approximate number of days corresponding to a given rebalance frequency string.
+    Args:
+        freq (str): Rebalance frequency string (e.g., 'D', 'W', 'M').
+    Returns:
+        int: Approximate number of days for the given frequency.
+    Raises:
+        ValueError: If the frequency string is invalid.
+    """
+    if freq not in VALID_REBALANCE_FREQS:
+        raise ValueError(f"Invalid rebalance frequency: {freq}")
+
+    if not freq:
+        return 21
+    f = freq.upper().strip()
+
+    freq_to_days = {
+        "D": 1,
+        "W": 7,
+        "M": 30,
+        # "Q": 90,
+        # "A": 365,
+        # "Y": 365,
+    }
+    if f in freq_to_days:
+        return freq_to_days[f]
+
+    # Should not reach here due to earlier validation
+    raise ValueError(f"Cannot infer days for frequency: {freq}")

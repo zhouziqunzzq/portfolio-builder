@@ -12,8 +12,8 @@ from src.universe_manager import UniverseManager
 from src.signal_engine import SignalEngine
 from src.vec_signal_engine import VectorizedSignalEngine
 from src.backtest_runner import (
-    build_rebalance_schedule,
-    shift_rebalance_dates_to_trading_calendar,
+    build_sampling_schedule,
+    shift_dates_to_trading_calendar,
 )
 
 
@@ -206,8 +206,8 @@ def test_vec_path(runtime: Dict[str, Any]):
         interval="1d",
         auto_adjust=True,
     )
-    rebal_schedule = build_rebalance_schedule(start_ts, end_ts, frequency="monthly")
-    rebal_schedule = shift_rebalance_dates_to_trading_calendar(
+    rebal_schedule = build_sampling_schedule(start_ts, end_ts, frequency="monthly")
+    rebal_schedule = shift_dates_to_trading_calendar(
         rebal_schedule, df_bench.index
     )
     print(f"Rebalance schedule: {rebal_schedule}")
@@ -268,14 +268,14 @@ def test_vec_path(runtime: Dict[str, Any]):
         intermediate_sector_scores = None
         if (
             smoothing_freq == "daily"
-            and trend.state.last_as_of is not None
+            and trend.state.last_rebalance_ts is not None
             and trend.state.last_sector_weights is not None
         ):
             # Check if we'll need daily interpolation
-            gap = (as_of - trend.state.last_as_of).days
+            gap = (as_of - trend.state.last_rebalance_ts).days
             if gap > 0 and gap <= np.ceil(2 * trend._approx_rebalance_days):
                 # Compute scores for [last_as_of+1, as_of]
-                start_date = trend.state.last_as_of + pd.Timedelta(days=1)
+                start_date = trend.state.last_rebalance_ts + pd.Timedelta(days=1)
                 intermediate_sector_scores = trend._compute_sector_scores_for_range(
                     start_date, as_of, warmup_start
                 )

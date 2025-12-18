@@ -142,4 +142,4 @@ class DefensiveConfig:
     # -------------------------------
     # Rebalancing
     # -------------------------------
-    rebalance_freq: str = "M"  # "M" for monthly (pandas offset), or use N days
+    rebalance_freq: str = "M"  # "D", "W", "M"
