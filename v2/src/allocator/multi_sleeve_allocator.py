@@ -77,6 +77,14 @@ class MultiSleeveAllocator:
         for regime_weights in self.config.sleeve_regime_weights.values():
             for sleeve_name in regime_weights.keys():
                 self.enabled_sleeves.add(sleeve_name)
+
+        # Check if there are any enabled sleeves not in the provided sleeves (except "cash")
+        for sleeve_name in self.enabled_sleeves:
+            if sleeve_name != "cash" and sleeve_name not in self.sleeves:
+                raise ValueError(
+                    f"Sleeve '{sleeve_name}' is enabled in config but not provided in sleeves."
+                )
+
         print(f"[MultiSleeveAllocator] Enabled sleeves: {self.enabled_sleeves}")
 
         # State

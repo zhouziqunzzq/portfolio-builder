@@ -32,9 +32,11 @@ from sleeves.trend.trend_configs import (
     TREND_CONFIG_WEEKLY,
     TREND_CONFIG_MONTHLY,
 )
-from sleeves.sideways.sideways_sleeve import SidewaysSleeve
-from sleeves.sideways_mr.sideways_mr import SidewaysMRSleeve
-from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
+
+# from sleeves.sideways.sideways_sleeve import SidewaysSleeve
+# from sleeves.sideways_mr.sideways_mr import SidewaysMRSleeve
+# from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
+from sleeves.sideways_base.sideways_base_sleeve import SidewaysBaseSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
 from portfolio_backtester import PortfolioBacktester
@@ -272,22 +274,27 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         config=TREND_CONFIG_WEEKLY,
         # config=TREND_CONFIG_DAILY,
     )
-    sideways = SidewaysSleeve(
+    # sideways = SidewaysSleeve(
+    #     mds=mds,
+    #     signals=signals,
+    #     config=None,  # default SidewaysConfig
+    # )
+    # sideways_mr = SidewaysMRSleeve(
+    #     mds=mds,
+    #     signals=signals,
+    #     config=None,  # default SidewaysMRConfig
+    # )
+    # fast_alpha = FastAlphaSleeve(
+    #     universe=um,
+    #     mds=mds,
+    #     signals=signals,
+    #     vec_engine=vec_engine,
+    #     config=None,  # default FastAlphaConfig
+    # )
+    sideways_base = SidewaysBaseSleeve(
         mds=mds,
         signals=signals,
-        config=None,  # default SidewaysConfig
-    )
-    sideways_mr = SidewaysMRSleeve(
-        mds=mds,
-        signals=signals,
-        config=None,  # default SidewaysMRConfig
-    )
-    fast_alpha = FastAlphaSleeve(
-        universe=um,
-        mds=mds,
-        signals=signals,
-        vec_engine=vec_engine,
-        config=None,  # default FastAlphaConfig
+        config=None,  # default SidewaysBaseConfig
     )
 
     # Multi-sleeve configuration (already has defensive + trend defaults)
@@ -298,9 +305,10 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         sleeves={
             "defensive": defensive,
             "trend": trend,
-            "sideways": sideways,
-            "sideways_mr": sideways_mr,
-            "fast_alpha": fast_alpha,
+            # "sideways": sideways,
+            # "sideways_mr": sideways_mr,
+            # "fast_alpha": fast_alpha,
+            "sideways_base": sideways_base,
         },
         config=ms_config,
     )
@@ -312,7 +320,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         "regime_engine": regime_engine,
         "defensive": defensive,
         "trend": trend,
-        "sideways": sideways,
+        # "sideways": sideways,
         "allocator": allocator,
     }
 
@@ -636,9 +644,7 @@ def shift_dates_to_trading_calendar(
             if pos < len(trading):
                 newd = trading[pos]
                 shifted.append(newd)
-                print(
-                    f"[backtest_v2] Shifted sample date {dn.date()} -> {newd.date()}"
-                )
+                print(f"[backtest_v2] Shifted sample date {dn.date()} -> {newd.date()}")
             else:
                 # No trading day after this date in the calendar; skip it
                 print(

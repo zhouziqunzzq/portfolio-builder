@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
-SINGLE_SLEEVE_TESTING = "defensive"
+SINGLE_SLEEVE_TESTING = "trend"
 
 
 @dataclass
@@ -77,40 +77,35 @@ class MultiSleeveConfig:
 
     sleeve_regime_weights: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            # Strong uptrend, normal vol
             "bull": {
-                "trend": 0.90,
-                # "sideways": 0.04,  # tiny, exploratory
-                "defensive": 0.06,  # small stabilizer
+                "trend": 0.88,
+                "sideways_base": 0.06,
+                "defensive": 0.06,
                 "cash": 0.00,
             },
-            # Uptrend but pullback / higher vol
             "correction": {
-                "trend": 0.28,
-                # "sideways": 0.12,  # modest contribution
-                "defensive": 0.40,
-                "cash": 0.20,
+                "trend": 0.55,
+                "sideways_base": 0.15,
+                "defensive": 0.25,
+                "cash": 0.05,
             },
-            # Downtrend, elevated vol
             "bear": {
-                "trend": 0.03,
-                # "sideways": 0.02,  # tiny, avoids overexposure to laggards
-                "defensive": 0.53,
-                "cash": 0.42,
+                "trend": 0.08,
+                "sideways_base": 0.02,
+                "defensive": 0.60,
+                "cash": 0.30,
             },
-            # Panic / crisis regime
             "crisis": {
                 "trend": 0.00,
-                # "sideways": 0.00,  # fully suppressed
-                "defensive": 0.72,
-                "cash": 0.28,
+                "sideways_base": 0.00,
+                "defensive": 0.75,
+                "cash": 0.25,
             },
-            # Choppy / sideways
             "sideways": {
-                "trend": 0.15,  # down from 0.25
-                # "sideways": 0.25,  # main role here, but not dominant
-                "defensive": 0.40,  # stabilizer
-                "cash": 0.20,
+                "trend": 0.55,
+                "sideways_base": 0.20,
+                "defensive": 0.20,
+                "cash": 0.05,
             },
         }
     )
