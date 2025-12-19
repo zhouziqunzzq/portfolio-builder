@@ -12,3 +12,5 @@ plots/
 # Local scripts
 run_backtest.sh
 
+# Junk csvs
+orb_*.csv
