@@ -25,6 +25,20 @@ class MultiSleeveConfig:
         "sideways",
     )
     regime_sample_freq: str = "M"  # frequency for regime scoring
+    regime_hysteresis: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: {
+            # to enter these states, need N consecutive monthly samples
+            "enter": {
+                "bear": 1,
+                "crisis": 1,
+                "correction": 1,
+                "sideways": 1,
+                "bull": 1,
+            },
+            # to exit these states, need N consecutive samples (stickier exits)
+            "exit": {"bear": 2, "crisis": 2, "correction": 2, "sideways": 2, "bull": 1},
+        }
+    )
 
     # Trend filter on benchmark for risk-on/risk-off scaling
     trend_filter_enabled: bool = True
@@ -34,13 +48,19 @@ class MultiSleeveConfig:
     sleeve_risk_on_equity_frac: Dict[str, float] = field(
         default_factory=lambda: {
             "trend": 1.0,
-            "fast_alpha": 1.0,
         }
     )
-    sleeve_risk_off_equity_frac: Dict[str, float] = field(
+    # sleeve -> regime -> risk-off equity fraction
+    # Allow asymmetric risk-off scaling per regime
+    sleeve_risk_off_equity_frac: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
-            "trend": 0.7,
-            "fast_alpha": 0.7,
+            "trend": {
+                "bull": 0.7,
+                "correction": 0.7,
+                "bear": 0.7,
+                "crisis": 0.7,
+                "sideways": 0.7,
+            },
         }
     )
 
@@ -106,6 +126,39 @@ class MultiSleeveConfig:
                 "sideways_base": 0.20,
                 "defensive": 0.20,
                 "cash": 0.05,
+            },
+        }
+    )
+    # Hard floors on sleeve weights per regime
+    sleeve_regime_weights_floor: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "bull": {
+                "trend": 0.65,
+            },
+            "correction": {
+                "trend": 0.65,
+            },
+            "bear": {
+                "trend": 0.0,
+            },
+            "crisis": {
+                "trend": 0.0,
+            },
+            "sideways": {
+                "trend": 0.65,
+            },
+        }
+    )
+    # Modifiers (multipliers) to sleeve weights per regime
+    modifier_regime_score_threshold: float = 0.5  # min regime score to apply modifiers
+    sleeve_regime_modifiers: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "bull": {},
+            "correction": {},
+            "bear": {},
+            "crisis": {},
+            "sideways": {
+                "sideways_base": 0.5,
             },
         }
     )

@@ -7,7 +7,11 @@ import sys
 import matplotlib
 
 # Choose backend: prefer interactive when a display is available, otherwise use Agg
-has_display = bool(os.environ.get("DISPLAY")) or sys.platform.startswith("win") or sys.platform == "darwin"
+has_display = (
+    bool(os.environ.get("DISPLAY"))
+    or sys.platform.startswith("win")
+    or sys.platform == "darwin"
+)
 if not has_display:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -23,10 +27,18 @@ if __name__ == "__main__":
     regimes = regime_engine.get_regime_frame("2000-01-01", "2025-11-21")
     print(regimes.head())
     print(regimes.tail())
-    print(regimes[["bull", "correction", "bear", "crisis", "sideways", "primary_regime"]].tail())
+    print(
+        regimes[
+            ["bull", "correction", "bear", "crisis", "sideways", "primary_regime"]
+        ].tail()
+    )
 
     # --- Quick plotting: stacked-area of regime scores (monthly aggregated) ---
-    score_cols = [c for c in ["bull", "correction", "bear", "crisis", "sideways"] if c in regimes.columns]
+    score_cols = [
+        c
+        for c in ["bull", "correction", "bear", "crisis", "sideways"]
+        if c in regimes.columns
+    ]
     if score_cols:
         # Ensure datetime index
         regimes = regimes.sort_index()

@@ -29,13 +29,18 @@ class RegimeConfig:
     interval: str = "1d"
     vol_window: int = 20
     mom_window: int = 252
+    mom_fast_window: int = 63
     fast_ma: int = 50
     slow_ma: int = 200
     dd_lookback: int = 252  # 1y trading days
     vol_norm_window: int = 252  # for z-scoring vol
-    # NEW: volatility estimator mode
+    # volatility estimator mode
     vol_mode: str = "rolling"  # "rolling" | "ewm"
     ewm_vol_halflife: int = 20  # in trading days; if None, fall back to vol_window
+    # rates/bonds stress veto
+    bond_benchmark: str = "BND"  # or "IEF"
+    bond_trend_window: int = 200
+    bond_mom_window: int = 126
 
 
 class RegimeEngine:
@@ -102,13 +107,40 @@ class RegimeEngine:
                 interval=cfg.interval,
                 window=cfg.vol_window,
             )
-        mom = self.signals.get_series(
+        mom_252 = self.signals.get_series(
             cfg.benchmark,
             "ts_mom",
             start=start_dt,
             end=end_dt,
             interval=cfg.interval,
             window=cfg.mom_window,
+        )
+        mom_63 = self.signals.get_series(
+            cfg.benchmark,
+            "ts_mom",
+            start=start_dt,
+            end=end_dt,
+            interval=cfg.interval,
+            window=cfg.mom_fast_window,
+        )
+
+        # Bond/rates trend & momentum for stress veto
+        bond_trend = self.signals.get_series(
+            cfg.bond_benchmark,
+            "trend_score",
+            start=start_dt,
+            end=end_dt,
+            interval=cfg.interval,
+            fast_window=cfg.fast_ma,
+            slow_window=cfg.bond_trend_window,
+        )
+        bond_mom = self.signals.get_series(
+            cfg.bond_benchmark,
+            "ts_mom",
+            start=start_dt,
+            end=end_dt,
+            interval=cfg.interval,
+            window=cfg.bond_mom_window,
         )
 
         # --- 2) Derived features: drawdown & normalized vol ---
@@ -128,7 +160,10 @@ class RegimeEngine:
                 "vol": vol,
                 "vol_score": vol_score,
                 "dd_1y": dd_1y,
-                "mom_252": mom,
+                "mom_63": mom_63,
+                "mom_252": mom_252,
+                "bond_trend_score": bond_trend,
+                "bond_mom_126": bond_mom,
             }
         ).dropna(subset=["trend_score", "vol", "vol_score", "dd_1y", "mom_252"])
 
@@ -154,9 +189,15 @@ class RegimeEngine:
         vol_score = df["vol_score"]
         dd_1y = df["dd_1y"]
         mom = df["mom_252"]
+        mom_fast = df["mom_63"]
+        bond_trend = df["bond_trend_score"]
+        bond_mom = df["bond_mom_126"]
 
         def ramp(x, x0, x1):
             return ((x - x0) / (x1 - x0)).clip(lower=0.0, upper=1.0)
+
+        # Bond stress veto
+        bond_break = ramp(-bond_mom, 0.00, 0.10) * ramp(-bond_trend, 0.10, 0.60)
 
         # -----------------
         # Bull
@@ -165,7 +206,15 @@ class RegimeEngine:
         bull_vol = 1.0 - ramp(vol_score, 0.5, 2.0)  # penalize high vol
         bull_dd = 1.0 - ramp(-dd_1y, 0.10, 0.30)  # penalize 10-30% DD
 
-        bull_score = (bull_trend * 0.5) + (bull_vol * 0.3) + (bull_dd * 0.2)
+        bull_mom_ok = 1.0 - ramp(-mom, 0.00, 0.10)  # penalize negative 12m mom
+        bull_score = (
+            (bull_trend * 0.45)
+            + (bull_vol * 0.30)
+            + (bull_dd * 0.15)
+            + (bull_mom_ok * 0.10)
+        )
+        # Boost bull score when momentum is strong
+        bull_score *= 1.0 + 0.25 * ramp(mom, 0.08, 0.15)
 
         # -----------------
         # Bear
@@ -177,6 +226,7 @@ class RegimeEngine:
 
         bear_core = (bear_trend * 0.4) + (bear_dd * 0.4) + (bear_vol * 0.2)
         bear_score = bear_core * 0.6 + bear_mom * 0.4
+        bear_score *= 1.0 + 0.30 * bond_break  # up to +30%
 
         # -----------------
         # Crisis
@@ -186,11 +236,11 @@ class RegimeEngine:
         crisis_score = (crisis_vol * 0.7) + (crisis_dd * 0.3)
 
         # -----------------
-        # Correction (re-defined)
+        # Correction
         # -----------------
         # 1) Long-term uptrend: positive momentum / trend
-        corr_uptrend = ramp(mom, 0.0, 0.10)  # prefer >0 12m mom
-        corr_trend_ok = ramp(trend, 0.0, 0.5)  # some positive trend
+        corr_uptrend = ramp(mom, 0.02, 0.12)
+        corr_trend_ok = ramp(trend, 0.15, 0.55)
         # but not TOO strong (otherwise it should just be bull)
         corr_not_strong_bull = 1.0 - ramp(trend, 0.7, 1.0)
 
@@ -214,17 +264,29 @@ class RegimeEngine:
         suppress_crisis = 1.0 - ramp(crisis_score, 0.2, 0.6)
         correction_score *= suppress_bear * suppress_crisis
 
+        # 5) Prefer when short-term momentum is not strongly negative
+        corr_fast_mom_ok = ramp(mom_fast, -0.02, 0.05)  # prefer not strongly negative
+        correction_score *= corr_fast_mom_ok
+
+        # 6) Suppress correction if bonds are also breaking down
+        correction_score *= 1.0 - 0.50 * bond_break
+
         # -----------------
         # Sideways as residual
         # -----------------
-        non_side = bull_score + correction_score + bear_score + crisis_score
-        sideways_score = (1.0 - non_side.clip(0.0, 1.0)).clip(lower=0.0)
-        # Alternative: explicit scoring for sideways regime
-        # side_trend_flat = 1.0 - ramp(trend.abs(), 0.15, 0.5)
-        # side_vol_low   = 1.0 - ramp(vol_score, 0.0, 1.0)
-        # side_dd_shallow = 1.0 - ramp(-dd_1y, 0.05, 0.15)
-        # sideways_score = (side_trend_flat * 0.5) + (side_vol_low * 0.3) + (side_dd_shallow * 0.2)
-        # sideways_score = sideways_score.clip(lower=0.0)
+        # non_side = bull_score + correction_score + bear_score + crisis_score
+        # sideways_score = (1.0 - non_side.clip(0.0, 1.0)).clip(lower=0.0)
+        # -----------------
+        # Sideways (explicit, not residual)
+        # -----------------
+        side_trend_flat = 1.0 - ramp(trend.abs(), 0.10, 0.35)
+        side_vol_low = 1.0 - ramp(vol_score, 0.25, 1.25)
+        side_dd_shallow = 1.0 - ramp(-dd_1y, 0.03, 0.12)
+        sideways_score = (
+            side_trend_flat * 0.45 + side_vol_low * 0.35 + side_dd_shallow * 0.20
+        ).clip(lower=0.0, upper=1.0)
+        # Suppress sideways if bonds are breaking down
+        sideways_score *= 1.0 - 0.30 * bond_break
 
         scores = pd.DataFrame(
             {

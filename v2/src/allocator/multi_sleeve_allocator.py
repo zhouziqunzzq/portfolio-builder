@@ -18,6 +18,11 @@ class MultiSleeveAllocatorState:
     # Regime engine states
     last_regime_sample_ts: Optional[pd.Timestamp] = None
     last_regime_context: Optional[Tuple[str, Dict[str, float]]] = None
+    # Effective (post-hysteresis) primary regime
+    last_primary: Optional[str] = None
+    # Raw primary regime tracking (pre-hysteresis)
+    last_raw_primary: Optional[str] = None
+    raw_primary_streak: int = 0
 
     # Trend filter states
     last_trend_sample_ts: Optional[pd.Timestamp] = None
@@ -132,10 +137,17 @@ class MultiSleeveAllocator:
         sleeve_alloc = self._compute_effective_sleeve_weights(
             primary_regime, regime_scores
         )
+        # Apply optional regime-based modifiers (e.g., downweight sideways_base
+        # when the 'sideways' score is weak)
+        sleeve_alloc = self._apply_sleeve_modifiers(sleeve_alloc, regime_scores)
+        # Apply hard floors on the effective sleeve weights
+        sleeve_alloc = self._apply_sleeve_floors(sleeve_alloc, primary_regime)
         # Adjust sleeve weights via trend filter if enabled
         if self.config.trend_filter_enabled:
             trend_status = self._compute_trend_filter_status(as_of_ts, rebalance_ts)
-            sleeve_alloc = self._apply_trend_filter(sleeve_alloc, trend_status)
+            sleeve_alloc = self._apply_trend_filter(
+                sleeve_alloc, trend_status, primary_regime
+            )
         # Build context to return to caller
         context: Dict[str, Any] = {
             "primary_regime": primary_regime,
@@ -283,68 +295,161 @@ class MultiSleeveAllocator:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _apply_regime_hysteresis(self, raw_primary: str) -> Tuple[str, bool]:
+        """
+        Apply enter-fast / exit-slow hysteresis to raw primary regime.
+
+        Returns:
+            (effective_primary, switched)
+        where `switched` indicates whether we accepted switching to raw_primary.
+
+        Logic:
+          - Maintain a streak counter for consecutive occurrences of raw_primary.
+          - Define regime "defensiveness" order; moving to a MORE defensive regime
+            uses the "enter" threshold for the candidate regime.
+          - Moving to a LESS defensive regime uses the "exit" threshold for the
+            CURRENT effective regime (i.e., require more confirmation to exit).
+        """
+        cfg = self.config
+
+        # Regime order: increasing = more defensive / risk-off
+        # (sideways vs correction can be debated; choose an order and be consistent)
+        regime_order = {
+            "bull": 0,
+            "sideways": 1,
+            "correction": 2,
+            "bear": 3,
+            "crisis": 4,
+        }
+
+        # Safety fallback if unknown labels appear
+        if raw_primary not in regime_order:
+            return raw_primary, True
+
+        prev_effective = self.state.last_primary or raw_primary
+
+        # Update raw streak
+        if self.state.last_raw_primary == raw_primary:
+            self.state.raw_primary_streak += 1
+        else:
+            self.state.last_raw_primary = raw_primary
+            self.state.raw_primary_streak = 1
+
+        # If we have no previous effective regime, accept immediately
+        if self.state.last_primary is None:
+            self.state.last_primary = raw_primary
+            return raw_primary, True
+
+        # If no change, nothing to do
+        if raw_primary == prev_effective:
+            return prev_effective, False
+
+        moving_more_defensive = regime_order[raw_primary] > regime_order[prev_effective]
+
+        enter_map = cfg.regime_hysteresis.get("enter", {})
+        exit_map = cfg.regime_hysteresis.get("exit", {})
+
+        if moving_more_defensive:
+            # Enter risk-off faster
+            needed = int(enter_map.get(raw_primary, 1))
+        else:
+            # Exit risk-off slower: require confirms to leave prev_effective
+            needed = int(exit_map.get(prev_effective, 2))
+
+        # Decision: accept switch only if raw streak reaches required confirms
+        if self.state.raw_primary_streak >= needed:
+            self.state.last_primary = raw_primary
+            return raw_primary, True
+
+        # Otherwise, hold previous effective regime
+        return prev_effective, False
+
     def _get_regime_context(
         self, as_of: pd.Timestamp, rebalance_ts: pd.Timestamp
     ) -> Tuple[str, Dict[str, float]]:
         """
-        Call RegimeEngine.get_regime_frame() and return:
-            - primary_regime label (string)
-            - regime_scores: {regime_name -> score in [0,1], sum ~ 1}
+        Returns:
+        - effective_primary: hysteresis-stabilized discrete regime label
+        - regime_scores: fresh soft distribution (NOT hysteresis'd), sum ~ 1
         """
-        # Check if we should reuse last regime context
+
+        # If we are not due to resample regimes, reuse last returned context
         if self.state.last_regime_context is not None and not should_rebalance(
             self.state.last_regime_sample_ts,
             rebalance_ts,
             self.config.regime_sample_freq,
         ):
             return self.state.last_regime_context
-        # Otherwise, proceed to compute new regime context
 
+        # ---- compute fresh scores ----
         lookback_days = self.config.regime_lookback_days
         start = as_of - timedelta(days=lookback_days)
 
         df = self.regime_engine.get_regime_frame(start=start, end=as_of)
         if df is None or df.empty:
-            # Fallback: sideways, no scores
-            return "sideways", {}
+            # fallback: keep last primary if exists, else sideways
+            primary = self.state.last_primary or "sideways"
+            scores = {primary: 1.0}
+            self.state.last_regime_sample_ts = rebalance_ts
+            self.state.last_regime_context = (primary, scores)
+            return primary, scores
 
-        # Use the last available date <= as_of; Not necessarily as_of itself because
-        # of weekends/holidays
         last = df.iloc[-1]
 
-        # Primary regime label
-        primary = str(last.get("primary_regime", "sideways"))
-
-        # Regime scores (soft assignment)
+        # Extract scores (already normalized in your regime_engine output)
         scores_raw: Dict[str, float] = {}
         for col in self.config.regime_score_columns:
             if col in last.index:
-                val = last[col]
-                try:
-                    f = float(val)
-                except Exception:
-                    continue
-                if pd.isna(f):
-                    continue
-                scores_raw[col] = max(f, 0.0)
+                v = float(last[col])
+                if not pd.isna(v):
+                    scores_raw[col] = max(v, 0.0)
 
-        # Map from "bull_score" -> "bull" if needed
-        regime_scores: Dict[str, float] = {}
-        for key, val in scores_raw.items():
-            name = key.replace("_score", "")
-            regime_scores[name] = regime_scores.get(name, 0.0) + val
-
-        total = float(sum(regime_scores.values()))
+        total = float(sum(scores_raw.values()))
         if total <= 0:
-            # If no usable scores, just return primary with full weight
-            return primary, {primary: 1.0}
+            candidate = "sideways"
+            scores = {candidate: 1.0}
+        else:
+            scores = {k: v / total for k, v in scores_raw.items()}
+            candidate = max(scores, key=scores.get)
 
-        regime_scores = {k: v / total for k, v in regime_scores.items()}
+        # ---- hysteresis on PRIMARY ONLY ----
+        last_primary = self.state.last_primary
+        if last_primary is None:
+            effective_primary = candidate
+            self.state.primary_streak = 1
+        else:
+            if candidate == last_primary:
+                # staying put
+                effective_primary = last_primary
+                self.state.primary_streak = 0  # reset streak for switching
+            else:
+                # switching attempt: count consecutive "votes" for candidate
+                self.state.primary_streak += 1
 
-        # Make sure to update regime states
+                enter_n = self.config.regime_hysteresis.get("enter", {}).get(
+                    candidate, 1
+                )
+                exit_n = self.config.regime_hysteresis.get("exit", {}).get(
+                    last_primary, 1
+                )
+
+                # conservative rule: require BOTH:
+                # - candidate has enough consecutive votes (enter_n)
+                # - and we've persisted long enough to exit the old one (exit_n)
+                # With monthly sampling, primary_streak approximates consecutive months.
+                if self.state.primary_streak >= max(enter_n, exit_n):
+                    effective_primary = candidate
+                    self.state.primary_streak = 0
+                else:
+                    effective_primary = last_primary
+
+        # update state
+        self.state.last_primary = effective_primary
         self.state.last_regime_sample_ts = rebalance_ts
-        self.state.last_regime_context = (primary, regime_scores)
-        return primary, regime_scores
+        # NOTE: store effective_primary but ALWAYS store fresh scores
+        self.state.last_regime_context = (effective_primary, scores)
+
+        return effective_primary, scores
 
     def _compute_effective_sleeve_weights(
         self,
@@ -454,6 +559,7 @@ class MultiSleeveAllocator:
         self,
         sleeve_weights: Dict[str, float],
         trend_status: str,
+        primary_regime: str,
     ) -> Dict[str, float]:
         """
         Apply trend filter to sleeve weights.
@@ -466,9 +572,86 @@ class MultiSleeveAllocator:
         adjusted: Dict[str, float] = {}
         for sleeve, weight in sleeve_weights.items():
             if trend_status == "risk-off":
-                off_scale = self.config.sleeve_risk_off_equity_frac.get(sleeve, 1.0)
+                # Risk off: apply regime-dependent scaling
+                off_scale = self.config.sleeve_risk_off_equity_frac.get(sleeve, {}).get(
+                    primary_regime, 1.0
+                )
                 adjusted[sleeve] = weight * off_scale
             else:
+                # Risk on doesn't differentiate by regime
                 on_scale = self.config.sleeve_risk_on_equity_frac.get(sleeve, 1.0)
                 adjusted[sleeve] = weight * on_scale
         return adjusted
+
+    def _apply_sleeve_floors(
+        self, sleeve_alloc: Dict[str, float], primary_regime: str
+    ) -> Dict[str, float]:
+        """
+        Enforce hard floors from `self.config.sleeve_regime_weights_floor` for
+        the provided `primary_regime`. Any sleeve with a configured floor that
+        is higher than its current allocation will be raised to the floor.
+
+        After applying floors, allocations are normalized to sum to 1. If the
+        resulting total is zero or negative, an empty dict is returned.
+        """
+        if not sleeve_alloc:
+            return {}
+
+        floor_map = self.config.sleeve_regime_weights_floor.get(primary_regime, {})
+        if not floor_map:
+            return sleeve_alloc
+
+        alloc = dict(sleeve_alloc)  # shallow copy
+
+        # Ensure sleeves present in floor_map exist in alloc (with 0 if needed)
+        for s, floor_val in floor_map.items():
+            if floor_val <= 0:
+                continue
+            curr = float(alloc.get(s, 0.0))
+            if curr < floor_val:
+                print(
+                    f"[MultiSleeveAllocator] Applying floor {floor_val} to sleeve '{s}' (current={curr}) for regime '{primary_regime}'"
+                )
+                alloc[s] = floor_val
+
+        total = float(sum(alloc.values()))
+        if total <= 0:
+            return {}
+
+        # Normalize to sum to 1
+        return {s: (w / total) for s, w in alloc.items()}
+
+    def _apply_sleeve_modifiers(
+        self, sleeve_alloc: Dict[str, float], regime_scores: Dict[str, float]
+    ) -> Dict[str, float]:
+        """
+        Apply `sleeve_regime_modifiers` from config.
+
+        Current semantics: for each modifier-regime `r` in
+        `config.sleeve_regime_modifiers`, if the observed `regime_scores.get(r,0)`
+        is less than 0.5, multiply the listed sleeves by the provided
+        multiplier. Returns a new allocation dict (shallow-copied).
+        """
+        if not sleeve_alloc:
+            return {}
+
+        mods = self.config.sleeve_regime_modifiers or {}
+        if not mods:
+            return sleeve_alloc
+
+        alloc = dict(sleeve_alloc)
+
+        for mod_regime, mod_map in mods.items():
+            score = float(regime_scores.get(mod_regime, 0.0))
+            # Apply modifier only when the regime's score is weak
+            if score >= self.config.modifier_regime_score_threshold:
+                continue
+            for sleeve_name, m in (mod_map or {}).items():
+                if sleeve_name in alloc:
+                    print(
+                        f"[MultiSleeveAllocator] Applying modifier {m} to sleeve '{sleeve_name}' due to weak regime '{mod_regime}' (score={score:.3f})"
+                    )
+                    alloc[sleeve_name] = float(alloc.get(sleeve_name, 0.0)) * m
+
+        # If nothing changed, return as-is. Otherwise return modified alloc.
+        return alloc
