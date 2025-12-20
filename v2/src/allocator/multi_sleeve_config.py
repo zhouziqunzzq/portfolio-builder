@@ -84,9 +84,9 @@ class MultiSleeveConfig:
                 "cash": 0.00,
             },
             "correction": {
-                "trend": 0.55,
+                "trend": 0.60,
                 "sideways_base": 0.15,
-                "defensive": 0.25,
+                "defensive": 0.20,
                 "cash": 0.05,
             },
             "bear": {
