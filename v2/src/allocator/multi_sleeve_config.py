@@ -22,7 +22,7 @@ class MultiSleeveConfig:
         "correction",
         "bear",
         "crisis",
-        "sideways",
+        "stress",
     )
     regime_sample_freq: str = "M"  # frequency for regime scoring
 
@@ -101,10 +101,10 @@ class MultiSleeveConfig:
                 "defensive": 0.75,
                 "cash": 0.25,
             },
-            "sideways": {
-                "trend": 0.55,
-                "sideways_base": 0.20,
-                "defensive": 0.20,
+            "stress": {
+                "trend": 0.35,
+                "sideways_base": 0.30,
+                "defensive": 0.30,
                 "cash": 0.05,
             },
         }
@@ -120,7 +120,7 @@ class MultiSleeveConfig:
         # fallback
         if not mapping:
             mapping = self.sleeve_regime_weights.get(
-                "sideways"
+                "stress"
             ) or self.sleeve_regime_weights.get("bull")
 
         total = float(sum(mapping.values()))

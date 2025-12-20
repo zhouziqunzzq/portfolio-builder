@@ -126,6 +126,9 @@ class MultiSleeveAllocator:
 
         # 1) Get regime context (primary label + score distribution)
         primary_regime, regime_scores = self._get_regime_context(as_of_ts, rebalance_ts)
+        print(
+            f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}"
+        )
         # print(f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}")
 
         # 2) Compute effective sleeve weights via regime-score blending
@@ -305,15 +308,15 @@ class MultiSleeveAllocator:
 
         df = self.regime_engine.get_regime_frame(start=start, end=as_of)
         if df is None or df.empty:
-            # Fallback: sideways, no scores
-            return "sideways", {}
+            # Fallback: stress, no scores
+            return "stress", {}
 
         # Use the last available date <= as_of; Not necessarily as_of itself because
         # of weekends/holidays
         last = df.iloc[-1]
 
         # Primary regime label
-        primary = str(last.get("primary_regime", "sideways"))
+        primary = str(last.get("primary_regime", "stress"))
 
         # Regime scores (soft assignment)
         scores_raw: Dict[str, float] = {}

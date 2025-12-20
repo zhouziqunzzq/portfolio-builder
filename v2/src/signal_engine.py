@@ -233,6 +233,8 @@ class SignalEngine:
         )
 
         self.store.set(key, series)
+        if series.empty:
+            return series
         return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
     def _compute_signal_full(
@@ -566,13 +568,55 @@ class SignalEngine:
         ma_fast = price.rolling(window=fast_window).mean()
         ma_slow = price.rolling(window=slow_window).mean()
 
-        ma_diff_sign = np.sign(ma_fast - ma_slow)
+        ma_spread = (ma_fast - ma_slow) / ma_slow  # e.g. +/- a few %
         rel_to_slow = (price - ma_slow) / ma_slow
 
-        trend_score = 0.5 * ma_diff_sign + 0.5 * rel_to_slow
+        ma_component = np.tanh(ma_spread / 0.08)
+        price_component = np.tanh(rel_to_slow / 0.15)
+
+        trend_score = 0.5 * ma_component + 0.5 * price_component
+
         trend_score.name = f"trend_score_{fast_window}_{slow_window}"
 
         return trend_score
+
+    def _compute_trend_score_cont_full(
+        self,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+        interval: str,
+        fast_window: int = 50,
+        slow_window: int = 200,
+        price_col: str = "Close",
+        buffer_bars: int = 10,
+    ) -> pd.Series:
+        """
+        Continuous 'trend_score' based on normalized difference between fast and slow MA.
+
+        trend_cont = (MA_fast - MA_slow) / MA_slow
+        """
+        fast = self.get_series(
+            ticker,
+            "sma",
+            start=start,
+            end=end,
+            interval=interval,
+            window=fast_window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        slow = self.get_series(
+            ticker,
+            "sma",
+            start=start,
+            end=end,
+            interval=interval,
+            window=slow_window,
+            price_col=price_col,
+            buffer_bars=buffer_bars,
+        )
+        return (fast / slow - 1.0).clip(-0.10, 0.10)
 
     def _compute_sma_full(
         self,

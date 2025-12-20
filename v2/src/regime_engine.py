@@ -20,7 +20,7 @@ if str(_ROOT_SRC) not in sys.path:
 from signal_engine import SignalEngine
 
 
-RegimeName = Literal["bull", "correction", "bear", "crisis", "sideways"]
+RegimeName = Literal["bull", "correction", "bear", "crisis", "stress"]
 
 
 @dataclass
@@ -140,7 +140,13 @@ class RegimeEngine:
         score_sum = scores[score_cols].sum(axis=1).replace(0, np.nan)
         scores_norm = scores.div(score_sum, axis=0)
 
-        primary = scores_norm.idxmax(axis=1).rename("primary_regime")
+        # primary = scores_norm.idxmax(axis=1).rename("primary_regime")
+        # Dropping "stress" as it's not a primary regime label and is used only for blending weights at top-level.
+        primary = (
+            scores_norm[["bull", "correction", "bear", "crisis"]]
+            .idxmax(axis=1)
+            .rename("primary_regime")
+        )
         out = pd.concat([features, scores_norm, primary], axis=1)
 
         return out
@@ -158,73 +164,91 @@ class RegimeEngine:
         def ramp(x, x0, x1):
             return ((x - x0) / (x1 - x0)).clip(lower=0.0, upper=1.0)
 
-        # -----------------
-        # Bull
-        # -----------------
-        bull_trend = ramp(trend, 0.1, 0.7)  # need a clearer positive trend
-        bull_vol = 1.0 - ramp(vol_score, 0.5, 2.0)  # penalize high vol
-        bull_dd = 1.0 - ramp(-dd_1y, 0.10, 0.30)  # penalize 10-30% DD
+        # -------------------------------------------------
+        # Bull: positive trend + not-too-high vol + shallow DD
+        # -------------------------------------------------
+        bull_trend = ramp(trend, 0.10, 0.60)
+        bull_vol = 1.0 - ramp(vol_score, 0.50, 2.00)
+        bull_dd = 1.0 - ramp(-dd_1y, 0.08, 0.25)  # slightly tighter than 10-30%
 
-        bull_score = (bull_trend * 0.5) + (bull_vol * 0.3) + (bull_dd * 0.2)
+        bull_score = (0.50 * bull_trend + 0.30 * bull_vol + 0.20 * bull_dd).clip(
+            0.0, 1.0
+        )
 
-        # -----------------
-        # Bear
-        # -----------------
-        bear_trend = ramp(-trend, 0.2, 0.7)
-        bear_dd = ramp(-dd_1y, 0.20, 0.40)
-        bear_vol = ramp(vol_score, 0.0, 1.5)
-        bear_mom = ramp(-mom, 0.0, 0.20)
+        # -------------------------------------------------
+        # Bear: negative trend + deeper DD + elevated vol + negative 12m mom
+        # -------------------------------------------------
+        bear_trend = ramp(-trend, 0.10, 0.60)
+        bear_dd = ramp(-dd_1y, 0.15, 0.35)
+        bear_vol = ramp(vol_score, 0.00, 1.50)
+        bear_mom = ramp(-mom, 0.00, 0.20)
 
-        bear_core = (bear_trend * 0.4) + (bear_dd * 0.4) + (bear_vol * 0.2)
-        bear_score = bear_core * 0.6 + bear_mom * 0.4
+        bear_score = (
+            0.40 * bear_trend + 0.35 * bear_dd + 0.15 * bear_vol + 0.10 * bear_mom
+        ).clip(0.0, 1.0)
 
-        # -----------------
-        # Crisis
-        # -----------------
-        crisis_vol = ramp(vol_score, 2.0, 3.5)
+        # -------------------------------------------------
+        # Crisis: very high vol and/or very deep DD (rare by design)
+        # -------------------------------------------------
+        crisis_vol = ramp(vol_score, 2.00, 3.50)
         crisis_dd = ramp(-dd_1y, 0.30, 0.50)
-        crisis_score = (crisis_vol * 0.7) + (crisis_dd * 0.3)
 
-        # -----------------
-        # Correction (re-defined)
-        # -----------------
-        # 1) Long-term uptrend: positive momentum / trend
-        corr_uptrend = ramp(mom, 0.0, 0.10)  # prefer >0 12m mom
-        corr_trend_ok = ramp(trend, 0.0, 0.5)  # some positive trend
-        # but not TOO strong (otherwise it should just be bull)
-        corr_not_strong_bull = 1.0 - ramp(trend, 0.7, 1.0)
+        crisis_score = (0.70 * crisis_vol + 0.30 * crisis_dd).clip(0.0, 1.0)
 
-        # 2) Mild drawdown: 5-20% below 1y high, but fade out >25%
+        # -------------------------------------------------
+        # Correction: still “uptrend-ish” but under stress
+        #   - positive-ish 12m mom (or not strongly negative)
+        #   - trend still >= small positive
+        #   - moderate DD and/or elevated vol
+        # -------------------------------------------------
+        corr_trend_ok = ramp(trend, 0.20, 0.40)
+        corr_mom_ok = ramp(
+            mom, -0.02, 0.10
+        )  # allow small negative, but prefers positive
         corr_dd_mid = ramp(-dd_1y, 0.05, 0.20)
-        corr_dd_not_deep = 1.0 - ramp(-dd_1y, 0.25, 0.40)
-        corr_dd = corr_dd_mid * corr_dd_not_deep
+        corr_vol_up = ramp(vol_score, 0.20, 1.50)  # avoid firing on ultra-low vol
 
-        # 3) Vol: somewhat elevated, but explicitly *not* crisis-level
-        corr_vol_up = ramp(vol_score, 0.0, 1.5)
-        corr_vol_not_panic = 1.0 - ramp(vol_score, 2.0, 3.5)
-        corr_vol = corr_vol_up * corr_vol_not_panic
+        # avoid calling it "correction" when trend is *very* strong (i.e. it's just bull)
+        corr_not_strong_bull = 1.0 - ramp(trend, 0.40, 0.55)
 
-        # Base correction score
-        correction_score = corr_uptrend * corr_trend_ok * corr_not_strong_bull
-        correction_score *= 0.5 * corr_dd + 0.5 * corr_vol
-
-        # 4) Explicitly suppress correction when bear/crisis is strong
-        #    (use the unnormalized bear/crisis scores we just computed)
-        suppress_bear = 1.0 - ramp(bear_score, 0.3, 0.8)
-        suppress_crisis = 1.0 - ramp(crisis_score, 0.2, 0.6)
-        correction_score *= suppress_bear * suppress_crisis
+        correction_score = (corr_trend_ok * corr_mom_ok * corr_not_strong_bull) * (
+            0.50 * corr_dd_mid + 0.50 * corr_vol_up
+        )
+        correction_score = correction_score.clip(0.0, 1.0)
 
         # -----------------
-        # Sideways as residual
+        # Stress
         # -----------------
-        non_side = bull_score + correction_score + bear_score + crisis_score
-        sideways_score = (1.0 - non_side.clip(0.0, 1.0)).clip(lower=0.0)
-        # Alternative: explicit scoring for sideways regime
-        # side_trend_flat = 1.0 - ramp(trend.abs(), 0.15, 0.5)
-        # side_vol_low   = 1.0 - ramp(vol_score, 0.0, 1.0)
-        # side_dd_shallow = 1.0 - ramp(-dd_1y, 0.05, 0.15)
-        # sideways_score = (side_trend_flat * 0.5) + (side_vol_low * 0.3) + (side_dd_shallow * 0.2)
-        # sideways_score = sideways_score.clip(lower=0.0)
+        # "How much should we lean into ballast sleeves?"
+        stress_vol = ramp(
+            vol_score, 0.75, 2.25
+        )  # starts showing up when vol is elevated
+        # penalize deep bear drawdowns — stress is not about trend collapse
+        stress_dd_cap = 1.0 - ramp(-dd_1y, 0.20, 0.40)
+        stress_score = (stress_vol * stress_dd_cap).clip(0.0, 1.0)
+
+        # optional: reduce stress score when bear is already high
+        stress_score *= 1.0 - ramp(bear_score, 0.50, 0.80)
+
+        # print(trend.describe())
+        # print(trend.quantile([0.05, 0.25, 0.5, 0.75, 0.95]))
+        # print(trend.round(2).value_counts().head(10))
+        # print("bull_trend")
+        # print(bull_trend.describe())
+        # print("bear_trend")
+        # print(bear_trend.describe())
+        # print("corr_trend_ok")
+        # print(corr_trend_ok.describe())
+        # print("corr_not_strong_bull")
+        # print(corr_not_strong_bull.describe())
+        # print("side_trend_flat")
+        # print(side_trend_flat.describe())
+        # print("Bear and Stress correlations:")
+        # print(
+        #     pd.DataFrame(
+        #         {"bear_score": bear_score, "stress_score": stress_score}
+        #     ).corr()
+        # )
 
         scores = pd.DataFrame(
             {
@@ -232,9 +256,19 @@ class RegimeEngine:
                 "correction": correction_score,
                 "bear": bear_score,
                 "crisis": crisis_score,
-                "sideways": sideways_score,
+                "stress": stress_score,
             },
             index=df.index,
         )
         scores[scores < 0] = 0.0
+
+        # Calculate primary regime using scores
+        # scores_copy = scores.copy()
+        # scores_copy["primary_regime"] = scores_copy.idxmax(axis=1)
+        # print(
+        #     scores_copy["primary_regime"]
+        #     .groupby([scores_copy.index.year // 10 * 10])
+        #     .value_counts(normalize=True)
+        # )
+
         return scores
