@@ -233,6 +233,8 @@ class SignalEngine:
         )
 
         self.store.set(key, series)
+        if series.empty:
+            return series
         return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
     def _compute_signal_full(
