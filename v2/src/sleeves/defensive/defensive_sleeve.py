@@ -22,7 +22,7 @@ from signal_engine import SignalEngine
 from vec_signal_engine import VectorizedSignalEngine
 from sleeves.common.rebalance_helpers import (
     should_rebalance,
-    get_row_by_closest_date,
+    get_closest_date_on_or_before,
 )
 from context.rebalance import RebalanceContext
 from .defensive_config import DefensiveConfig
@@ -194,13 +194,27 @@ class DefensiveSleeve:
 
         scored_df: Optional[pd.DataFrame] = None
 
+        # helper: fetch row by closest available date on-or-before d
+        def _fetch_row_using_closest(
+            df: Optional[pd.DataFrame], d: pd.Timestamp
+        ) -> Optional[pd.Series]:
+            if df is None or df.empty:
+                return None
+            idx = get_closest_date_on_or_before(d, df.index)
+            if idx is None or pd.isna(idx):
+                return None
+            row = df.loc[idx]
+            if row.isna().all():
+                return None
+            return row
+
         # 1) Use cached composite score + cached vol if available
         if (
             getattr(self, "_cached_scores_mat", None) is not None
             and not self._cached_scores_mat.empty
         ):
-            score_row = get_row_by_closest_date(self._cached_scores_mat, date_key)
-            vol_row = get_row_by_closest_date(
+            score_row = _fetch_row_using_closest(self._cached_scores_mat, date_key)
+            vol_row = _fetch_row_using_closest(
                 (
                     self._cached_signal_mats.get("vol")
                     if getattr(self, "_cached_signal_mats", None) is not None
@@ -229,16 +243,16 @@ class DefensiveSleeve:
             )
             sigs_df: Optional[pd.DataFrame] = None
             if getattr(self, "_cached_signal_mats", None) is not None:
-                mom_fast_s = get_row_by_closest_date(
+                mom_fast_s = _fetch_row_using_closest(
                     self._cached_signal_mats.get("mom_fast"), date_key
                 )
-                mom_slow_s = get_row_by_closest_date(
+                mom_slow_s = _fetch_row_using_closest(
                     self._cached_signal_mats.get("mom_slow"), date_key
                 )
-                vol_s = get_row_by_closest_date(
+                vol_s = _fetch_row_using_closest(
                     self._cached_signal_mats.get("vol"), date_key
                 )
-                beta_s = get_row_by_closest_date(
+                beta_s = _fetch_row_using_closest(
                     self._cached_signal_mats.get("beta"), date_key
                 )
                 if (
@@ -461,6 +475,188 @@ class DefensiveSleeve:
         return df.sort_values("score", ascending=False)
 
     # ------------------------------------------------------------------
+    # Precompute helpers
+    # ------------------------------------------------------------------
+    def _compute_warmup_start(
+        self, cfg: DefensiveConfig, start_ts: pd.Timestamp, warmup_buffer: Optional[int]
+    ) -> pd.Timestamp:
+        mom_fast_w = int(getattr(cfg, "mom_fast_window", 50))
+        mom_slow_w = int(getattr(cfg, "mom_slow_window", 200))
+        vol_w = int(getattr(cfg, "vol_window", 20))
+        beta_w = int(getattr(cfg, "beta_window", 63))
+
+        max_window = max(mom_fast_w, mom_slow_w, vol_w, beta_w)
+        warmup_days = int(np.ceil(max_window * (365 / 252))) + (warmup_buffer or 0)
+        return start_ts - pd.Timedelta(days=warmup_days)
+
+    def _load_full_price_matrix(
+        self, warmup_start: pd.Timestamp, end_ts: pd.Timestamp, tickers: List[str]
+    ):
+        price_mat = self.um.get_price_matrix(
+            price_loader=self.mds,
+            start=warmup_start,
+            end=end_ts,
+            tickers=tickers,
+            interval="1d",
+            auto_apply_membership_mask=False,
+            local_only=getattr(self.mds, "local_only", False),
+        )
+        price_mat = price_mat.dropna(axis=1, how="all")
+        if price_mat.empty:
+            return pd.DataFrame()
+        price_mat.columns = [c.upper() for c in price_mat.columns]
+        return price_mat
+
+    def _compute_vectorized_signal_matrices(
+        self,
+        price_mat: pd.DataFrame,
+        cfg: DefensiveConfig,
+        warmup_start: pd.Timestamp,
+        end_ts: pd.Timestamp,
+    ):
+        VSE = self.vec_signals
+
+        mom_fast_w = int(getattr(cfg, "mom_fast_window", 50))
+        mom_slow_w = int(getattr(cfg, "mom_slow_window", 200))
+        vol_w = int(getattr(cfg, "vol_window", 20))
+        beta_w = int(getattr(cfg, "beta_window", 63))
+
+        mom_dict = VSE.get_momentum(price_mat, [mom_fast_w, mom_slow_w])
+        mom_fast_mat = mom_dict.get(
+            mom_fast_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+        )
+        mom_slow_mat = mom_dict.get(
+            mom_slow_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+        )
+
+        vol_mat = VSE.get_volatility(
+            price_mat, window=vol_w, annualize=True, interval="1d"
+        )
+
+        bench = getattr(cfg, "beta_benchmark", "SPY")
+        beta_mat = VSE.get_beta(
+            price_mat, window=beta_w, benchmark=bench, price_col="Close", interval="1d"
+        )
+
+        return mom_fast_mat, mom_slow_mat, vol_mat, beta_mat
+
+    def _build_scores_from_signal_matrices(
+        self,
+        price_mat: pd.DataFrame,
+        mom_fast_mat: pd.DataFrame,
+        mom_slow_mat: pd.DataFrame,
+        vol_mat: pd.DataFrame,
+        beta_mat: pd.DataFrame,
+        warmup_start: pd.Timestamp,
+        end_ts: pd.Timestamp,
+        cfg: DefensiveConfig,
+    ):
+        # Liquidity filters
+        min_price = float(getattr(cfg, "min_price", 0.0))
+        min_adv = float(getattr(cfg, "min_adv", 0.0))
+        adv_window = int(getattr(cfg, "min_adv_window", 20))
+
+        tickers = price_mat.columns.tolist()
+        VSE = self.vec_signals
+        vol_field_mat = VSE.get_field_matrix(
+            tickers,
+            start=warmup_start,
+            end=end_ts,
+            field="Volume",
+            interval="1d",
+            local_only=getattr(self.mds, "local_only", False),
+            auto_adjust=True,
+            membership_aware=False,
+            treat_unknown_as_always_member=True,
+        )
+
+        adv_mat = vol_field_mat.rolling(
+            window=adv_window, min_periods=int(np.floor(adv_window / 2))
+        ).mean()
+
+        price_aligned = price_mat.reindex(
+            index=vol_field_mat.index, columns=vol_field_mat.columns
+        )
+        price_mask = price_aligned >= min_price
+        adv_mask = adv_mat >= min_adv
+        liq_mask = price_mask & adv_mask
+
+        mom_fast_mat = mom_fast_mat.where(liq_mask)
+        mom_slow_mat = mom_slow_mat.where(liq_mask)
+        vol_mat = vol_mat.where(liq_mask)
+        beta_mat = beta_mat.where(liq_mask)
+
+        # --- Apply membership mask to raw signals BEFORE ranking/scores ---
+        try:
+            mem_mask = self.um.membership_mask(start=warmup_start, end=end_ts)
+        except Exception:
+            print("[DefensiveSleeve] WARNING: failed to load membership mask, skipping")
+            mem_mask = None
+
+        if mem_mask is not None and not mem_mask.empty:
+            mem_mask.index = pd.to_datetime(mem_mask.index)
+            mem_mask = mem_mask.reindex(index=price_mat.index)
+            mem_mask = mem_mask.reindex(columns=price_mat.columns)
+            # Treat unknown / non-index tickers (NaN cols) as always member
+            mem_mask = mem_mask.fillna(True)
+            mom_fast_mat = mom_fast_mat.where(mem_mask)
+            mom_slow_mat = mom_slow_mat.where(mem_mask)
+            vol_mat = vol_mat.where(mem_mask)
+            beta_mat = beta_mat.where(mem_mask)
+
+        def rank_rowwise(df: pd.DataFrame, ascending: bool) -> pd.DataFrame:
+            return df.rank(axis=1, method="average", pct=True, ascending=ascending)
+
+        r_mom_fast = rank_rowwise(mom_fast_mat, ascending=False)
+        r_mom_slow = rank_rowwise(mom_slow_mat, ascending=False)
+        r_vol = rank_rowwise(vol_mat, ascending=True)
+        r_beta = rank_rowwise(beta_mat, ascending=True)
+
+        w_mom_fast = float(getattr(cfg, "w_mom_fast", 0.5))
+        w_mom_slow = float(getattr(cfg, "w_mom_slow", 0.0))
+        w_low_vol = float(getattr(cfg, "w_low_vol", 0.5))
+        w_low_beta = float(getattr(cfg, "w_low_beta", 0.0))
+
+        score_mat = (
+            w_mom_fast * r_mom_fast
+            + w_mom_slow * r_mom_slow
+            + w_low_vol * r_vol
+            + w_low_beta * r_beta
+        )
+
+        # Keep warmup..end range
+        score_mat = score_mat.loc[
+            (score_mat.index >= warmup_start) & (score_mat.index <= end_ts)
+        ]
+
+        return (
+            score_mat,
+            mom_fast_mat.loc[score_mat.index],
+            mom_slow_mat.loc[score_mat.index],
+            vol_mat.loc[score_mat.index],
+            beta_mat.loc[score_mat.index],
+        )
+
+    def _cache_precompute_results(
+        self,
+        score_mat: pd.DataFrame,
+        mom_fast_mat: pd.DataFrame,
+        mom_slow_mat: pd.DataFrame,
+        vol_mat: pd.DataFrame,
+        beta_mat: pd.DataFrame,
+    ):
+        # Cache results (membership already applied to raw signals)
+        self._cached_scores_mat = score_mat
+        self._cached_signal_mats = {
+            "mom_fast": mom_fast_mat,
+            "mom_slow": mom_slow_mat,
+            "vol": vol_mat,
+            "beta": beta_mat,
+        }
+
+        return score_mat
+
+    # ------------------------------------------------------------------
     # Precompute (vectorized end-to-end)
     # ------------------------------------------------------------------
     def precompute(
@@ -475,12 +671,9 @@ class DefensiveSleeve:
         """
         Vectorized precompute for DefensiveSleeve.
 
-        Computes signal matrices (mom_fast, mom_slow, vol, beta) and a
-        composite score matrix for the requested date range, caches the
-        score matrix in `self._cached_scores_mat` and returns it.
-
-        Does NOT compute final weights / selections — that remains stateful
-        in `generate_target_weights_for_date`.
+        Computes signal matrices (mom_fast, mom_slow, vol, beta) and a composite
+        score matrix for all tickers in the defensive universe over the specified
+        date range [start, end]. Caches the results for later use during rebalancing.
         """
         cfg = self.config
         start_ts = pd.to_datetime(start).normalize()
@@ -488,35 +681,17 @@ class DefensiveSleeve:
         if end_ts < start_ts:
             raise ValueError("end must be >= start")
 
-        # Warmup: need max window among mom windows, vol, beta
-        mom_fast_w = int(getattr(cfg, "mom_fast_window", 50))
-        mom_slow_w = int(getattr(cfg, "mom_slow_window", 200))
-        vol_w = int(getattr(cfg, "vol_window", 20))
-        beta_w = int(getattr(cfg, "beta_window", 63))
+        warmup_start = self._compute_warmup_start(cfg, start_ts, warmup_buffer)
 
-        max_window = max(mom_fast_w, mom_slow_w, vol_w, beta_w)
-        warmup_days = int(np.ceil(max_window * (365 / 252))) + (warmup_buffer or 0)
-        warmup_start = start_ts - pd.Timedelta(days=warmup_days)
-
-        # Build defensive universe as-of end (time-aware membership)
-        tickers = self.get_defensive_universe(as_of=end_ts)
+        # Build defensive universe
+        # Note: as_of=None to get full universe, because we apply membership mask later
+        tickers = self.get_defensive_universe(as_of=None)
         if not tickers:
             self._cached_scores_mat = pd.DataFrame()
             self._cached_signal_mats = {}
             return self._cached_scores_mat
 
-        # Load full price matrix WITHOUT applying the universe membership mask
-        # (we will fetch and apply the membership mask to scores later)
-        price_mat = self.um.get_price_matrix(
-            price_loader=self.mds,
-            start=warmup_start,
-            end=end_ts,
-            tickers=tickers,
-            interval="1d",
-            auto_apply_membership_mask=False,
-            local_only=getattr(self.mds, "local_only", False),
-        )
-        price_mat = price_mat.dropna(axis=1, how="all")
+        price_mat = self._load_full_price_matrix(warmup_start, end_ts, tickers)
         if price_mat.empty:
             print(
                 "[DefensiveSleeve] WARNING: empty price matrix in precompute, skipping"
@@ -525,127 +700,27 @@ class DefensiveSleeve:
             self._cached_signal_mats = {}
             return self._cached_scores_mat
 
-        # normalize tickers to uppercase (column names)
-        price_mat.columns = [c.upper() for c in price_mat.columns]
-        tickers = price_mat.columns.tolist()
-
-        VSE = self.vec_signals
-
-        # Compute momentum matrices (row-wise shift = trading bars)
-        mom_dict = VSE.get_momentum(price_mat, [mom_fast_w, mom_slow_w])
-        mom_fast_mat = mom_dict.get(
-            mom_fast_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
-        )
-        mom_slow_mat = mom_dict.get(
-            mom_slow_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
-        )
-
-        # Volatility matrix (realized vol)
-        vol_mat = VSE.get_volatility(
-            price_mat, window=vol_w, annualize=True, interval="1d"
-        )
-
-        # Beta matrix vs benchmark
-        bench = getattr(cfg, "beta_benchmark", "SPY")
-        beta_mat = VSE.get_beta(
-            price_mat, window=beta_w, benchmark=bench, price_col="Close", interval="1d"
-        )
-
-        # Liquidity filters (vectorized): min price and ADV on rolling window
-        min_price = float(getattr(cfg, "min_price", 0.0))
-        min_adv = float(getattr(cfg, "min_adv", 0.0))
-        adv_window = int(getattr(cfg, "min_adv_window", 20))
-
-        # Volume matrix
-        vol_field_mat = VSE.get_field_matrix(
-            tickers,
-            start=warmup_start,
-            end=end_ts,
-            field="Volume",
-            interval="1d",
-            local_only=getattr(self.mds, "local_only", False),
-            auto_adjust=True,
-            membership_aware=False,
-            treat_unknown_as_always_member=True,
-        )
-        # rolling ADV (volume) — use rolling on rows
-        adv_mat = vol_field_mat.rolling(
-            window=adv_window, min_periods=int(np.floor(adv_window / 2))
-        ).mean()
-
-        # Build boolean masks where liquidity conditions hold
-        # price_mat and adv_mat share index/columns; align
-        price_aligned = price_mat.reindex(
-            index=vol_field_mat.index, columns=vol_field_mat.columns
-        )
-        price_mask = price_aligned >= min_price
-        adv_mask = adv_mat >= min_adv
-        liq_mask = price_mask & adv_mask
-
-        # Apply liquidity mask: where False -> set signals to NaN
-        mom_fast_mat = mom_fast_mat.where(liq_mask)
-        mom_slow_mat = mom_slow_mat.where(liq_mask)
-        vol_mat = vol_mat.where(liq_mask)
-        beta_mat = beta_mat.where(liq_mask)
-
-        # Compute ranks per-date (row-wise) to produce percentile ranks
-        def rank_rowwise(df: pd.DataFrame, ascending: bool) -> pd.DataFrame:
-            return df.rank(axis=1, method="average", pct=True, ascending=ascending)
-
-        r_mom_fast = rank_rowwise(mom_fast_mat, ascending=False)
-        r_mom_slow = rank_rowwise(mom_slow_mat, ascending=False)
-        r_vol = rank_rowwise(vol_mat, ascending=True)
-        r_beta = rank_rowwise(beta_mat, ascending=True)
-
-        # Compose score matrix using config weights (fallbacks)
-        w_mom_fast = float(getattr(cfg, "w_mom_fast", 0.5))
-        w_mom_slow = float(getattr(cfg, "w_mom_slow", 0.0))
-        w_low_vol = float(getattr(cfg, "w_low_vol", 0.5))
-        w_low_beta = float(getattr(cfg, "w_low_beta", 0.0))
-
-        score_mat = (
-            w_mom_fast * r_mom_fast
-            + w_mom_slow * r_mom_slow
-            + w_low_vol * r_vol
-            + w_low_beta * r_beta
-        )
-
-        # Keep warmup_start to end_ts only
-        # Keep warmup period to ensure the first rebalance date has proper signals
-        score_mat = score_mat.loc[
-            (score_mat.index >= warmup_start) & (score_mat.index <= end_ts)
-        ]
-
-        # --- Apply membership mask to the score matrix afterwards ---
-        try:
-            mem_mask = self.um.membership_mask(
-                start=score_mat.index.min(), end=score_mat.index.max()
+        mom_fast_mat, mom_slow_mat, vol_mat, beta_mat = (
+            self._compute_vectorized_signal_matrices(
+                price_mat, cfg, warmup_start, end_ts
             )
-        except Exception:
-            print(
-                "[DefensiveSleeve] WARNING: failed to fetch membership mask; skipping membership filtering"
+        )
+
+        score_mat, mom_fast_cut, mom_slow_cut, vol_cut, beta_cut = (
+            self._build_scores_from_signal_matrices(
+                price_mat,
+                mom_fast_mat,
+                mom_slow_mat,
+                vol_mat,
+                beta_mat,
+                warmup_start,
+                end_ts,
+                cfg,
             )
-            mem_mask = None
+        )
 
-        if mem_mask is not None and not mem_mask.empty and not score_mat.empty:
-            mem_mask.index = pd.to_datetime(mem_mask.index)
-            # Align membership mask to our score matrix
-            mem_mask = mem_mask.reindex(index=score_mat.index)
-            mem_mask = mem_mask.reindex(columns=score_mat.columns)
-            # Treat unknown / non-index tickers (NaN cols) as always member
-            mem_mask = mem_mask.fillna(True)
-            score_mat = score_mat.where(mem_mask)
-
-        # Cache results
-        self._cached_scores_mat = score_mat
-        self._cached_signal_mats = {
-            "mom_fast": mom_fast_mat.loc[score_mat.index],
-            "mom_slow": mom_slow_mat.loc[score_mat.index],
-            "vol": vol_mat.loc[score_mat.index],
-            "beta": beta_mat.loc[score_mat.index],
-        }
-
-        # print(f"[DefensiveSleeve] Precompute done: scores shape {score_mat.shape}")
-        # print(f" score_mat: \n{score_mat}")
+        score_mat = self._cache_precompute_results(
+            score_mat, mom_fast_cut, mom_slow_cut, vol_cut, beta_cut
+        )
 
         return score_mat
