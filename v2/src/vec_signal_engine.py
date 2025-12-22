@@ -190,15 +190,6 @@ class VectorizedSignalEngine:
         field_mat = pd.concat(field_dict.values(), axis=1)
         field_mat.index = pd.to_datetime(field_mat.index)
         field_mat = field_mat.sort_index()
-        # Reindex to business days only if interval is daily
-        if interval == "1d":
-            field_mat = field_mat.reindex(
-                index=pd.date_range(
-                    start=field_mat.index.min(),
-                    end=field_mat.index.max(),
-                    freq="B",
-                )
-            )
 
         # Keep only our requested tickers (in canonical order)
         field_mat = field_mat.reindex(columns=tickers)
@@ -408,6 +399,67 @@ class VectorizedSignalEngine:
             spread_mom_dict[w] = spread_w
 
         return spread_mom_dict
+
+    def get_beta(
+        self,
+        price_mat: pd.DataFrame,
+        window: int,
+        benchmark: Optional[str] = "SPY",
+        price_col: str = "Close",
+        interval: str = "1d",
+    ) -> pd.DataFrame:
+        """
+        Vectorized rolling beta vs a single benchmark for a single window.
+
+        Parameters
+        - price_mat: Date x Ticker price matrix (levels)
+        - window: rolling window length in bars
+        - benchmark: ticker to use as benchmark (fetched from `mds`)
+        - price_col: price column to use when fetching benchmark
+        - interval: bar interval for fetching benchmark series
+
+        Returns a DataFrame[Date x Ticker] of beta (cov(asset, bench) / var(bench)).
+        """
+
+        if price_mat.empty:
+            return pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+
+        # Fetch benchmark prices from market data store
+        df_bench = self.mds.get_ohlcv(
+            ticker=benchmark,
+            start=price_mat.index.min(),
+            end=price_mat.index.max(),
+            interval=interval,
+        )
+        if df_bench is None or df_bench.empty:
+            print(
+                f"[VectorizedSignalEngine] WARNING: no data for benchmark {benchmark}"
+            )
+            return pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+
+        bench_price = df_bench[price_col].astype(float)
+        bench_price.index = pd.to_datetime(bench_price.index)
+        bench_price = bench_price.reindex(index=price_mat.index).ffill()
+
+        # Clean zeros/inf and take logs to compute returns
+        bench_price_clean = bench_price.replace([0, np.inf, -np.inf], np.nan)
+        price_mat_clean = price_mat.replace([0, np.inf, -np.inf], np.nan)
+
+        log_bench = np.log(bench_price_clean)
+        log_px = np.log(price_mat_clean)
+
+        # Use log returns (diff)
+        r_b = log_bench.diff()
+        r_i = log_px.diff()
+
+        # rolling covariance of each asset vs benchmark (DataFrame)
+        cov = r_i.rolling(window=window).cov(r_b)
+        # rolling variance of benchmark (Series)
+        var_b = r_b.rolling(window=window).var()
+        # Divide cov (DataFrame) by var_b (Series) row-wise
+        beta = cov.div(var_b.replace(0, np.nan), axis=0)
+
+        return beta
 
     # -----------------------------------------------------------
     # Vectorized realized volatility

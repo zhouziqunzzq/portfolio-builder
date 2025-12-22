@@ -19,7 +19,11 @@ if str(_ROOT_SRC) not in sys.path:
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
-from sleeves.common.rebalance_helpers import should_rebalance
+from vec_signal_engine import VectorizedSignalEngine
+from sleeves.common.rebalance_helpers import (
+    should_rebalance,
+    get_row_by_closest_date,
+)
 from context.rebalance import RebalanceContext
 from .defensive_config import DefensiveConfig
 
@@ -50,8 +54,13 @@ class DefensiveSleeve:
         self.um = universe
         self.mds = mds
         self.signals = signals
+        self.vec_signals = VectorizedSignalEngine(universe, mds)
         self.config = config or DefensiveConfig()
         self.state = DefensiveState()
+
+        # Cached precompute results
+        self._cached_scores_mat: pd.DataFrame = pd.DataFrame()
+        self._cached_signal_mats: Dict[str, pd.DataFrame] = {}
 
     # ------------------------------------------------------------------
     # Universe
@@ -173,32 +182,103 @@ class DefensiveSleeve:
                 f"[DefensiveSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
             )
             return self.state.last_weights
-        # Otherwise, proceed to compute new weights
+
         print(
             f"[DefensiveSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
         )
 
-        # Use as_of when building universe so membership is date-aware
-        universe = self.get_defensive_universe(as_of=as_of)
-        # --- apply liquidity filter ---
-        universe = self._apply_liquidity_filters(universe, as_of)
-        if not universe:
-            return {}
+        # Try to use cached precompute outputs (score + vol) first; otherwise
+        # attempt to assemble signals from cached raw signal mats; finally
+        # fall back to non-vectorized per-ticker path.
+        date_key = as_of.normalize()
 
-        # 1) compute raw signals
-        sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
-        if sigs.empty:
-            return {}
-        # print(f"[DefensiveSleeve] Signals ({as_of.date()}): \n{sigs.tail()}")
+        scored_df: Optional[pd.DataFrame] = None
 
-        # 2) compute composite scores (NO global top-k)
-        scored = self._compute_scores_only(sigs)
-        # print(f"[DefensiveSleeve] Scored ({as_of.date()}): \n{scored.tail()}")
+        # 1) Use cached composite score + cached vol if available
+        if (
+            getattr(self, "_cached_scores_mat", None) is not None
+            and not self._cached_scores_mat.empty
+        ):
+            score_row = get_row_by_closest_date(self._cached_scores_mat, date_key)
+            vol_row = get_row_by_closest_date(
+                (
+                    self._cached_signal_mats.get("vol")
+                    if getattr(self, "_cached_signal_mats", None) is not None
+                    else None
+                ),
+                date_key,
+            )
+            if score_row is not None and vol_row is not None:
+                tmp_scored = pd.DataFrame(
+                    {"score": score_row.astype(float), "vol": vol_row.astype(float)}
+                )
+                tmp_scored = tmp_scored.replace([np.inf, -np.inf], np.nan).dropna(
+                    subset=["score", "vol"], how="any"
+                )
+                if not tmp_scored.empty:
+                    # `allocate_by_asset_class` expects a DataFrame with at least 'score' and 'vol'
+                    scored_df = tmp_scored
+                    print(
+                        f"[DefensiveSleeve] Using cached precomputed scores for {date_key.date()}"
+                    )
 
-        # 3) class-aware allocation with per-class top-k selection
-        weights = self.allocate_by_asset_class(scored, regime)
-        # print(f"[DefensiveSleeve] Weights ({as_of.date()}): {weights}")
+        # 2) If no scored_df from cache, try to assemble raw signals from cached signal mats
+        if scored_df is None:
+            print(
+                "[DefensiveSleeve] WARNING: no cached scores found, attempting to assemble from raw signal mats"
+            )
+            sigs_df: Optional[pd.DataFrame] = None
+            if getattr(self, "_cached_signal_mats", None) is not None:
+                mom_fast_s = get_row_by_closest_date(
+                    self._cached_signal_mats.get("mom_fast"), date_key
+                )
+                mom_slow_s = get_row_by_closest_date(
+                    self._cached_signal_mats.get("mom_slow"), date_key
+                )
+                vol_s = get_row_by_closest_date(
+                    self._cached_signal_mats.get("vol"), date_key
+                )
+                beta_s = get_row_by_closest_date(
+                    self._cached_signal_mats.get("beta"), date_key
+                )
+                if (
+                    mom_fast_s is not None
+                    and mom_slow_s is not None
+                    and vol_s is not None
+                ):
+                    sigs_df = pd.DataFrame(
+                        {
+                            "mom_fast": mom_fast_s.astype(float),
+                            "mom_slow": mom_slow_s.astype(float),
+                            "vol": vol_s.astype(float),
+                            "beta": (
+                                beta_s.astype(float) if beta_s is not None else np.nan
+                            ),
+                        }
+                    )
+                    sigs_df = sigs_df.replace([np.inf, -np.inf], np.nan).dropna(
+                        subset=["mom_fast", "mom_slow", "vol"], how="any"
+                    )
+                    if not sigs_df.empty:
+                        # compute scored from raw signals
+                        scored_df = self._compute_scores_only(sigs_df)
 
+        # 3) Final fallback: compute signals one-by-one (non-vec path)
+        if scored_df is None or scored_df.empty:
+            print(
+                "[DefensiveSleeve] WARNING: no cached signals or scores found, falling back to per-ticker signal computation"
+            )
+            universe = self.get_defensive_universe(as_of=as_of)
+            universe = self._apply_liquidity_filters(universe, as_of)
+            if not universe:
+                return {}
+            sigs = self._compute_signals_snapshot(universe, start_for_signals, as_of)
+            if sigs.empty:
+                return {}
+            scored_df = self._compute_scores_only(sigs)
+
+        # Single allocation call (unified)
+        weights = self.allocate_by_asset_class(scored_df, regime)
         self.state.last_rebalance_ts = (
             rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
         )
@@ -379,3 +459,193 @@ class DefensiveSleeve:
         )
 
         return df.sort_values("score", ascending=False)
+
+    # ------------------------------------------------------------------
+    # Precompute (vectorized end-to-end)
+    # ------------------------------------------------------------------
+    def precompute(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        sample_dates: Optional[List[datetime | str]] = None,
+        warmup_buffer: Optional[
+            int
+        ] = None,  # in days; unused for vectorized trend sleeve
+    ) -> pd.DataFrame:
+        """
+        Vectorized precompute for DefensiveSleeve.
+
+        Computes signal matrices (mom_fast, mom_slow, vol, beta) and a
+        composite score matrix for the requested date range, caches the
+        score matrix in `self._cached_scores_mat` and returns it.
+
+        Does NOT compute final weights / selections — that remains stateful
+        in `generate_target_weights_for_date`.
+        """
+        cfg = self.config
+        start_ts = pd.to_datetime(start).normalize()
+        end_ts = pd.to_datetime(end).normalize()
+        if end_ts < start_ts:
+            raise ValueError("end must be >= start")
+
+        # Warmup: need max window among mom windows, vol, beta
+        mom_fast_w = int(getattr(cfg, "mom_fast_window", 50))
+        mom_slow_w = int(getattr(cfg, "mom_slow_window", 200))
+        vol_w = int(getattr(cfg, "vol_window", 20))
+        beta_w = int(getattr(cfg, "beta_window", 63))
+
+        max_window = max(mom_fast_w, mom_slow_w, vol_w, beta_w)
+        warmup_days = int(np.ceil(max_window * (365 / 252))) + (warmup_buffer or 0)
+        warmup_start = start_ts - pd.Timedelta(days=warmup_days)
+
+        # Build defensive universe as-of end (time-aware membership)
+        tickers = self.get_defensive_universe(as_of=end_ts)
+        if not tickers:
+            self._cached_scores_mat = pd.DataFrame()
+            self._cached_signal_mats = {}
+            return self._cached_scores_mat
+
+        # Load full price matrix WITHOUT applying the universe membership mask
+        # (we will fetch and apply the membership mask to scores later)
+        price_mat = self.um.get_price_matrix(
+            price_loader=self.mds,
+            start=warmup_start,
+            end=end_ts,
+            tickers=tickers,
+            interval="1d",
+            auto_apply_membership_mask=False,
+            local_only=getattr(self.mds, "local_only", False),
+        )
+        price_mat = price_mat.dropna(axis=1, how="all")
+        if price_mat.empty:
+            print(
+                "[DefensiveSleeve] WARNING: empty price matrix in precompute, skipping"
+            )
+            self._cached_scores_mat = pd.DataFrame()
+            self._cached_signal_mats = {}
+            return self._cached_scores_mat
+
+        # normalize tickers to uppercase (column names)
+        price_mat.columns = [c.upper() for c in price_mat.columns]
+        tickers = price_mat.columns.tolist()
+
+        VSE = self.vec_signals
+
+        # Compute momentum matrices (row-wise shift = trading bars)
+        mom_dict = VSE.get_momentum(price_mat, [mom_fast_w, mom_slow_w])
+        mom_fast_mat = mom_dict.get(
+            mom_fast_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+        )
+        mom_slow_mat = mom_dict.get(
+            mom_slow_w, pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
+        )
+
+        # Volatility matrix (realized vol)
+        vol_mat = VSE.get_volatility(
+            price_mat, window=vol_w, annualize=True, interval="1d"
+        )
+
+        # Beta matrix vs benchmark
+        bench = getattr(cfg, "beta_benchmark", "SPY")
+        beta_mat = VSE.get_beta(
+            price_mat, window=beta_w, benchmark=bench, price_col="Close", interval="1d"
+        )
+
+        # Liquidity filters (vectorized): min price and ADV on rolling window
+        min_price = float(getattr(cfg, "min_price", 0.0))
+        min_adv = float(getattr(cfg, "min_adv", 0.0))
+        adv_window = int(getattr(cfg, "min_adv_window", 20))
+
+        # Volume matrix
+        vol_field_mat = VSE.get_field_matrix(
+            tickers,
+            start=warmup_start,
+            end=end_ts,
+            field="Volume",
+            interval="1d",
+            local_only=getattr(self.mds, "local_only", False),
+            auto_adjust=True,
+            membership_aware=False,
+            treat_unknown_as_always_member=True,
+        )
+        # rolling ADV (volume) — use rolling on rows
+        adv_mat = vol_field_mat.rolling(
+            window=adv_window, min_periods=int(np.floor(adv_window / 2))
+        ).mean()
+
+        # Build boolean masks where liquidity conditions hold
+        # price_mat and adv_mat share index/columns; align
+        price_aligned = price_mat.reindex(
+            index=vol_field_mat.index, columns=vol_field_mat.columns
+        )
+        price_mask = price_aligned >= min_price
+        adv_mask = adv_mat >= min_adv
+        liq_mask = price_mask & adv_mask
+
+        # Apply liquidity mask: where False -> set signals to NaN
+        mom_fast_mat = mom_fast_mat.where(liq_mask)
+        mom_slow_mat = mom_slow_mat.where(liq_mask)
+        vol_mat = vol_mat.where(liq_mask)
+        beta_mat = beta_mat.where(liq_mask)
+
+        # Compute ranks per-date (row-wise) to produce percentile ranks
+        def rank_rowwise(df: pd.DataFrame, ascending: bool) -> pd.DataFrame:
+            return df.rank(axis=1, method="average", pct=True, ascending=ascending)
+
+        r_mom_fast = rank_rowwise(mom_fast_mat, ascending=False)
+        r_mom_slow = rank_rowwise(mom_slow_mat, ascending=False)
+        r_vol = rank_rowwise(vol_mat, ascending=True)
+        r_beta = rank_rowwise(beta_mat, ascending=True)
+
+        # Compose score matrix using config weights (fallbacks)
+        w_mom_fast = float(getattr(cfg, "w_mom_fast", 0.5))
+        w_mom_slow = float(getattr(cfg, "w_mom_slow", 0.0))
+        w_low_vol = float(getattr(cfg, "w_low_vol", 0.5))
+        w_low_beta = float(getattr(cfg, "w_low_beta", 0.0))
+
+        score_mat = (
+            w_mom_fast * r_mom_fast
+            + w_mom_slow * r_mom_slow
+            + w_low_vol * r_vol
+            + w_low_beta * r_beta
+        )
+
+        # Keep warmup_start to end_ts only
+        # Keep warmup period to ensure the first rebalance date has proper signals
+        score_mat = score_mat.loc[
+            (score_mat.index >= warmup_start) & (score_mat.index <= end_ts)
+        ]
+
+        # --- Apply membership mask to the score matrix afterwards ---
+        try:
+            mem_mask = self.um.membership_mask(
+                start=score_mat.index.min(), end=score_mat.index.max()
+            )
+        except Exception:
+            print(
+                "[DefensiveSleeve] WARNING: failed to fetch membership mask; skipping membership filtering"
+            )
+            mem_mask = None
+
+        if mem_mask is not None and not mem_mask.empty and not score_mat.empty:
+            mem_mask.index = pd.to_datetime(mem_mask.index)
+            # Align membership mask to our score matrix
+            mem_mask = mem_mask.reindex(index=score_mat.index)
+            mem_mask = mem_mask.reindex(columns=score_mat.columns)
+            # Treat unknown / non-index tickers (NaN cols) as always member
+            mem_mask = mem_mask.fillna(True)
+            score_mat = score_mat.where(mem_mask)
+
+        # Cache results
+        self._cached_scores_mat = score_mat
+        self._cached_signal_mats = {
+            "mom_fast": mom_fast_mat.loc[score_mat.index],
+            "mom_slow": mom_slow_mat.loc[score_mat.index],
+            "vol": vol_mat.loc[score_mat.index],
+            "beta": beta_mat.loc[score_mat.index],
+        }
+
+        # print(f"[DefensiveSleeve] Precompute done: scores shape {score_mat.shape}")
+        # print(f" score_mat: \n{score_mat}")
+
+        return score_mat

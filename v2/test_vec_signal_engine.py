@@ -188,6 +188,15 @@ def test_vectorized_signals(vse: VectorizedSignalEngine):
     print(f"\n  Vol (per-ticker, last date):\n{vol_mat.iloc[-1]}")
     print(f"\n  EWM Vol (per-ticker, last date):\n{ewm_vol_mat.iloc[-1]}")
 
+    # Beta
+    beta_mat = vse.get_beta(
+        price_mat=price_mat,
+        window=10,
+        benchmark="SPY",
+    )
+    print("\nBeta (tail):")
+    print(beta_mat.tail())
+
 
 def main():
     _, _, vse = build_runtime()

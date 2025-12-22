@@ -750,7 +750,7 @@ class FastAlphaSleeve:
             self.state.last_weights = w.copy()
 
         # 5) slice to [start, end] and asfreq fill
-        out = out.loc[(out.index >= start_ts) & (out.index <= end_ts)]
+        out = out.loc[(out.index >= warmup_start) & (out.index <= end_ts)]
         out = out.asfreq("D", method="ffill").fillna(0.0)
 
         # optional sampling

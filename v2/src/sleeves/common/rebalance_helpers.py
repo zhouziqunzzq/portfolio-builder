@@ -1,3 +1,4 @@
+from typing import Optional
 import pandas as pd
 
 VALID_REBALANCE_FREQS = {"D", "W", "M"}
@@ -90,3 +91,42 @@ def infer_approx_rebalance_days(freq: str) -> int:
 
     # Should not reach here due to earlier validation
     raise ValueError(f"Cannot infer days for frequency: {freq}")
+
+
+def get_closest_date_on_or_before(
+    date: pd.Timestamp, dates: pd.DatetimeIndex
+) -> pd.Timestamp:
+    """
+    Given a target date and a sorted DatetimeIndex, returns the closest date in the index
+    that is on or before the target date.
+    Args:
+        date (pd.Timestamp): Target date.
+        dates (pd.DatetimeIndex): Sorted index of dates.
+    Returns:
+        pd.Timestamp: Closest date on or before the target date.
+    """
+    return dates[dates <= date].max()
+
+
+def get_row_by_closest_date(
+    df: Optional[pd.DataFrame], d: pd.Timestamp
+) -> Optional[pd.Series]:
+    """
+    Given a DataFrame with a DatetimeIndex and a target date, returns the row corresponding
+    to the closest date on or before the target date.
+    Args:
+        df (Optional[pd.DataFrame]): DataFrame with DatetimeIndex.
+        d (pd.Timestamp): Target date.
+    Returns:
+        Optional[pd.Series]: Row corresponding to the closest date, or None if not found.
+    """
+    if df is None or df.empty:
+        return None
+    # find the closest available date on or before d
+    idx = get_closest_date_on_or_before(d, df.index)
+    if idx is None:
+        return None
+    row = df.loc[idx]
+    if row.isna().all():
+        return None
+    return row

@@ -35,6 +35,7 @@ from utils.stats import (
 from sleeves.common.rebalance_helpers import (
     should_rebalance,
     infer_approx_rebalance_days,
+    get_closest_date_on_or_before,
 )
 from .trend_config import TrendConfig
 
@@ -152,7 +153,7 @@ class TrendSleeve:
                     f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation."
                 )
                 return {}
-        
+
         # ---------- Rebalance timing check ----------
         # Note: We need this because the global scheduler may call this function
         # more frequently than the sleeve's intended rebalance frequency.
@@ -181,10 +182,10 @@ class TrendSleeve:
             and date_key >= self._cached_stock_scores_mat.index.min()
             and date_key <= self._cached_stock_scores_mat.index.max()
         ):
-            stock_as_of = self.get_closest_date_on_or_before(
+            stock_as_of = get_closest_date_on_or_before(
                 date_key, self._cached_stock_scores_mat.index
             )
-            sector_as_of = self.get_closest_date_on_or_before(
+            sector_as_of = get_closest_date_on_or_before(
                 date_key, self._cached_sector_scores_mat.index
             )
             if stock_as_of != sector_as_of:
@@ -209,9 +210,7 @@ class TrendSleeve:
                     and "vol" in self._cached_feature_mats
                 ):
                     vol_mat = self._cached_feature_mats["vol"]
-                    vol_as_of = self.get_closest_date_on_or_before(
-                        date_key, vol_mat.index
-                    )
+                    vol_as_of = get_closest_date_on_or_before(date_key, vol_mat.index)
                     if vol_as_of != date_key:
                         print(
                             f"Warning: Vol data is out of sync at {date_key.date()} (vol: {vol_as_of.date()})"
@@ -1658,9 +1657,3 @@ class TrendSleeve:
 
         raise ValueError(f"Unknown signal interval: {signal_interval}")
         # return window_size * 30
-
-    @staticmethod
-    def get_closest_date_on_or_before(
-        date: pd.Timestamp, dates: pd.DatetimeIndex
-    ) -> pd.Timestamp:
-        return dates[dates <= date].max()
