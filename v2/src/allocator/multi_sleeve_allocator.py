@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Mapping, Any, Tuple
+from typing import Dict, List, Optional, Mapping, Any, Tuple
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -126,7 +126,15 @@ class MultiSleeveAllocator:
 
         # 1) Get regime context (primary label + score distribution)
         primary_regime, regime_scores = self._get_regime_context(as_of_ts, rebalance_ts)
-        # print(f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}")
+        print(
+            f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}"
+        )
+        # Apply temperature shaping to regime scores
+        regime_scores = self._shape_regime_scores_temperature(
+            regime_scores,
+            tau=self.config.regime_temperature_tau,
+        )
+        print(f"[MultiSleeveAllocator]  Shaped regime_scores={regime_scores}")
 
         # 2) Compute effective sleeve weights via regime-score blending
         sleeve_alloc = self._compute_effective_sleeve_weights(
@@ -148,6 +156,10 @@ class MultiSleeveAllocator:
 
         # 3) Query sleeves and combine
         combined: Dict[str, float] = {}
+        # Enrich rebalance context with regime info
+        if rebalance_ctx is not None:
+            rebalance_ctx.primary_regime = primary_regime
+            rebalance_ctx.regime_scores = regime_scores
 
         for name, sleeve in self.sleeves.items():
             # print(f"[MultiSleeveAllocator] Processing sleeve '{name}' ...")
@@ -159,7 +171,7 @@ class MultiSleeveAllocator:
             local_weights = sleeve.generate_target_weights_for_date(
                 as_of=as_of_ts,
                 start_for_signals=start_for_signals_ts,
-                regime=primary_regime,
+                regime=primary_regime, # deprecated; use regime in rebalance_ctx
                 rebalance_ctx=rebalance_ctx,
             )
             if not local_weights:
@@ -345,6 +357,84 @@ class MultiSleeveAllocator:
         self.state.last_regime_sample_ts = rebalance_ts
         self.state.last_regime_context = (primary, regime_scores)
         return primary, regime_scores
+
+    @staticmethod
+    def _shape_regime_scores_temperature(
+        regime_scores: Dict[str, float],
+        tau: float = 0.6,
+        method: str = "power",
+        eps: float = 1e-12,
+        risk_on_regimes: List[str] = ["bull", "correction"],
+    ) -> Dict[str, float]:
+        """
+        Temperature-shape a regime score distribution into a more/less decisive distribution.
+        Temperature shaping controls "decisiveness":
+            tau < 1  => sharper / more decisive (top regime gets more weight)
+            tau = 1  => unchanged
+            tau > 1  => softer / more blended
+        Asymmetric version:
+        - Apply temperature shaping ONLY to risk-on regimes (bull, correction)
+        - Leave defensive regimes (bear, crisis, sideways) unchanged
+
+        Inputs:
+        regime_scores: Dict[regime, score]. Can be any nonnegative scale; will be cleaned + normalized.
+        tau: temperature parameter. Recommended search: {0.35, 0.6}. Start at 0.6.
+        method:
+            - "power": p_i <- p_i^(1/tau)  (fast, robust, no exp overflow)
+            - "softmax": p_i <- exp(p_i/tau) (more sensitive to score scaling; usually unnecessary)
+        eps: stability epsilon.
+
+        Returns:
+        A new Dict[regime, prob] that sums to 1.0 (or {} if input unusable).
+        """
+        if not regime_scores:
+            return {}
+
+        if tau <= 0:
+            raise ValueError(f"tau must be > 0, got {tau}")
+
+        # 1) Clean + clip negatives + coerce to float
+        cleaned: Dict[str, float] = {}
+        for k, v in regime_scores.items():
+            try:
+                x = float(v)
+            except Exception:
+                continue
+            if x <= 0:
+                continue
+            cleaned[k] = x
+
+        if not cleaned:
+            return {}
+
+        # 2) Normalize to probabilities
+        s = sum(cleaned.values())
+        if s <= eps:
+            return {}
+        p = {k: v / s for k, v in cleaned.items()}
+
+        # 3) Temperature shaping
+        if abs(tau - 1.0) < 1e-9:
+            return p
+
+        if method == "power":
+            inv_tau = 1.0 / tau
+            shaped = {k: max(eps, pv) ** inv_tau for k, pv in p.items()}
+        elif method == "softmax":
+            # Softmax on probabilities is usually redundant, but included for completeness.
+            # This version is numerically safe via max-subtraction.
+            import math
+
+            vals = list(p.values())
+            m = max(vals)
+            shaped = {k: math.exp((pv - m) / tau) for k, pv in p.items()}
+        else:
+            raise ValueError(f"Unknown method={method!r}; use 'power' or 'softmax'.")
+
+        s2 = sum(shaped.values())
+        if s2 <= eps:
+            return {}
+        return {k: v / s2 for k, v in shaped.items()}
 
     def _compute_effective_sleeve_weights(
         self,

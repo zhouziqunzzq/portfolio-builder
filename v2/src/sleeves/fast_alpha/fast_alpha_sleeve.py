@@ -18,6 +18,7 @@ from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
 from vec_signal_engine import VectorizedSignalEngine
+from context.rebalance import RebalanceContext
 from .fast_alpha_config import FastAlphaConfig
 
 
@@ -68,18 +69,29 @@ class FastAlphaSleeve:
         self,
         as_of: datetime | str,
         start_for_signals: datetime | str,
-        regime: str = "bull",
+        regime: str = "bull",  # deprecated; use rebalance_ctx instead
+        rebalance_ctx: RebalanceContext | None = None,
     ) -> Dict[str, float]:
         as_of = pd.to_datetime(as_of).normalize()
         start_for_signals = pd.to_datetime(start_for_signals).normalize()
         cfg = self.config
-        regime_key = (regime or "").lower()
+        # regime_key = (regime or "").lower()
 
         # Regime gating
-        if cfg.use_regime_gating and regime_key in {
-            r.lower() for r in cfg.gated_off_regimes
-        }:
-            return {}
+        if (
+            cfg.use_regime_gating
+            and rebalance_ctx is not None
+            and rebalance_ctx.regime_scores
+        ):
+            for gated_off_regime in cfg.gated_off_regimes:
+                score = rebalance_ctx.regime_scores.get(gated_off_regime, 0.0)
+                if score >= cfg.gated_off_threshold:
+                    print(
+                        f"[FastAlphaSleeve] Regime gating active on {as_of.date()}: "
+                        f"gated_off_regime={gated_off_regime} score={score:.3f} "
+                        f">= threshold={cfg.gated_off_threshold:.3f} => returning zero weights"
+                    )
+                    return {}
 
         # Precomputed path
         if (
@@ -269,6 +281,7 @@ class FastAlphaSleeve:
 
         # Sort candidates by score descending (best first)
         sorted_scores = scores.sort_values(ascending=False)
+        # print(f"[FastAlphaSleeve] computed scores on {as_of.date()}: {sorted_scores}")
 
         # Rank: 1 = best (finite ranks only for tickers in `scores`)
         ranks = scores.rank(ascending=False, method="first")
@@ -568,7 +581,7 @@ class FastAlphaSleeve:
         self,
         start: datetime | str,
         end: datetime | str,
-        rebalance_dates: Optional[List[datetime | str]] = None,
+        sample_dates: Optional[List[datetime | str]] = None,
         warmup_buffer: Optional[int] = None,  # days; optional override
     ) -> pd.DataFrame:
         """
@@ -657,15 +670,28 @@ class FastAlphaSleeve:
                     field="Volume",
                     interval="1d",
                     local_only=getattr(self.mds, "local_only", False),
-                    auto_adjust=False,
+                    auto_adjust=True,
                     membership_aware=False,
                     treat_unknown_as_always_member=True,
                 )
+                # print(f"[FastAlphaSleeve] volume_mat: {volume_mat}")
             except Exception:
+                print(
+                    "[FastAlphaSleeve] WARNING: volume matrix load failed; using empty volume matrix"
+                )
                 volume_mat = pd.DataFrame(index=price_mat.index, columns=tickers)
 
             volume_mat = volume_mat.reindex_like(price_mat)
             dollar_vol = price_mat * volume_mat
+            # Debug: compute price_mat, volume_mat nan ratios
+            # price_nan_ratio = price_mat.isna().sum().sum() / (
+            #     price_mat.shape[0] * price_mat.shape[1]
+            # )
+            # volume_nan_ratio = volume_mat.isna().sum().sum() / (
+            #     volume_mat.shape[0] * volume_mat.shape[1]
+            # )
+            # print(f"[FastAlphaSleeve] price_mat nan ratio: {price_nan_ratio:.4f}")
+            # print(f"[FastAlphaSleeve] volume_mat nan ratio: {volume_nan_ratio:.4f}")
 
             adv_mat = dollar_vol.rolling(
                 cfg.adv_window, min_periods=max(5, cfg.adv_window // 2)
@@ -677,9 +703,19 @@ class FastAlphaSleeve:
 
             liq_mask = pd.DataFrame(True, index=price_mat.index, columns=tickers)
             liq_mask &= price_mat >= float(cfg.min_price)
+            # print(f"[FastAlphaSleeve] liq_mask after price filter:\n{liq_mask}")
             liq_mask &= adv_mat >= float(cfg.min_adv)
+            # print(f"[FastAlphaSleeve] adv_mat:\n{adv_mat}")
+            # Debug: compute adv_mat nan ratio
+            # nan_ratio = adv_mat.isna().sum().sum() / (
+            #     adv_mat.shape[0] * adv_mat.shape[1]
+            # )
+            # print(f"[FastAlphaSleeve] adv_mat nan ratio: {nan_ratio:.4f}")
+            # print(f"[FastAlphaSleeve] liq_mask after adv filter:\n{liq_mask}")
             liq_mask &= medvol_mat >= float(cfg.min_median_volume)
+            # print(f"[FastAlphaSleeve] liq_mask after median volume filter:\n{liq_mask}")
             liq_mask = liq_mask.fillna(False)
+            # print(f"[FastAlphaSleeve] final liq_mask:\n{liq_mask}")
 
         # 4) iterate dates with stateful selection
         dates = score_mat.index
@@ -696,6 +732,7 @@ class FastAlphaSleeve:
                 s = s[elig.astype(bool)]
 
             s = s.dropna()
+            # print(f"[FastAlphaSleeve] scores on {dt.date()}: {s}")
             if s.empty:
                 # no scores => keep previous weights (or zero)
                 prev = self.state.last_weights or {}
@@ -717,8 +754,8 @@ class FastAlphaSleeve:
         out = out.asfreq("D", method="ffill").fillna(0.0)
 
         # optional sampling
-        if rebalance_dates:
-            target_dates = pd.to_datetime(rebalance_dates).normalize()
+        if sample_dates:
+            target_dates = pd.to_datetime(sample_dates).normalize()
             out = out[out.index.isin(target_dates)]
 
         self.precomputed_weights_mat = out.copy()

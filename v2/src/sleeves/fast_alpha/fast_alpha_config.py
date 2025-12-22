@@ -65,3 +65,5 @@ class FastAlphaConfig:
     # ----------------------------
     use_regime_gating: bool = True
     gated_off_regimes: Tuple[str, ...] = ("crisis", "bear")
+    # regime score above which gating applies
+    gated_off_threshold: float = 0.2 # be extra conservative

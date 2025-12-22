@@ -135,9 +135,9 @@ class VectorizedSignalEngine:
         #     unknown_tickers = tickers
 
         # -----------------------------
-        # Fetch per-ticker price series
+        # Fetch per-ticker series
         # -----------------------------
-        price_dict: Dict[str, pd.Series] = {}
+        field_dict: Dict[str, pd.Series] = {}
 
         for t in tickers:
             try:
@@ -150,6 +150,9 @@ class VectorizedSignalEngine:
                     local_only=local_only,
                 )
                 if df is None or df.empty:
+                    print(
+                        f"[VectorizedSignalEngine] WARNING: no data for {t}, skipping"
+                    )
                     continue
 
                 if field not in df.columns:
@@ -160,35 +163,45 @@ class VectorizedSignalEngine:
                         col = "Adjclose"
                     else:
                         # Just skip this ticker if desired field not present
+                        print(
+                            f"[VectorizedSignalEngine] WARNING: {field} not found for {t}, skipping"
+                        )
                         continue
                 else:
                     col = field
 
                 s = df[col].astype(float)
                 s.name = t
-                price_dict[t] = s
-            except Exception:
+                field_dict[t] = s
+                # print(f"[VectorizedSignalEngine] loaded {field} for {t}, s={s}")
+            except Exception as e:
+                print(
+                    f"[VectorizedSignalEngine] WARNING: failed to load {field} for {t}: {e}"
+                )
+                import traceback
+
+                traceback.print_exc()
                 continue
 
-        if not price_dict:
+        if not field_dict:
             return pd.DataFrame()
 
         # Combine into a single matrix, align on union of dates
-        price_mat = pd.concat(price_dict.values(), axis=1)
-        price_mat.index = pd.to_datetime(price_mat.index)
-        price_mat = price_mat.sort_index()
+        field_mat = pd.concat(field_dict.values(), axis=1)
+        field_mat.index = pd.to_datetime(field_mat.index)
+        field_mat = field_mat.sort_index()
         # Reindex to business days only if interval is daily
         if interval == "1d":
-            price_mat = price_mat.reindex(
+            field_mat = field_mat.reindex(
                 index=pd.date_range(
-                    start=price_mat.index.min(),
-                    end=price_mat.index.max(),
+                    start=field_mat.index.min(),
+                    end=field_mat.index.max(),
                     freq="B",
                 )
             )
 
         # Keep only our requested tickers (in canonical order)
-        price_mat = price_mat.reindex(columns=tickers)
+        field_mat = field_mat.reindex(columns=tickers)
 
         # -----------------------------
         # Apply membership mask if requested
@@ -197,9 +210,9 @@ class VectorizedSignalEngine:
             # membership_mask: [Date x Ticker] of bools (True = in index)
             mem_mask = self.universe.membership_mask(start=start_dt, end=end_dt)
             # Align dates to price matrix
-            mem_mask = mem_mask.reindex(index=price_mat.index)
+            mem_mask = mem_mask.reindex(index=field_mat.index)
             # Align columns to price matrix, keep unknown tickers as NaN for now
-            mem_mask = mem_mask.reindex(columns=price_mat.columns)
+            mem_mask = mem_mask.reindex(columns=field_mat.columns)
 
             if treat_unknown_as_always_member:
                 # Unknown tickers => all-NaN column, treat as always in
@@ -209,9 +222,9 @@ class VectorizedSignalEngine:
                 mem_mask = mem_mask.fillna(False)
 
             # Apply membership mask: where False -> set price to NaN
-            price_mat = price_mat.where(mem_mask)
+            field_mat = field_mat.where(mem_mask)
 
-        return price_mat
+        return field_mat
 
     # Simple helper that uses membership-aware SP500-only prices by default
     def get_field_matrix_sp500(

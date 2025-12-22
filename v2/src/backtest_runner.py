@@ -35,7 +35,7 @@ from sleeves.trend.trend_configs import (
 
 # from sleeves.sideways.sideways_sleeve import SidewaysSleeve
 # from sleeves.sideways_mr.sideways_mr import SidewaysMRSleeve
-# from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
+from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
 from sleeves.sideways_base.sideways_base_sleeve import SidewaysBaseSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig

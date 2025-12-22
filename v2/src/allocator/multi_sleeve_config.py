@@ -25,6 +25,7 @@ class MultiSleeveConfig:
         "sideways",
     )
     regime_sample_freq: str = "M"  # frequency for regime scoring
+    regime_temperature_tau: float = 0.6  # softmax temperature for regime scores
 
     # Trend filter on benchmark for risk-on/risk-off scaling
     trend_filter_enabled: bool = True
@@ -34,13 +35,13 @@ class MultiSleeveConfig:
     sleeve_risk_on_equity_frac: Dict[str, float] = field(
         default_factory=lambda: {
             "trend": 1.0,
-            "fast_alpha": 1.0,
+            # "fast_alpha": 1.0,
         }
     )
     sleeve_risk_off_equity_frac: Dict[str, float] = field(
         default_factory=lambda: {
             "trend": 0.7,
-            "fast_alpha": 0.7,
+            # "fast_alpha": 0.7,
         }
     )
 
