@@ -28,6 +28,21 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+
+def _configure_unbuffered_output() -> None:
+    """Best-effort: make stdout/stderr stream in real time when redirected."""
+
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            # Python 3.7+: ensure newline flush + flush on every write.
+            stream.reconfigure(line_buffering=True, write_through=True)
+        except Exception:
+            # If reconfigure isn't supported, we rely on the environment
+            # (e.g., `python -u` / `PYTHONUNBUFFERED=1`) and newline prints.
+            pass
+
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
@@ -309,6 +324,7 @@ def run_strategy(cfg: StrategyConfig):
 
 
 def main():
+    _configure_unbuffered_output()
     cfg = StrategyConfig()
     run_strategy(cfg)
 
