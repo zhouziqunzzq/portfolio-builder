@@ -17,3 +17,6 @@ pyarrow>=14.0.0
 
 # YAML config
 pyyaml>=6.0
+
+# Alpaca SDK (IML/EML playgrounds)
+alpaca-py>=0.42
