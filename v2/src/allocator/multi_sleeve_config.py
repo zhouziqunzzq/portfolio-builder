@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parents[1]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from friction_control.friction_control_config import FrictionControlConfig
+
 SINGLE_SLEEVE_TESTING = "defensive"
 
 
@@ -43,6 +52,13 @@ class MultiSleeveConfig:
             "trend": 0.7,
             # "fast_alpha": 0.7,
         }
+    )
+
+    # Global Friction Control config
+    enable_friction_control: bool = True
+    friction_control_config: FrictionControlConfig = field(
+        # Use default friction control config for now
+        default_factory=lambda: FrictionControlConfig(),
     )
 
     # If True: allow implicit cash by NOT normalizing global sleeve-combined

@@ -3,13 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Mapping, Any, Tuple
 from datetime import datetime, timedelta
+import math
 
 import pandas as pd
 
-from src.regime_engine import RegimeEngine
-from src.signal_engine import SignalEngine
-from src.context.rebalance import RebalanceContext
-from src.sleeves.common.rebalance_helpers import should_rebalance
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parents[1]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from regime_engine import RegimeEngine
+from signal_engine import SignalEngine
+from friction_control.friction_controller import FrictionController
+from context.rebalance import RebalanceContext
+from context.friction_control import FrictionControlContext
+from sleeves.common.rebalance_helpers import should_rebalance
 from .multi_sleeve_config import MultiSleeveConfig
 
 
@@ -87,6 +97,14 @@ class MultiSleeveAllocator:
 
         print(f"[MultiSleeveAllocator] Enabled sleeves: {self.enabled_sleeves}")
 
+        # Friction Control
+        self.friction_controller: Optional[FrictionController] = None
+        if self.config.enable_friction_control:
+            self.friction_controller = FrictionController(
+                keep_cash=True,
+                config=self.config.friction_control_config,
+            )
+
         # State
         self.state = MultiSleeveAllocatorState()
 
@@ -109,8 +127,12 @@ class MultiSleeveAllocator:
         Steps:
             1) Query RegimeEngine over a lookback window.
             2) Extract primary_regime and regime_score distribution.
+              2.5) Apply temperature shaping to regime scores.
             3) Blend per-regime sleeve weights using regime scores.
-            4) Ask each sleeve for internal weights and combine.
+            4) Scale sleeve weights via trend filter if enabled.
+            5) Ask each sleeve for internal weights and combine.
+            6) Normalize global weights (with optional cash preservation).
+            7) Apply friction control if enabled.
         """
         as_of_ts = pd.to_datetime(as_of)
         rebalance_ts = pd.to_datetime(
@@ -171,7 +193,7 @@ class MultiSleeveAllocator:
             local_weights = sleeve.generate_target_weights_for_date(
                 as_of=as_of_ts,
                 start_for_signals=start_for_signals_ts,
-                regime=primary_regime, # deprecated; use regime in rebalance_ctx
+                regime=primary_regime,  # deprecated; use regime in rebalance_ctx
                 rebalance_ctx=rebalance_ctx,
             )
             if not local_weights:
@@ -192,6 +214,40 @@ class MultiSleeveAllocator:
             else:
                 # If total > 1.0 or cash preservation disabled, scale to 1.
                 out = {t: w / total for t, w in combined.items()}
+
+        # 5) Apply friction control if enabled and if the weights have meaningfully changed
+        if self.friction_controller is not None:
+            last = self.state.last_portfolio or {}
+            if _weights_close(last, out):
+                out_adj = out
+            else:
+                fc_ctx = FrictionControlContext(
+                    aum=rebalance_ctx.aum if rebalance_ctx else 0.0
+                )
+                out_adj = self.friction_controller.apply(
+                    w_prev=last,
+                    w_new=out,
+                    ctx=fc_ctx,
+                )
+            # Debug: print % changes due to friction control
+            # changes = {}
+            # for t in set(out.keys()).union(set(out_adj.keys())):
+            #     w_prev = (
+            #         self.state.last_portfolio.get(t, 0.0)
+            #         if self.state.last_portfolio
+            #         else 0.0
+            #     )
+            #     w_new = out.get(t, 0.0)
+            #     w_eff = out_adj.get(t, 0.0)
+            #     if w_new != w_eff:
+            #         changes[t] = (w_prev, w_new, w_eff)
+            # if changes:
+            #     print(f"[MultiSleeveAllocator] Friction control adjustments:")
+            #     for t, (w_prev, w_new, w_eff) in changes.items():
+            #         print(
+            #             f"    {t}: prev={w_prev:.6f}, new={w_new:.6f}, eff={w_eff:.6f} (delta={w_eff - w_new:+.6f})"
+            #         )
+            out = out_adj
 
         # store state
         self.state.last_as_of = as_of_ts
@@ -562,3 +618,20 @@ class MultiSleeveAllocator:
                 on_scale = self.config.sleeve_risk_on_equity_frac.get(sleeve, 1.0)
                 adjusted[sleeve] = weight * on_scale
         return adjusted
+
+
+def _weights_close(
+    a: Dict[str, float],
+    b: Dict[str, float],
+    *,
+    rel_tol: float = 1e-12,
+    abs_tol: float = 1e-12,
+) -> bool:
+    a_up = {str(k).upper(): float(v) for k, v in (a or {}).items()}
+    b_up = {str(k).upper(): float(v) for k, v in (b or {}).items()}
+    for k in set(a_up.keys()).union(b_up.keys()):
+        av = a_up.get(k, 0.0)
+        bv = b_up.get(k, 0.0)
+        if not math.isclose(av, bv, rel_tol=rel_tol, abs_tol=abs_tol):
+            return False
+    return True

@@ -190,10 +190,10 @@ class TrendSleeve:
             )
             if stock_as_of != sector_as_of:
                 print(
-                    f"Warning: Stock and sector scores are out of sync at {date_key.date()} (stock: {stock_as_of.date()}, sector: {sector_as_of.date()})"
+                    f"[TrendSleeve] Warning: Stock and sector scores are out of sync at {date_key.date()} (stock: {stock_as_of.date()}, sector: {sector_as_of.date()})"
                 )
             date_key = stock_as_of  # Use the closest available date
-            print(f"Using cached scores for {date_key.date()}")
+            print(f"[TrendSleeve] Using cached scores for {date_key.date()}")
 
             # Extract from cache
             stock_scores_series = self._cached_stock_scores_mat.loc[date_key]

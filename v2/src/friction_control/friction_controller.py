@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Mapping
 from .friction_control_config import FrictionControlConfig
 from .hysteresis import apply_weight_hysteresis_row
 from .min_trade_notional import apply_min_trade_notional_row
 from .min_holding_period import apply_min_holding_period_row
 
+# Make v2/src importable by adding it to sys.path. This allows using
+# direct module imports (e.g. `from universe_manager import ...`) rather
+# than referencing the `src.` package namespace.
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parents[1]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from context.friction_control import FrictionControlContext
+
 import pandas as pd
 import numpy as np
 
 
-class FrictionController:
+class FrictionControllerVec:
     """
+    Vectorized Friction Controller.
     Applies friction controls (e.g. hysteresis, min trade notional) to target weights.
     """
 
@@ -56,7 +69,9 @@ class FrictionController:
         # Print some warning if rebalance dates were dropped due to missing prices
         dropped_dates = set(self.weights_dates) - self.rebalance_dates_set
         if dropped_dates:
-            print(f"[FrictionController] Warning: Dropped {len(dropped_dates)} rebalance dates due to missing price data: {sorted(dropped_dates)}")
+            print(
+                f"[FrictionController] Warning: Dropped {len(dropped_dates)} rebalance dates due to missing price data: {sorted(dropped_dates)}"
+            )
         self.rebalance_dates = sorted(self.rebalance_dates_set)
         # Ensure columns are aligned & uppercase tickers
         self.prices.columns = [c.upper() for c in self.prices.columns]
@@ -155,3 +170,108 @@ class FrictionController:
         # print(W_final_vals)
         W_eff = pd.DataFrame(W_final_vals, index=self.rebalance_dates)
         return W_eff.reindex(self.weights_dates).fillna(0.0)
+
+
+@dataclass
+class FrictionControllerState:
+    holding_age: pd.Series = field(default_factory=lambda: pd.Series(dtype=int))
+
+
+def _as_weight_series(w: Optional[object]) -> pd.Series:
+    """Coerce weights to a float pd.Series; None -> empty series.
+
+    Normalizes ticker labels to uppercase when they are strings.
+    """
+    if w is None:
+        s = pd.Series(dtype=float)
+    elif isinstance(w, pd.Series):
+        s = w.copy()
+    elif isinstance(w, Mapping):
+        s = pd.Series(dict(w), dtype=float)
+    else:
+        raise TypeError(
+            "Weights must be a mapping like Dict[str, float] (or a pd.Series); "
+            f"got {type(w)!r}"
+        )
+
+    if len(s.index) > 0:
+        s.index = [i.upper() if isinstance(i, str) else i for i in s.index]
+    return s.astype(float).fillna(0.0)
+
+
+class FrictionController:
+    """Stateful (non-vectorized) friction controller.
+
+    Intended for live / step-by-step use: caller provides previous and current
+    target weights each rebalance, and the controller returns the effective
+    weights after applying all configured frictions.
+    """
+
+    def __init__(
+        self,
+        keep_cash: bool = True,
+        config: Optional[FrictionControlConfig] = None,
+        state: Optional[FrictionControllerState] = None,
+    ):
+        self.keep_cash = keep_cash
+        self.config = config if config is not None else FrictionControlConfig()
+        self.state = state if state is not None else FrictionControllerState()
+
+    def apply(
+        self,
+        w_prev: Optional[Dict[str, float]],
+        w_new: Dict[str, float],
+        ctx: FrictionControlContext,
+    ) -> Dict[str, float]:
+        """Apply friction controls for a single rebalance step.
+
+        Parameters
+        ----------
+        w_prev : Optional[Dict[str, float]]
+            Previous effective weights (post-friction) from the prior rebalance.
+            If None, treated as all-cash / zero positions.
+        w_new : Dict[str, float]
+            Proposed new target weights for the current rebalance.
+        ctx : FrictionControlContext
+            Context for friction controls (currently only includes `aum`).
+
+        Returns
+        -------
+        Dict[str, float]
+            Effective weights after applying hysteresis, min trade notional,
+            and min holding period.
+        """
+        w_prev_s = _as_weight_series(w_prev)
+        w_new_s = _as_weight_series(w_new)
+
+        idx = w_prev_s.index.union(w_new_s.index).union(self.state.holding_age.index)
+        w_prev_s = w_prev_s.reindex(idx).fillna(0.0)
+        w_new_s = w_new_s.reindex(idx).fillna(0.0)
+        holding_age = self.state.holding_age.reindex(idx).fillna(0).astype(int)
+
+        w_hyst = apply_weight_hysteresis_row(
+            w_prev_s,
+            w_new_s,
+            dw_min=self.config.hysteresis_dw_min,
+            keep_cash=self.keep_cash,
+        )
+
+        w_after_notional = apply_min_trade_notional_row(
+            w_prev_s,
+            w_hyst,
+            portfolio_value=float(ctx.aum),
+            min_trade_abs=self.config.min_trade_notional_abs,
+            min_trade_pct_of_aum=self.config.min_trade_pct_of_aum,
+            keep_cash=self.keep_cash,
+        )
+
+        w_eff, holding_age_next = apply_min_holding_period_row(
+            w_prev=w_prev_s,
+            w_proposed=w_after_notional,
+            holding_age=holding_age,
+            min_holding_rebalances=self.config.min_holding_rebalances,
+            keep_cash=self.keep_cash,
+        )
+
+        self.state.holding_age = holding_age_next
+        return {str(k): float(v) for k, v in w_eff.items()}

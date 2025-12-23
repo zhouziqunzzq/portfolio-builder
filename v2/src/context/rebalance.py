@@ -14,3 +14,6 @@ class RebalanceContext:
     primary_regime: str = ""  # e.g. "bull", "bear", etc.
     # Regime scores at the time of rebalance
     regime_scores: dict[str, float] = field(default_factory=dict)
+
+    # Current AUM at the time of rebalance (for friction control, etc.)
+    aum: float = 0.0

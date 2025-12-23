@@ -42,7 +42,7 @@ from allocator.multi_sleeve_config import MultiSleeveConfig
 from portfolio_backtester import PortfolioBacktester
 from friction_control.friction_control_config import FrictionControlConfig
 from friction_control.hysteresis import apply_weight_hysteresis_matrix
-from friction_control.friction_controller import FrictionController
+from friction_control.friction_controller import FrictionControllerVec
 from backtest_plots import (
     plot_equity_curve,
     plot_drawdown,
@@ -419,6 +419,7 @@ def generate_target_weights(
     end: pd.Timestamp,
     sample_schedule: pd.DatetimeIndex,
     signal_delay_days: Optional[int] = 0,
+    initial_equity: float = 100_000.0,
 ) -> tuple[pd.DataFrame, Dict[pd.Timestamp, Dict[str, Any]]]:
     """
     Call MultiSleeveAllocator on each sample date and build
@@ -432,6 +433,9 @@ def generate_target_weights(
     rows: Dict[pd.Timestamp, Dict[str, float]] = {}
     contexts: Dict[pd.Timestamp, Dict[str, Any]] = {}
 
+    approx_aum = initial_equity
+    approx_CAGR = 0.10  # 10% p.a. approximate
+    last_as_of: Optional[pd.Timestamp] = None
     for as_of in schedule:
         # use prior day's data to avoid lookahead
         as_of_shifted = as_of - pd.Timedelta(days=1)
@@ -442,15 +446,26 @@ def generate_target_weights(
         )
         w, ctx = allocator.generate_global_target_weights(
             as_of_shifted,
-            rebalance_ctx=RebalanceContext(rebalance_ts=as_of),
+            rebalance_ctx=RebalanceContext(
+                rebalance_ts=as_of,
+                # Use an approximate AUM for now
+                # TODO: Update with actual AUM from backtest state
+                aum=approx_aum,
+            ),
         )
         rows[as_of] = w
         contexts[as_of] = ctx
         all_tickers.update(w.keys())
-        # Debug: print raw weights
+        # Debug: print weights
         print(
-            f"  Raw weights: {', '.join([f'{t}:{v:.4f}' for t,v in w.items() if v > 0.0])}"
+            f"  Weights: {', '.join([f'{t}:{v:.4f}' for t,v in w.items() if v > 0.0])}"
         )
+        # Estimate next AUM for context (simple CAGR growth)
+        if last_as_of is not None:
+            days_diff = (as_of - last_as_of).days
+            approx_aum = approx_aum * (1.0 + approx_CAGR) ** (days_diff / 252.0)
+            # print(f"  Estimated next AUM: {approx_aum:.2f}")
+        last_as_of = as_of
 
     if not all_tickers:
         return pd.DataFrame(index=schedule), contexts
@@ -778,6 +793,7 @@ def main() -> int:
         end=end_dt,
         sample_schedule=sample_schedule,
         signal_delay_days=args.signal_delay_days,
+        initial_equity=float(args.initial_equity),
     )
 
     if rebalance_target_weights.empty:
@@ -836,32 +852,6 @@ def main() -> int:
         )
     # 2) Ensure exec prices are not forward-filled across missing days (dangerous)
     # (depends on how get_price_matrix behaves)
-
-    # Apply friction control
-    friction_controller = FrictionController(
-        prices=price_mat,
-        weights=rebalance_target_weights,
-        initial_value=float(args.initial_equity),
-        keep_cash=allocator.config.preserve_cash_if_under_target,  # keep in sync with allocator cash policy
-        config=friction_cfg,
-    )
-    adj_rebalance_target_weights = friction_controller.apply_all()
-    print("[backtest_v2] Applied friction controller adjustments to target weights.")
-    # Debug: Count how many weights frozen due to hysteresis
-    num_frozen = (rebalance_target_weights != adj_rebalance_target_weights).sum().sum()
-    total_weights = rebalance_target_weights.size
-    print(
-        f"[backtest_v2] Friction Controller frozen {num_frozen} out of "
-        f"{total_weights} weights ({(num_frozen / total_weights * 100):.2f}%)."
-    )
-    rebalance_target_weights = adj_rebalance_target_weights
-    # Debug: print adjusted weights after friction control
-    for dt in rebalance_target_weights.index:
-        w_row = rebalance_target_weights.loc[dt]
-        print(
-            f"  Adjusted weights for {dt.date()}: "
-            f"{', '.join([f'{t}:{v:.4f}' for t,v in w_row.items() if v > 0.0])}"
-        )
 
     # Backtester
     bt = PortfolioBacktester(
