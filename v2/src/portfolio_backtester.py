@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Any, Callable, List, Optional, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from market_data_store import MarketDataStore
+from context.rebalance import RebalanceContext
 
 
 @dataclass
@@ -177,7 +178,7 @@ class PortfolioBacktester:
     # ------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------
-    def run_vec(
+    def run_vectorized(
         self,
         weights: pd.DataFrame = None,
         config: Optional[PortfolioBacktesterConfig] = None,
@@ -238,7 +239,7 @@ class PortfolioBacktester:
             start=start,
             end=end,
             field=self._ohlcv_field_from_execution_mode(config.execution_mode),
-            interval="1d",
+            interval="1d",  # backtest at daily frequency
             auto_adjust=True,
         )
 
@@ -283,6 +284,210 @@ class PortfolioBacktester:
         )
         return result
 
+    def run_iterative(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        universe: List[str],
+        gen_weights_fn: Callable[
+            [datetime | str, RebalanceContext],  # Inputs: as_of date, rebalance context
+            tuple[Dict[str, float], Dict[str, Any]],  # Outputs: weights dict, info dict
+        ],
+        config: Optional[PortfolioBacktesterConfig] = None,
+    ) -> Tuple[pd.DataFrame, Dict[pd.Timestamp, Dict[str, Any]]]:
+        """Run an *iterative* (non-vectorized) daily backtest.
+
+        This method mirrors :meth:`run_vectorized` as closely as possible, but instead
+        of taking a pre-built weight matrix it calls ``gen_weights_fn`` on each
+        trading day to obtain that day's target weights.
+
+        Execution model
+        ---------------
+        Only ``execution_mode="open_to_open"`` is supported.
+
+        - Trades are assumed executed at the *open* of day ``t``.
+        - The portfolio then earns returns from ``open_t`` to ``open_{t+1}``.
+        - The last available date has no next open; its instrument returns are
+          treated as 0.0 (same behavior as the vectorized ``shift(-1).fillna(0)``).
+
+        Lookahead avoidance
+        -------------------
+        ``gen_weights_fn`` is called with ``as_of`` equal to the prior trading day
+        when available (otherwise ``t - 1 calendar day`` for the first row). This
+        is intended to prevent using information from day ``t`` to set weights
+        for trades executed at the open of day ``t``.
+
+        Costs and turnover
+        ------------------
+        Turnover and costs match :meth:`run_vec`:
+
+        - ``turnover_t = 0.5 * sum_i |w_{t,i} - w_{t-1,i}|`` (first day = 0.0)
+        - ``effective_cost_rate = cost_per_turnover + 2 * bid_ask_bps_per_side / 10_000``
+        - ``cost_t = effective_cost_rate * turnover_t``
+        - ``portfolio_return_t = gross_return_t - cost_t``
+
+        Parameters
+        ----------
+        start, end : datetime | str
+            Inclusive start/end of the backtest window.
+        universe : list[str]
+            Universe of tickers to fetch prices for. Tickers are uppercased.
+        gen_weights_fn : Callable[[datetime | str, RebalanceContext], (dict, dict)]
+            Callback invoked once per trading day.
+
+            It receives:
+            - ``as_of``: the date whose information should be used to form weights
+            - ``rebalance_ctx``: a :class:`RebalanceContext` with
+              ``rebalance_ts`` set to the current trading date and ``aum`` set to
+              the portfolio equity entering the day.
+
+            It must return:
+            - weights: ``{ticker -> weight}`` (tickers uppercased; missing tickers
+              are treated as 0)
+            - info: arbitrary context dict captured and returned to the caller
+        config : PortfolioBacktesterConfig, optional
+            Backtest configuration (costs, initial equity, execution_mode, etc.).
+
+        Returns
+        -------
+        (result, contexts) : (pd.DataFrame, dict[pd.Timestamp, dict[str, Any]])
+            ``result`` mirrors :meth:`run_vectorized` exactly, with columns:
+            - ``gross_return``
+            - ``cost``
+            - ``portfolio_return``
+            - ``equity``
+            - ``turnover``
+            - ``weight_sum``
+
+            ``contexts`` maps each trading date (``pd.Timestamp``) to the ``info``
+            dict returned by ``gen_weights_fn`` for that date.
+        """
+        config = config or PortfolioBacktesterConfig()
+        mode = config.execution_mode.lower().strip()
+        if mode not in ("open_to_open"):
+            raise ValueError(f"Unsupported execution_mode: {config.execution_mode}")
+
+        if self.market_data_store is None:
+            raise ValueError("market_data_store must be provided to run backtests.")
+
+        # Universe tickers
+        tickers = sorted({str(t).upper() for t in (universe or []) if str(t).strip()})
+        if len(tickers) == 0:
+            raise ValueError("Universe must contain at least one ticker.")
+
+        # Build exec-price matrix for specified universe and date range
+        prices = self.market_data_store.get_ohlcv_matrix(
+            tickers=tickers,
+            start=start,
+            end=end,
+            field=self._ohlcv_field_from_execution_mode(config.execution_mode),
+            interval="1d",
+            auto_adjust=True,
+        )
+        if prices is None or prices.empty:
+            raise ValueError(
+                "No price data returned for requested universe/date range."
+            )
+        prices.index = pd.to_datetime(prices.index).tz_localize(None).normalize()
+        prices = prices.sort_index()
+        prices.columns = [str(c).upper() for c in prices.columns]
+
+        # Ensure we only use tickers we have prices for
+        tickers = [t for t in tickers if t in prices.columns]
+        if len(tickers) == 0:
+            raise ValueError("No overlapping tickers between universe and price data.")
+        prices = prices[tickers]
+
+        dates = pd.DatetimeIndex(prices.index)
+        if len(dates) == 0:
+            raise ValueError("No trading dates available for requested range.")
+
+        # Cost knobs (mirror run_vec)
+        spread_rate = 2.0 * float(config.bid_ask_bps_per_side) / 10_000.0
+        effective_cost_rate = float(config.cost_per_turnover) + spread_rate
+
+        contexts: Dict[pd.Timestamp, Dict[str, Any]] = {}
+
+        # State
+        prev_weights = np.zeros(len(tickers), dtype=float)
+        prev_equity = float(config.initial_value)
+
+        gross_returns: list[float] = []
+        costs: list[float] = []
+        net_returns: list[float] = []
+        equities: list[float] = []
+        turnovers: list[float] = []
+        weight_sums: list[float] = []
+
+        # Iterate over each trading day, using open_t -> open_{t+1} returns.
+        for i, ts in enumerate(dates):
+            # as_of: use prior trading day when available; otherwise use ts - 1 calendar day
+            # IMPORTANT: by ensuring as_of < ts, lookahead bias should be avoided.
+            if i > 0:
+                as_of = dates[i - 1]
+            else:
+                as_of = ts - pd.Timedelta(days=1)
+
+            rebalance_ctx = RebalanceContext(
+                rebalance_ts=ts,
+                aum=prev_equity,
+            )
+
+            w_dict, info = gen_weights_fn(as_of, rebalance_ctx)
+            contexts[pd.Timestamp(ts)] = info
+
+            w_up = {str(k).upper(): float(v) for k, v in (w_dict or {}).items()}
+            w_vec = np.array([w_up.get(t, 0.0) for t in tickers], dtype=float)
+            w_vec = np.nan_to_num(w_vec, nan=0.0, posinf=0.0, neginf=0.0)
+
+            if i == 0:
+                turnover = 0.0
+            else:
+                turnover = 0.5 * float(np.abs(w_vec - prev_weights).sum())
+
+            # Instrument returns for this interval.
+            # Returns from open_t to open_{t+1}
+            if i < len(dates) - 1:
+                p0 = prices.loc[ts].to_numpy(dtype=float)
+                p1 = prices.loc[dates[i + 1]].to_numpy(dtype=float)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    inst_ret = np.where(p0 > 0.0, (p1 / p0) - 1.0, 0.0)
+                inst_ret = np.nan_to_num(inst_ret, nan=0.0, posinf=0.0, neginf=0.0)
+            else:
+                inst_ret = np.zeros(len(tickers), dtype=float)
+
+            gross_ret = float(np.dot(w_vec, inst_ret))
+            cost = float(effective_cost_rate * turnover)
+            net_ret = float(gross_ret - cost)
+
+            equity = float(prev_equity * (1.0 + net_ret))
+
+            gross_returns.append(gross_ret)
+            costs.append(cost)
+            net_returns.append(net_ret)
+            equities.append(equity)
+            turnovers.append(turnover)
+            weight_sums.append(float(w_vec.sum()))
+
+            prev_weights = w_vec
+            prev_equity = equity
+
+        result = pd.DataFrame(
+            {
+                "gross_return": pd.Series(gross_returns, index=dates, dtype=float),
+                "cost": pd.Series(costs, index=dates, dtype=float),
+                "portfolio_return": pd.Series(net_returns, index=dates, dtype=float),
+                "equity": pd.Series(equities, index=dates, dtype=float),
+                "turnover": pd.Series(turnovers, index=dates, dtype=float),
+                "weight_sum": pd.Series(weight_sums, index=dates, dtype=float),
+            },
+            index=dates,
+        )
+
+        # Match run_vectorized: index should reflect the exec price index
+        result = result.reindex(prices.index)
+        return result, contexts
+
     def stats(
         self,
         result: pd.DataFrame,
@@ -291,12 +496,12 @@ class PortfolioBacktester:
         config: Optional[PortfolioBacktesterConfig] = None,
     ) -> Dict[str, float | pd.Timestamp | None]:
         """
-        Compute basic performance stats from result of `run()`.
+        Compute basic performance stats from result of the backtest run.
 
         Parameters
         ----------
         result : DataFrame
-            Output of self.run().
+            Output of self.run_iterative() or self.run_vectorized().
         auto_warmup : bool, default True
             If True, automatically drop the initial period where the portfolio
             is effectively not invested (weight_sum <= 1%).
