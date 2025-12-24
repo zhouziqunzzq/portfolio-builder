@@ -36,6 +36,7 @@ import pandas as pd
 from src.sleeves.defensive.defensive_config import DefensiveConfig
 from src.sleeves.sideways.sideways_config import SidewaysConfig
 from src.sleeves.sideways_mr.sideways_mr_config import SidewaysMRConfig
+from src.sleeves.sideways_base.sideways_base_config import SidewaysBaseConfig
 
 from src.market_data_store import MarketDataStore
 from src.universe_manager import UniverseManager
@@ -61,11 +62,6 @@ def parse_args() -> argparse.Namespace:
         "--use-sideways-tickers",
         action="store_true",
         help="Use all tickers defined in SidewaysConfig (overrides --tickers)",
-    )
-    p.add_argument(
-        "--use-sideways-mr-tickers",
-        action="store_true",
-        help="Use all tickers defined in SidewaysMRConfig (overrides --tickers)",
     )
     p.add_argument(
         "--use-universe",
@@ -108,13 +104,11 @@ def main() -> int:
         raise ValueError("End date must be >= start date")
 
     if not args.tickers and not (
-        args.use_defensive_etfs
-        or args.use_universe
-        or args.use_sideways_tickers
-        or args.use_sideways_mr_tickers
+        args.use_defensive_etfs or args.use_universe or args.use_sideways_tickers
     ):
         raise ValueError(
-            "Must supply --tickers unless --use-defensive-etfs or --use-universe is set"
+            "Must supply --tickers unless any of the following are set:"
+            " --use-defensive-etfs, --use-universe, --use-sideways-tickers"
         )
 
     tickers: list[str] = []
@@ -128,9 +122,11 @@ def main() -> int:
     if args.use_sideways_tickers:
         scfg = SidewaysConfig()
         tickers.extend(sorted({t.upper() for t in scfg.tickers}))
-    if args.use_sideways_mr_tickers:
         scfg = SidewaysMRConfig()
         tickers.extend(scfg.get_universe(include_benchmarks=True))
+        scfg = SidewaysBaseConfig()
+        tickers.extend(sorted({t.upper() for t in scfg.sideways_etfs}))
+        tickers = sorted(set(tickers))  # dedupe
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
         if not tickers:
