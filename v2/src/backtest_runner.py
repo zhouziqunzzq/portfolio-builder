@@ -28,21 +28,17 @@ from context.rebalance import RebalanceContext
 from sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from sleeves.trend.trend_sleeve import TrendSleeve
 from sleeves.trend.trend_configs import (
-    TREND_CONFIG_DAILY,
     TREND_CONFIG_WEEKLY,
-    TREND_CONFIG_MONTHLY,
 )
 
 # from sleeves.sideways.sideways_sleeve import SidewaysSleeve
 # from sleeves.sideways_mr.sideways_mr import SidewaysMRSleeve
-from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
+# from sleeves.fast_alpha.fast_alpha_sleeve import FastAlphaSleeve
 from sleeves.sideways_base.sideways_base_sleeve import SidewaysBaseSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
-from portfolio_backtester import PortfolioBacktester
-from friction_control.friction_control_config import FrictionControlConfig
+from portfolio_backtester import PortfolioBacktester, PortfolioBacktesterConfig
 from friction_control.hysteresis import apply_weight_hysteresis_matrix
-from friction_control.friction_controller import FrictionControllerVec
 from backtest_plots import (
     plot_equity_curve,
     plot_drawdown,
@@ -132,13 +128,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--execution-mode",
-        choices=["open", "close", "midpoint_v1", "midpoint_v2"],
-        default="open",
-        help=(
-            "Execution price mode for simulated fills: 'open' (default), '"
-            "close' (use close price), 'midpoint_v1' ((open+close)/2), '"
-            "midpoint_v2' ((high+low)/2)"
-        ),
+        choices=["open_to_open"],
+        default="open_to_open",
+        help=("Execution mode for backtest: 'open_to_open' (default)"),
     )
     p.add_argument(
         "--skip-precompute",
@@ -520,8 +512,7 @@ def build_execution_price_matrix(
     start: pd.Timestamp,
     end: pd.Timestamp,
     local_only: bool,
-    exec_mode: str = "open",
-    close_price_mat: Optional[pd.DataFrame] = None,
+    exec_mode: str = "open_to_open",
     auto_adjust: bool = True,
 ) -> pd.DataFrame:
     """
@@ -529,18 +520,12 @@ def build_execution_price_matrix(
     according to `exec_mode`.
 
     exec_mode options:
-      - 'open'         : use Open prices
-      - 'close'        : use Close prices
-      - 'midpoint_v1'  : (Open + Close) / 2
-      - 'midpoint_v2'  : (High + Low) / 2
-
-    If `close_price_mat` is provided it will be used for the 'close' or
-    'midpoint_v1' modes to avoid an extra fetch.
+      - "open_to_open" : use next day's open price (default)
     """
-    mode = (exec_mode or "open").lower()
+    mode = exec_mode.lower()
     exec_mat = pd.DataFrame()
 
-    if mode == "open":
+    if mode == "open_to_open":
         exec_mat = get_price_matrix_for_weights(
             um=um,
             mds=mds,
@@ -551,82 +536,33 @@ def build_execution_price_matrix(
             field="Open",
             auto_adjust=auto_adjust,
         )
-    elif mode == "close":
-        if close_price_mat is not None:
-            exec_mat = close_price_mat
-        else:
-            exec_mat = get_price_matrix_for_weights(
-                um=um,
-                mds=mds,
-                weights=weights,
-                start=start,
-                end=end,
-                local_only=local_only,
-                field="Close",
-                auto_adjust=auto_adjust,
-            )
-    elif mode == "midpoint_v1":
-        # avg(open, close)
-        open_mat = get_price_matrix_for_weights(
-            um=um,
-            mds=mds,
-            weights=weights,
-            start=start,
-            end=end,
-            local_only=local_only,
-            field="Open",
-            auto_adjust=auto_adjust,
-        )
-        close_mat = (
-            close_price_mat
-            if close_price_mat is not None
-            else get_price_matrix_for_weights(
-                um=um,
-                mds=mds,
-                weights=weights,
-                start=start,
-                end=end,
-                local_only=local_only,
-                field="Close",
-                auto_adjust=auto_adjust,
-            )
-        )
-        if open_mat.empty or close_mat.empty:
-            exec_mat = pd.DataFrame()
-        else:
-            exec_mat = (open_mat.reindex_like(close_mat) + close_mat) / 2.0
-    elif mode == "midpoint_v2":
-        # avg(high, low)
-        high_mat = get_price_matrix_for_weights(
-            um=um,
-            mds=mds,
-            weights=weights,
-            start=start,
-            end=end,
-            local_only=local_only,
-            field="High",
-            auto_adjust=auto_adjust,
-        )
-        low_mat = get_price_matrix_for_weights(
-            um=um,
-            mds=mds,
-            weights=weights,
-            start=start,
-            end=end,
-            local_only=local_only,
-            field="Low",
-            auto_adjust=auto_adjust,
-        )
-        if high_mat.empty or low_mat.empty:
-            exec_mat = pd.DataFrame()
-        else:
-            exec_mat = (
-                high_mat.reindex_like(low_mat) + low_mat.reindex_like(high_mat)
-            ) / 2.0
     else:
         raise ValueError(f"Unknown execution mode: {exec_mode}")
 
     return exec_mat
+
+
+def get_trading_calendar(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    mds: MarketDataStore,
+    benchmark: str = "SPY",
+) -> pd.DatetimeIndex:
+    """
+    Fetch the trading calendar between `start` and `end` (inclusive)
+    using the benchmark ticker's price data from `mds`.
+    """
+    df_bench = mds.get_ohlcv(
+        benchmark,
+        start=start,
+        end=end,
+        interval="1d",
+        auto_adjust=True,
+    )
+    if df_bench.empty:
+        return pd.DatetimeIndex([])
+
+    return pd.DatetimeIndex(sorted(df_bench.index.normalize().unique()))
 
 
 def shift_dates_to_trading_calendar(
@@ -683,6 +619,56 @@ def shift_dates_to_trading_calendar(
 # removed to keep this runner focused on orchestration.
 
 
+def print_backtest_summary(
+    stats: Dict[str, Any],
+    allocator: MultiSleeveAllocator,
+    result: pd.DataFrame,
+    eff_start: Optional[pd.Timestamp],
+    eff_end: Optional[pd.Timestamp],
+) -> None:
+    """Print a standardized backtest summary."""
+
+    def pct(x):
+        return f"{x * 100:.2f}%" if x is not None and not pd.isna(x) else "n/a"
+
+    def num(x):
+        return f"{x:.2f}" if x is not None and not pd.isna(x) else "n/a"
+
+    def money(x):
+        return f"${x:,.2f}" if x is not None and not pd.isna(x) else "n/a"
+
+    print("\n================ V2 Backtest Summary ================")
+    print(
+        f"Effective window : "
+        f"{eff_start.date() if eff_start is not None else 'n/a'}"
+        f" -> {eff_end.date() if eff_end is not None else 'n/a'}"
+    )
+    enabled = getattr(allocator, "enabled_sleeves", None)
+    enabled_list = ", ".join(sorted(enabled)) if enabled else "n/a"
+    print(f"Enabled Sleeves   : {enabled_list}")
+    print(f"CAGR              : {pct(stats.get('CAGR'))}")
+    print(f"Volatility        : {pct(stats.get('Volatility'))}")
+    print(f"Sharpe (excess)   : {num(stats.get('Sharpe'))}")
+    print(f"Skewness          : {num(stats.get('Skewness'))}")
+    print(f"Kurtosis          : {num(stats.get('Kurtosis'))}")
+    print(f"Max Drawdown      : {pct(stats.get('MaxDrawdown'))}")
+    peak_dt = stats.get("DDPeakDate")
+    trough_dt = stats.get("DDTroughDate")
+    recovery_dt = stats.get("DDRecoveryDate")
+    days_in_dd = stats.get("DaysInDrawdown")
+    print(f"Peak Date         : {peak_dt.date() if peak_dt is not None else 'n/a'}")
+    print(f"Trough Date       : {trough_dt.date() if trough_dt is not None else 'n/a'}")
+    print(
+        f"Recovery Date     : {recovery_dt.date() if recovery_dt is not None else 'n/a'}"
+    )
+    print(f"Days in Drawdown  : {int(days_in_dd) if days_in_dd is not None else 'n/a'}")
+    print(f"Avg Daily Turnover: {pct(stats.get('AvgDailyTurnover'))}")
+    print(f"Initial equity     : {money(stats.get('InitialEquity'))}")
+    print(f"Total Costs        : {money(stats.get('TotalCost'))}")
+    print(f"Final equity       : {money(result['equity'].iloc[-1])}")
+    print("=====================================================\n")
+
+
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
@@ -736,18 +722,25 @@ def main() -> int:
     bench_series = None
     bench_returns = None
 
+    # Trading calendar
+    trading_calendar = get_trading_calendar(
+        start=start_dt,
+        end=end_dt,
+        mds=mds,
+        benchmark=bench_symbol,
+    )
+
     # Build sample schedule early for precompute (frequency from CLI)
     sample_schedule = build_sampling_schedule(
         start=start_dt, end=end_dt, frequency=args.sample_frequency
     )
     if sample_schedule.empty:
-        print("No sample dates in window; aborting.")
-        return 0
+        raise ValueError("No sample dates in backtest window.")
     # Shift sample dates to next trading day if needed using benchmark calendar
     if df_bench is not None and not df_bench.empty:
         orig_count = len(sample_schedule)
         sample_schedule = shift_dates_to_trading_calendar(
-            sample_schedule, df_bench.index
+            sample_schedule, trading_calendar
         )
         new_count = len(sample_schedule)
         if new_count != orig_count:
@@ -794,11 +787,9 @@ def main() -> int:
         signal_delay_days=args.signal_delay_days,
         initial_equity=float(args.initial_equity),
     )
-
     if rebalance_target_weights.empty:
         print("No weights generated by allocator; aborting.")
-        return 0
-
+        return 1
     print(
         f"Generated {len(rebalance_target_weights)} rebalance points; "
         f"{len(rebalance_target_weights.columns)} unique tickers."
@@ -819,7 +810,7 @@ def main() -> int:
     )
 
     # Build execution price matrix according to execution mode knob
-    exec_mode = getattr(args, "execution_mode", "open") or "open"
+    exec_mode = getattr(args, "execution_mode", "open_to_open")
     try:
         exec_price_mat = build_execution_price_matrix(
             um=um,
@@ -829,18 +820,17 @@ def main() -> int:
             end=end_dt,
             local_only=args.local_only,
             exec_mode=exec_mode,
-            close_price_mat=price_mat,
         )
     except Exception as e:
         print(f"[backtest_v2] Failed to build execution price matrix: {e}")
-        return 0
+        return 1
 
     if price_mat.empty or exec_price_mat.empty:
         print("Price matrix is empty for backtest window; aborting.")
-        return 0
+        return 1
 
-    print(f"Execution mode: {exec_mode}; using execution price matrix for backtest.")
-    # 1) Rebalance dates must exist in exec price index (open prices available)
+    print(f"Backtest execution mode: {exec_mode}")
+    # Rebalance dates should exist in exec price index
     missing = rebalance_target_weights.index.difference(exec_price_mat.index)
     if not missing.empty:
         print(
@@ -849,39 +839,32 @@ def main() -> int:
             "count=",
             len(missing),
         )
-    # 2) Ensure exec prices are not forward-filled across missing days (dangerous)
-    # (depends on how get_price_matrix behaves)
 
     # Backtester
-    bt = PortfolioBacktester(
-        prices=exec_price_mat,  # execution prices according to --execution-mode
-        weights=rebalance_target_weights,
-        trading_days_per_year=252,
+    bt_cfg = PortfolioBacktesterConfig(
+        execution_mode=exec_mode,
         initial_value=float(args.initial_equity),
         cost_per_turnover=float(args.cost_per_turnover),
         bid_ask_bps_per_side=float(args.bid_ask_bps_per_side),
         risk_free_rate_annual=float(args.rf_annual),
     )
-
-    result = bt.run(
-        apply_weights_to="next",
-        # IMPORTANT:
-        # Weights are timestamped on the *execution day t*, not the prior day.
-        #
-        # Backtest flow:
-        #   - Signals are computed using data up to t-1 (no lookahead)
-        #   - Target weights are generated for date t
-        #   - Trades are assumed to execute on day t (open / close / midpoint)
-        #   - PnL should therefore accrue from t → t+1
-        #
-        # Using apply_weights_to="next" ensures returns on day t reflect
-        # the portfolio *after* trades executed on day t.
-        #
-        # Using "same" here would incorrectly apply weights to the t-1 → t
-        # return interval and introduce lookahead bias.
+    bt = PortfolioBacktester(
+        market_data_store=mds,
     )
-
-    stats = bt.stats(result, auto_warmup=True, warmup_days=0)
+    # IMPORTANT:
+    # Weights are timestamped on the *execution day t*, not the prior day.
+    #
+    # Backtest flow:
+    #   - Signals are computed using data up to t-1 (no lookahead)
+    #   - Target weights are generated for date t
+    #   - Trades are assumed to execute on day t at execution prices (default to open prices)
+    #   - PnL should therefore accrue from t → t+1
+    result = bt.run_vec(
+        prices=exec_price_mat,  # execution prices according to --execution-mode
+        weights=rebalance_target_weights,
+        config=bt_cfg,
+    )
+    stats = bt.stats(result, auto_warmup=True, warmup_days=0, config=bt_cfg)
 
     # Prepare benchmark series and returns
     if df_bench is not None and not df_bench.empty:
@@ -900,55 +883,11 @@ def main() -> int:
             bench_series = bench_series.reindex(result.index).ffill().bfill()
             bench_returns = bench_series.pct_change().fillna(0.0)
 
-    # Print stats
-    def pct(x):
-        return f"{x * 100:.2f}%" if x is not None and not pd.isna(x) else "n/a"
-
-    def num(x):
-        return f"{x:.2f}" if x is not None and not pd.isna(x) else "n/a"
-
-    def money(x):
-        return f"${x:,.2f}" if x is not None and not pd.isna(x) else "n/a"
-
     eff_start = stats.get("EffectiveStart")
     eff_end = stats.get("EffectiveEnd")
 
-    print("\n================ V2 Backtest Summary ================")
-    print(
-        f"Effective window : "
-        f"{eff_start.date() if eff_start is not None else 'n/a'}"
-        f" -> {eff_end.date() if eff_end is not None else 'n/a'}"
-    )
-    # Print enabled sleeves from allocator for quick debug
-    enabled = getattr(allocator, "enabled_sleeves", None)
-    if enabled:
-        enabled_list = ", ".join(sorted(enabled))
-    else:
-        enabled_list = "n/a"
-    print(f"Enabled Sleeves   : {enabled_list}")
-    print(f"CAGR              : {pct(stats.get('CAGR'))}")
-    print(f"Volatility        : {pct(stats.get('Volatility'))}")
-    print(f"Sharpe (excess)   : {num(stats.get('Sharpe'))}")
-    print(f"Skewness          : {num(stats.get('Skewness'))}")
-    print(f"Kurtosis          : {num(stats.get('Kurtosis'))}")
-    print(f"Max Drawdown      : {pct(stats.get('MaxDrawdown'))}")
-    # Additional drawdown details returned by PortfolioBacktester.stats()
-    peak_dt = stats.get("DDPeakDate")
-    trough_dt = stats.get("DDTroughDate")
-    recovery_dt = stats.get("DDRecoveryDate")
-    days_in_dd = stats.get("DaysInDrawdown")
-    print(f"Peak Date         : {peak_dt.date() if peak_dt is not None else 'n/a'}")
-    print(f"Trough Date       : {trough_dt.date() if trough_dt is not None else 'n/a'}")
-    print(
-        f"Recovery Date     : {recovery_dt.date() if recovery_dt is not None else 'n/a'}"
-    )
-    print(f"Days in Drawdown  : {int(days_in_dd) if days_in_dd is not None else 'n/a'}")
-    print(f"Avg Daily Turnover: {pct(stats.get('AvgDailyTurnover'))}")
-    # Print initial equity and total monetary costs (if provided by stats)
-    print(f"Initial equity     : {money(stats.get('InitialEquity'))}")
-    print(f"Total Costs        : {money(stats.get('TotalCost'))}")
-    print(f"Final equity       : {money(result['equity'].iloc[-1])}")
-    print("=====================================================\n")
+    # Print summary
+    print_backtest_summary(stats, allocator, result, eff_start, eff_end)
 
     # Plotting
     do_all = bool(args.plot_all)

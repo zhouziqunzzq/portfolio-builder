@@ -325,16 +325,10 @@ class MultiSleeveAllocator:
         )
 
         results: Dict[str, pd.DataFrame] = {}
-
         for name, sleeve in self.sleeves.items():
             if name not in self.enabled_sleeves:
                 print(
                     f"[MultiSleeveAllocator] Sleeve '{name}' is not enabled; skipping precompute."
-                )
-                continue
-            if not hasattr(sleeve, "precompute"):
-                print(
-                    f"[MultiSleeveAllocator] Sleeve '{name}' has no precompute(); skipping."
                 )
                 continue
             print(f"[MultiSleeveAllocator] Precomputing sleeve '{name}' ...")
