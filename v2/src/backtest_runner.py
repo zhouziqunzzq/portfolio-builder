@@ -20,6 +20,7 @@ if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from configs import AppConfig
+from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
@@ -217,100 +218,23 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     # Note: use the same AppConfig between backtest and live runs for consistency.
     app_cfg = AppConfig.load_from_yaml(Path(args.app_config))
 
-    # Universe
-    um = UniverseManager(
-        membership_csv=Path(app_cfg.universe_manager.membership_csv),
-        sectors_yaml=Path(app_cfg.universe_manager.sectors_yaml),
-        local_only=bool(args.local_only),
+    # Instantiate RuntimeManager
+    rm = RuntimeManager.from_app_config(
+        app_cfg,
+        options=RuntimeManagerOptions(
+            local_only=args.local_only,
+        ),
     )
 
-    # Market data store (with in-memory cache enabled for speed)
-    mds = MarketDataStore(
-        data_root=Path(app_cfg.market_data_store.data_root),
-        source=app_cfg.market_data_store.source,
-        local_only=bool(args.local_only),
-        use_memory_cache=True,
-    )
-
-    # Signals
-    should_disable_cache_margin = False
-    if args.sample_frequency in ("daily", "semi-weekly"):
-        # For high-frequency sampling, disable cache margin to avoid
-        # missing signals on tight windows.
-        should_disable_cache_margin = True
-    signals = SignalEngine(
-        mds,
-        disable_cache_margin=should_disable_cache_margin,
-        disable_cache_extension=True,
-    )
-    vec_engine = VectorizedSignalEngine(um, mds)
-
-    # Regime engine
-    regime_engine = RegimeEngine(
-        signals=signals,
-        config=None,  # use default RegimeConfig
-    )
-
-    # Sleeves
-    trend = TrendSleeve(
-        universe=um,
-        mds=mds,
-        signals=signals,
-        vec_engine=vec_engine,
-        config=app_cfg.trend_sleeve,
-    )
-    defensive = DefensiveSleeve(
-        universe=um,
-        mds=mds,
-        signals=signals,
-        config=app_cfg.defensive_sleeve,
-    )
-    # sideways = SidewaysSleeve(
-    #     mds=mds,
-    #     signals=signals,
-    #     config=None,  # default SidewaysConfig
-    # )
-    # sideways_mr = SidewaysMRSleeve(
-    #     mds=mds,
-    #     signals=signals,
-    #     config=None,  # default SidewaysMRConfig
-    # )
-    # fast_alpha = FastAlphaSleeve(
-    #     universe=um,
-    #     mds=mds,
-    #     signals=signals,
-    #     vec_engine=vec_engine,
-    #     config=None,  # default FastAlphaConfig
-    # )
-    sideways_base = SidewaysBaseSleeve(
-        mds=mds,
-        signals=signals,
-        config=app_cfg.sideways_base_sleeve,
-    )
-
-    # Multi-sleeve configuration
-    allocator = MultiSleeveAllocator(
-        regime_engine=regime_engine,
-        sleeves={
-            "defensive": defensive,
-            "trend": trend,
-            # "sideways": sideways,
-            # "sideways_mr": sideways_mr,
-            # "fast_alpha": fast_alpha,
-            "sideways_base": sideways_base,
-        },
-        config=app_cfg.multi_sleeve_allocator,
-    )
-
+    # Extract singletons from RuntimeManager
     return {
-        "um": um,
-        "mds": mds,
-        "signals": signals,
-        "regime_engine": regime_engine,
-        "defensive": defensive,
-        "trend": trend,
-        # "sideways": sideways,
-        "allocator": allocator,
+        "um": rm["um"],
+        "mds": rm["mds"],
+        "signals": rm["signals"],
+        "regime_engine": rm["regime_engine"],
+        "defensive": rm["defensive"],
+        "trend": rm["trend"],
+        "allocator": rm["allocator"],
     }
 
 
