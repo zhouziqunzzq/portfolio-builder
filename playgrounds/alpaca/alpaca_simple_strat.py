@@ -43,6 +43,7 @@ def _configure_unbuffered_output() -> None:
             # (e.g., `python -u` / `PYTHONUNBUFFERED=1`) and newline prints.
             pass
 
+
 try:
     from alpaca.data.enums import DataFeed
     from alpaca.data.historical import StockHistoricalDataClient
@@ -57,9 +58,9 @@ except Exception:
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    universe: list[str] = field(default_factory=lambda: ["QQQ", "SPY"])
+    universe: list[str] = field(default_factory=lambda: ["QQQ", "SPY", "NVDA", "MU"])
     poll_interval_seconds: int = 30
-    lookback_prices: int = 6
+    lookback_prices: int = 4
     trade_notional_usd: float = 100.0
     take_profit_pct: float = 0.006
     stop_loss_pct: float = 0.005
@@ -142,6 +143,43 @@ def _get_open_positions_by_symbol(trading: TradingClient) -> dict[str, dict]:
     return out
 
 
+def _verify_universe_latest_trades(
+    data: StockHistoricalDataClient,
+    universe: list[str],
+    feed: DataFeed | None,
+) -> dict[str, float]:
+    """Fail fast if any ticker can't return a latest trade.
+
+    This runs once at startup so typos / unsupported tickers are caught even
+    if the market is closed.
+    """
+
+    try:
+        trades = data.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=universe, feed=feed)
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch latest trades for universe: {e}") from e
+
+    missing: list[str] = []
+    prices: dict[str, float] = {}
+    for symbol in universe:
+        t = trades.get(symbol)
+        price = getattr(t, "price", None)
+        if price is None:
+            missing.append(symbol)
+            continue
+        prices[symbol] = float(price)
+
+    if missing:
+        raise RuntimeError(
+            "Universe validation failed (no latest trade returned) for: "
+            + ", ".join(missing)
+        )
+
+    return prices
+
+
 def _submit_market_buy_notional(
     trading: TradingClient, symbol: str, notional_usd: float
 ):
@@ -166,6 +204,8 @@ def run_strategy(cfg: StrategyConfig):
             "Environment variables ALPACA_API_KEY and ALPACA_SECRET_KEY must be set"
         )
 
+    print(f"Trading mode: {'PAPER' if creds['paper'] else 'LIVE'}")
+
     trading = TradingClient(
         api_key=creds["api_key"],
         secret_key=creds["secret_key"],
@@ -178,6 +218,14 @@ def run_strategy(cfg: StrategyConfig):
     universe = [s.strip().upper() for s in cfg.universe if s and s.strip()]
     if not universe:
         raise RuntimeError("Universe is empty")
+
+    # Validate tickers upfront (works even if market is closed).
+    # This catches typos / unsupported symbols early.
+    startup_prices = _verify_universe_latest_trades(data, universe, feed)
+    print(
+        "Startup universe check OK: "
+        + ", ".join([f"{s}={startup_prices[s]:.2f}" for s in universe])
+    )
 
     price_windows: dict[str, deque[float]] = {
         s: deque(maxlen=cfg.lookback_prices) for s in universe
