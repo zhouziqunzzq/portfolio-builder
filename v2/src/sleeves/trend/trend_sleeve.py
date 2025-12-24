@@ -1552,7 +1552,9 @@ class TrendSleeve(BaseSleeve):
             start=warmup_start,
             end=end_ts,
             tickers=self.um.tickers,
+            field="Close",  # Use Close prices for trend calculations
             interval=cfg.signals_interval,
+            auto_adjust=True,  # Use adjusted prices
             auto_apply_membership_mask=False,  # Changed: Don't mask prices
             local_only=getattr(self.mds, "local_only", False),
         )

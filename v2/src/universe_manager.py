@@ -7,6 +7,15 @@ from typing import Dict, List, Optional, Tuple
 import logging
 import pandas as pd
 
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parent
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from market_data_store import BaseMarketDataStore
+
 
 @dataclass
 class UniverseArtifacts:
@@ -728,7 +737,7 @@ class UniverseManager:
 
     def get_price_matrix(
         self,
-        price_loader,
+        price_loader: BaseMarketDataStore,
         start: datetime | str,
         end: datetime | str,
         tickers: Optional[List[str]] = None,
@@ -737,14 +746,14 @@ class UniverseManager:
         auto_adjust: bool = True,
         auto_apply_membership_mask: bool = True,
         local_only: Optional[bool] = None,
-    ) -> pd.DataFrame:
-        """Assemble a price matrix [date x ticker] using the provided loader.
+    ) -> Optional[pd.DataFrame]:
+        """Assemble a price matrix [date x ticker] using the provided loader. Optionally apply
+        membership mask to set prices outside membership to NaN.
 
-        - price_loader may implement get_ohlcv(...) or load_ohlcv(...).
         - If `field` is None, prefer 'Adjclose' then 'Close'.
         - Index dates are timezone-naive and normalized to midnight.
         Args:
-            price_loader: An object providing get_ohlcv(...) or load_ohlcv(...) method.
+            price_loader: Instance of BaseMarketDataStore to fetch market data.
             tickers: List of ticker symbols to fetch.
             start: Start date (inclusive).
             end: End date (inclusive).
@@ -756,76 +765,19 @@ class UniverseManager:
             local_only: If set, overrides instance local_only for this call.
         """
 
-        def _fetch_one(sym: str) -> Optional[pd.Series]:
-            try:
-                if hasattr(price_loader, "get_ohlcv"):
-                    # Pass through local_only if supported by the loader
-                    kwargs = dict(
-                        ticker=sym,
-                        start=start,
-                        end=end,
-                        interval=interval,
-                        auto_adjust=auto_adjust,
-                    )
-                    try:
-                        if local_only is None:
-                            # Fall back to instance default
-                            kwargs["local_only"] = bool(self.local_only)
-                        else:
-                            kwargs["local_only"] = bool(local_only)
-                    except Exception:
-                        pass
-                    ohlcv = price_loader.get_ohlcv(**kwargs)
-                elif hasattr(price_loader, "load_ohlcv"):
-                    ohlcv = price_loader.load_ohlcv(sym, start=start, end=end)
-                else:
-                    raise AttributeError(
-                        "price_loader must provide get_ohlcv or load_ohlcv"
-                    )
-
-                if ohlcv is None or len(ohlcv) == 0:
-                    return None
-
-                # Determine field
-                if field is not None and field in ohlcv.columns:
-                    col = field
-                else:
-                    if "Adjclose" in ohlcv.columns:
-                        col = "Adjclose"
-                    elif "Close" in ohlcv.columns:
-                        col = "Close"
-                    else:
-                        self.log.debug("No Adjclose/Close for %s", sym)
-                        return None
-
-                s = ohlcv[col].copy()
-                s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
-                s.name = sym
-                return s
-            except Exception as e:
-                self.log.warning(f"Failed loading price for {sym}: {e}")
-                import traceback
-                traceback.print_exc()
-                return None
-
-        if auto_apply_membership_mask:
-            # Union of members active any time in window
-            # Note: window includes non-trading days!
-            mask = self.membership_mask(start=start, end=end)
-
         # Default to all tickers if none provided
         if tickers is None:
             tickers = self.tickers
 
-        out = pd.DataFrame()
-        for t in tickers:
-            s = _fetch_one(t)
-            if s is None:
-                continue
-            if out.empty:
-                out = s.to_frame()
-            else:
-                out = out.join(s, how="outer")
+        out = price_loader.get_ohlcv_matrix(
+            tickers=tickers,
+            start=start,
+            end=end,
+            field=field,
+            interval=interval,
+            auto_adjust=auto_adjust,
+            local_only=local_only if local_only is not None else self.local_only,
+        )
 
         if out.empty:
             return out
@@ -833,5 +785,8 @@ class UniverseManager:
         out = out.loc[pd.to_datetime(start) : pd.to_datetime(end)].sort_index()
         # Apply membership mask if requested
         if auto_apply_membership_mask:
+            # Union of members active any time in window
+            # Note: window includes non-trading days!
+            mask = self.membership_mask(start=start, end=end)
             out = out.where(mask, other=pd.NA)
         return out

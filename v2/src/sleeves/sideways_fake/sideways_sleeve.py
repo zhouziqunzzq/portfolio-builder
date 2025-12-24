@@ -546,7 +546,9 @@ class SidewaysSleeve:
             start=warmup_start,
             end=end_ts,
             tickers=self.um.tickers,
+            field="Close",
             interval="1d",
+            auto_adjust=True,
             auto_apply_membership_mask=True,
             local_only=getattr(self.mds, "local_only", False),
         )

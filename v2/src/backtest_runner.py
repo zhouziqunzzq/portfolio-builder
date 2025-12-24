@@ -473,75 +473,6 @@ def generate_target_weights(
     return weights_df, contexts
 
 
-def get_price_matrix_for_weights(
-    um: UniverseManager,
-    mds: MarketDataStore,
-    weights: pd.DataFrame,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    local_only: bool,
-    field: Optional[str] = "Close",
-    auto_adjust: bool = True,
-) -> pd.DataFrame:
-    """
-    Fetch daily Close prices for *exactly* the tickers that appear in the weights matrix.
-    """
-    tickers = sorted([c.upper() for c in weights.columns])
-    if not tickers:
-        return pd.DataFrame()
-
-    price_mat = um.get_price_matrix(
-        price_loader=mds,
-        tickers=tickers,
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        field=field,
-        interval="1d",
-        auto_adjust=auto_adjust,
-        # !IMPORTANT - we need prices for all tickers (including non SP500 ones like GLD)
-        auto_apply_membership_mask=False,
-        local_only=bool(local_only),
-    )
-    return price_mat
-
-
-def build_execution_price_matrix(
-    um: UniverseManager,
-    mds: MarketDataStore,
-    weights: pd.DataFrame,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    local_only: bool,
-    exec_mode: str = "open_to_open",
-    auto_adjust: bool = True,
-) -> pd.DataFrame:
-    """
-    Build an execution price matrix for the supplied `weights` and date range
-    according to `exec_mode`.
-
-    exec_mode options:
-      - "open_to_open" : use next day's open price (default)
-    """
-    mode = exec_mode.lower()
-    exec_mat = pd.DataFrame()
-
-    if mode == "open_to_open":
-        exec_mat = get_price_matrix_for_weights(
-            um=um,
-            mds=mds,
-            weights=weights,
-            start=start,
-            end=end,
-            local_only=local_only,
-            field="Open",
-            auto_adjust=auto_adjust,
-        )
-    else:
-        raise ValueError(f"Unknown execution mode: {exec_mode}")
-
-    return exec_mat
-
-
 def get_trading_calendar(
     start: pd.Timestamp,
     end: pd.Timestamp,
@@ -709,20 +640,9 @@ def main() -> int:
         f"(local_only={args.local_only})"
     )
 
-    # Benchmark (SPY)
+    # Hardcoded benchmark: SPY
     bench_symbol = "SPY"
-    df_bench = mds.get_ohlcv(
-        bench_symbol,
-        start=start_dt,
-        end=end_dt,
-        interval="1d",
-        auto_adjust=True,
-        local_only=bool(args.local_only),
-    )
-    bench_series = None
-    bench_returns = None
-
-    # Trading calendar
+    # Trading calendar from benchmark prices
     trading_calendar = get_trading_calendar(
         start=start_dt,
         end=end_dt,
@@ -736,8 +656,8 @@ def main() -> int:
     )
     if sample_schedule.empty:
         raise ValueError("No sample dates in backtest window.")
-    # Shift sample dates to next trading day if needed using benchmark calendar
-    if df_bench is not None and not df_bench.empty:
+    # Shift sample dates to next trading day if needed given the trading calendar
+    if trading_calendar is not None and not trading_calendar.empty:
         orig_count = len(sample_schedule)
         sample_schedule = shift_dates_to_trading_calendar(
             sample_schedule, trading_calendar
@@ -749,7 +669,7 @@ def main() -> int:
             )
     else:
         print(
-            "[backtest_v2] No benchmark calendar available; skipping sample date shifting."
+            "[backtest_v2] No trading calendar available; skipping sample date shifting."
         )
 
     # Shift to prior day for lookahead bias free precompute
@@ -795,52 +715,9 @@ def main() -> int:
         f"{len(rebalance_target_weights.columns)} unique tickers."
     )
 
-    # Get daily close price matrix for all tickers that appear in weights
-    # Note: Close prices should be used to generate signals and target weights, and
-    # applying friction control.
-    price_mat = get_price_matrix_for_weights(
-        um=um,
-        mds=mds,
-        weights=rebalance_target_weights,
-        start=start_dt,
-        end=end_dt,
-        local_only=args.local_only,
-        field="Close",
-        auto_adjust=True,
-    )
-
-    # Build execution price matrix according to execution mode knob
-    exec_mode = getattr(args, "execution_mode", "open_to_open")
-    try:
-        exec_price_mat = build_execution_price_matrix(
-            um=um,
-            mds=mds,
-            weights=rebalance_target_weights,
-            start=start_dt,
-            end=end_dt,
-            local_only=args.local_only,
-            exec_mode=exec_mode,
-        )
-    except Exception as e:
-        print(f"[backtest_v2] Failed to build execution price matrix: {e}")
-        return 1
-
-    if price_mat.empty or exec_price_mat.empty:
-        print("Price matrix is empty for backtest window; aborting.")
-        return 1
-
-    print(f"Backtest execution mode: {exec_mode}")
-    # Rebalance dates should exist in exec price index
-    missing = rebalance_target_weights.index.difference(exec_price_mat.index)
-    if not missing.empty:
-        print(
-            "Missing exec prices for rebalance dates:",
-            list(missing[:10]),
-            "count=",
-            len(missing),
-        )
-
     # Backtester
+    exec_mode = getattr(args, "execution_mode", "open_to_open")
+    print(f"Backtest execution mode: {exec_mode}")
     bt_cfg = PortfolioBacktesterConfig(
         execution_mode=exec_mode,
         initial_value=float(args.initial_equity),
@@ -860,13 +737,24 @@ def main() -> int:
     #   - Trades are assumed to execute on day t at execution prices (default to open prices)
     #   - PnL should therefore accrue from t → t+1
     result = bt.run_vec(
-        prices=exec_price_mat,  # execution prices according to --execution-mode
         weights=rebalance_target_weights,
         config=bt_cfg,
+        start=start_dt,
+        end=end_dt,
     )
     stats = bt.stats(result, auto_warmup=True, warmup_days=0, config=bt_cfg)
 
     # Prepare benchmark series and returns
+    df_bench = mds.get_ohlcv(
+        bench_symbol,
+        start=start_dt,
+        end=end_dt,
+        interval="1d",
+        auto_adjust=True,
+        local_only=bool(args.local_only),
+    )
+    bench_series = None
+    bench_returns = None
     if df_bench is not None and not df_bench.empty:
         price_col = (
             "Adjclose"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Dict
 
 import numpy as np
@@ -101,6 +102,16 @@ class PortfolioBacktester:
         prices = prices[common_cols]
         weights = weights[common_cols]
 
+        # Debug: report missing dates
+        missing = weights.index.difference(prices.index)
+        if not missing.empty:
+            print(
+                "[PortfolioBacktester] WARNING: missing exec prices for rebalance dates:",
+                list(missing[:10]),
+                "count=",
+                len(missing),
+            )
+
         # Align date index: use prices index as master
         prices = prices.sort_index()
         weights = weights.reindex(prices.index).ffill().fillna(0.0)
@@ -168,21 +179,34 @@ class PortfolioBacktester:
     # ------------------------------------------------------------
     def run_vec(
         self,
-        prices: pd.DataFrame = None,
         weights: pd.DataFrame = None,
         config: Optional[PortfolioBacktesterConfig] = None,
+        start: Optional[datetime | str] = None,
+        end: Optional[datetime | str] = None,
     ) -> pd.DataFrame:
         """
         Run the vectorized backtest.
+        Steps:
+        - Fetch prices for all tickers in weights, aligned on dates.
+        - Compute daily returns according to execution mode:
+            - "open_to_open": weights at day t earn returns from open_t to open_{t+1}.
+        - Given daily returns and weights, compute:
+            - Gross portfolio returns before costs
+            - Turnover
+            - Transaction costs
+            - Net portfolio returns after costs
+            - Equity curve from net returns
 
         Parameters
         ----------
-        prices : DataFrame
-            Price data: Date x Ticker.
         weights: DataFrame
             Weights data: Date x Ticker.
         config : PortfolioBacktesterConfig, optional
             Backtester configuration. If None, default config is used.
+        start : datetime or str, optional
+            Start date for backtest (inclusive). If None, use first date in weights.
+        end : datetime or str, optional
+            End date for backtest (inclusive). If None, use last date in weights.
 
         Returns DataFrame with columns:
         - 'gross_return'     : portfolio return before costs
@@ -196,6 +220,27 @@ class PortfolioBacktester:
         mode = config.execution_mode.lower().strip()
         if mode not in ("open_to_open"):
             raise ValueError(f"Unsupported execution_mode: {config.execution_mode}")
+
+        # Collect all tickers appeared in weights
+        tickers = sorted([c.upper() for c in weights.columns])
+        if tickers is None or len(tickers) == 0:
+            raise ValueError("Weights DataFrame must have at least one ticker column.")
+
+        # Determine start and end dates
+        if start is None:
+            start = weights.index[0]
+        if end is None:
+            end = weights.index[-1]
+
+        # Assemble prices for all tickers
+        prices = self.market_data_store.get_ohlcv_matrix(
+            tickers=tickers,
+            start=start,
+            end=end,
+            field=self._ohlcv_field_from_execution_mode(config.execution_mode),
+            interval="1d",
+            auto_adjust=True,
+        )
 
         # Prepare prices and weights
         prices, weights = self._prepare_prices_and_weights(prices, weights)
@@ -367,3 +412,15 @@ class PortfolioBacktester:
             "EffectiveStart": eff_start,
             "EffectiveEnd": eff_end,
         }
+
+    # ------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------
+
+    @staticmethod
+    def _ohlcv_field_from_execution_mode(execution_mode: str) -> str:
+        mode = execution_mode.lower().strip()
+        if mode in ("open_to_open", "close_to_close"):
+            return "Open" if "open" in mode else "Close"
+        else:
+            raise ValueError(f"Unsupported execution_mode: {execution_mode}")

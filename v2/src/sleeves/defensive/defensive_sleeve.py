@@ -516,7 +516,9 @@ class DefensiveSleeve(BaseSleeve):
             start=warmup_start,
             end=end_ts,
             tickers=tickers,
+            field="Close",
             interval="1d",
+            auto_adjust=True,
             auto_apply_membership_mask=False,
             local_only=getattr(self.mds, "local_only", False),
         )

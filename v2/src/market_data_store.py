@@ -1,4 +1,6 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import List, Optional
 
 """
 Inlined production copy of the project's MarketDataStore.
@@ -15,7 +17,34 @@ import pandas as pd
 import yfinance as yf
 
 
-class MarketDataStore:
+class BaseMarketDataStore(ABC):
+    @abstractmethod
+    def get_ohlcv(
+        self,
+        ticker: str,
+        start: datetime | str,
+        end: datetime | str,
+        interval: str = "1d",
+        auto_adjust: bool = True,
+        local_only: bool = False,
+    ) -> pd.DataFrame:
+        raise NotImplementedError()
+
+    @abstractmethod
+    def get_ohlcv_matrix(
+        self,
+        tickers: List[str],
+        start: datetime | str,
+        end: datetime | str,
+        field: Optional[str] = None,
+        interval: str = "1d",
+        auto_adjust: bool = True,
+        local_only: Optional[bool] = None,
+    ) -> Optional[pd.DataFrame]:
+        raise NotImplementedError()
+
+
+class MarketDataStore(BaseMarketDataStore):
     def __init__(
         self,
         data_root: str,
@@ -31,6 +60,8 @@ class MarketDataStore:
             use_memory_cache: if True, keep per-(ticker, interval) OHLCV DataFrames
                               in memory so repeated calls avoid disk reads.
         """
+        super().__init__()
+
         self.data_root = Path(data_root)
         self.source = source
         self.data_root.mkdir(parents=True, exist_ok=True)
@@ -128,6 +159,83 @@ class MarketDataStore:
         df = df_source.loc[(df_source.index >= start_dt) & (df_source.index <= end_dt)]
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
+
+    def get_ohlcv_matrix(
+        self,
+        tickers: List[str],
+        start: datetime | str,
+        end: datetime | str,
+        field: Optional[str] = None,
+        interval: str = "1d",
+        auto_adjust: bool = True,
+        local_only: Optional[bool] = None,
+    ) -> Optional[pd.DataFrame]:
+        """Assemble a ohlcv matrix [date x ticker] for the given tickers and date range.
+
+        Args:
+            tickers: List of ticker symbols to fetch.
+            start: Start date (inclusive).
+            end: End date (inclusive).
+            field: OHLCV field to extract (e.g., 'Adjclose', 'Close'); if None, auto-detect.
+            interval: Data interval (e.g., '1d').
+            auto_adjust: Whether to auto-adjust prices if supported.
+            local_only: If set, overrides instance local_only for this call.
+        """
+
+        def _fetch_one(sym: str) -> Optional[pd.Series]:
+            try:
+                ohlcv = self.get_ohlcv(
+                    sym,
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    local_only=(
+                        local_only if local_only is not None else self.local_only
+                    ),
+                )
+                if ohlcv is None or len(ohlcv) == 0:
+                    return None
+
+                # Determine field
+                if field is not None and field in ohlcv.columns:
+                    col = field
+                else:
+                    if "Adjclose" in ohlcv.columns:
+                        col = "Adjclose"
+                    elif "Close" in ohlcv.columns:
+                        col = "Close"
+                    else:
+                        self.log.debug("No Adjclose/Close for %s", sym)
+                        return None
+
+                s = ohlcv[col].copy()
+                s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
+                s.name = sym
+                return s
+            except Exception as e:
+                print(f"[MarketDataStore] Failed loading ohlcv for {sym}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                return None
+
+        out = pd.DataFrame()
+        for t in tickers:
+            s = _fetch_one(t)
+            if s is None:
+                continue
+            if out.empty:
+                out = s.to_frame()
+            else:
+                out = out.join(s, how="outer")
+
+        if out.empty:
+            return None
+        # Restrict to requested window and sort
+        out = out.loc[pd.to_datetime(start) : pd.to_datetime(end)].sort_index()
+
+        return out
 
     def has_cached(
         self, ticker: str, interval: str = "1d", auto_adjust: bool = True
