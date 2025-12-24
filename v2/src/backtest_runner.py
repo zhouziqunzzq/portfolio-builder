@@ -19,6 +19,7 @@ _ROOT_SRC = Path(__file__).resolve().parent
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from configs import AppConfig
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
@@ -38,7 +39,6 @@ from sleeves.sideways_base.sideways_base_sleeve import SidewaysBaseSleeve
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from allocator.multi_sleeve_config import MultiSleeveConfig
 from portfolio_backtester import PortfolioBacktester, PortfolioBacktesterConfig
-from friction_control.hysteresis import apply_weight_hysteresis_matrix
 from backtest_plots import (
     plot_equity_curve,
     plot_drawdown,
@@ -61,19 +61,9 @@ def parse_args() -> argparse.Namespace:
 
     # Paths
     p.add_argument(
-        "--membership-csv",
-        default="data/sp500_membership.csv",
-        help="Path to S&P500 membership CSV (for UniverseManager)",
-    )
-    p.add_argument(
-        "--sectors-yaml",
-        default="config/sectors.yml",
-        help="Path to sectors.yml",
-    )
-    p.add_argument(
-        "--data-root",
-        default="data/prices",
-        help="Root directory for MarketDataStore price cache",
+        "--app-config",
+        default="config/app.yml",
+        help="Path to application config YAML file",
     )
 
     # Backtest window
@@ -223,20 +213,21 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     Build UniverseManager, MarketDataStore, SignalEngine, RegimeEngine,
     DefensiveSleeve, TrendSleeve, MultiSleeveAllocator.
     """
-    membership_csv = Path(args.membership_csv)
-    sectors_yaml = Path(args.sectors_yaml)
+    # Global application config
+    # Note: use the same AppConfig between backtest and live runs for consistency.
+    app_cfg = AppConfig.load_from_yaml(Path(args.app_config))
 
     # Universe
     um = UniverseManager(
-        membership_csv=membership_csv,
-        sectors_yaml=sectors_yaml,
+        membership_csv=Path(app_cfg.universe_manager.membership_csv),
+        sectors_yaml=Path(app_cfg.universe_manager.sectors_yaml),
         local_only=bool(args.local_only),
     )
 
     # Market data store (with in-memory cache enabled for speed)
     mds = MarketDataStore(
-        data_root=args.data_root,
-        source="yfinance",
+        data_root=Path(app_cfg.market_data_store.data_root),
+        source=app_cfg.market_data_store.source,
         local_only=bool(args.local_only),
         use_memory_cache=True,
     )
@@ -261,20 +252,18 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     )
 
     # Sleeves
-    defensive = DefensiveSleeve(
-        universe=um,
-        mds=mds,
-        signals=signals,
-        config=None,  # default DefensiveConfig
-    )
     trend = TrendSleeve(
         universe=um,
         mds=mds,
         signals=signals,
         vec_engine=vec_engine,
-        # config=TREND_CONFIG_MONTHLY,
-        config=TREND_CONFIG_WEEKLY,
-        # config=TREND_CONFIG_DAILY,
+        config=app_cfg.trend_sleeve,
+    )
+    defensive = DefensiveSleeve(
+        universe=um,
+        mds=mds,
+        signals=signals,
+        config=app_cfg.defensive_sleeve,
     )
     # sideways = SidewaysSleeve(
     #     mds=mds,
@@ -296,12 +285,10 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     sideways_base = SidewaysBaseSleeve(
         mds=mds,
         signals=signals,
-        config=None,  # default SidewaysBaseConfig
+        config=app_cfg.sideways_base_sleeve,
     )
 
-    # Multi-sleeve configuration (already has defensive + trend defaults)
-    ms_config = MultiSleeveConfig()
-
+    # Multi-sleeve configuration
     allocator = MultiSleeveAllocator(
         regime_engine=regime_engine,
         sleeves={
@@ -312,7 +299,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
             # "fast_alpha": fast_alpha,
             "sideways_base": sideways_base,
         },
-        config=ms_config,
+        config=app_cfg.multi_sleeve_allocator,
     )
 
     return {

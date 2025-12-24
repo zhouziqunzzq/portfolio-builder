@@ -1,0 +1,194 @@
+# V2 application configuration.
+# This file matches `AppConfig` in `v2/src/configs/config.py`.
+#
+# Notes:
+# - Paths are relative to the v2/ directory when running v2 runners.
+
+runtime:
+  log_root: data/logs
+  log_level: INFO
+
+universe_manager:
+  membership_csv: data/sp500_membership.csv
+  sectors_yaml: config/sectors.yml
+
+market_data_store:
+  data_root: data/prices
+  source: yfinance
+
+regime_engine:
+  benchmark: SPY
+  interval: 1d
+  vol_window: 20
+  mom_window: 252
+  fast_ma: 50
+  slow_ma: 200
+  dd_lookback: 252
+  vol_norm_window: 252
+  vol_mode: rolling
+  ewm_vol_halflife: 20
+
+trend_sleeve:
+  # Matches `TREND_CONFIG_WEEKLY` in `v2/src/sleeves/trend/trend_configs.py`
+  signals_interval: 1wk
+  signals_extra_buffer_days: 90
+
+  # Cross-sectional momentum (weekly bars)
+  cs_weight: 1.0
+  mom_windows: [ 13, 26, 52 ]
+  mom_weights: [ 1.0, 1.0, 1.0 ]
+
+  # Time-series momentum (disabled in current runner config)
+  use_ts_mom: false
+  ts_weight: 0.0
+  ts_mom_windows: [ 13, 26, 52 ]
+  ts_mom_weights: [ 0.3, 1.0, 0.7 ]
+  use_ts_gate: false
+  ts_gate_threshold: 0.0
+
+  # Spread momentum vs benchmark (weekly)
+  use_spread_mom: true
+  spread_mom_weight: 0.3
+  spread_mom_windows: [ 13 ]
+  spread_mom_window_weights: [ 1.0 ]
+  spread_benchmark: SPY
+
+  # Volatility penalty
+  vol_mode: rolling
+  ewm_vol_halflife: 10
+  vol_window: 13
+  vol_penalty: 0.3
+
+  # Z-score winsorization
+  use_zscore_winsorization: false
+  zscore_clip: 3.0
+
+  # Liquidity filters (off by default)
+  use_liquidity_filters: false
+  liquidity_window: 20
+  adv_window: 20
+  median_volume_window: 20
+  min_adv20: 5000000.0
+  min_median_volume20: 50000
+  min_price: 0.5
+
+  # Sector weighting
+  sector_softmax_alpha: 1.0
+  sector_w_min: 0.0
+  sector_w_max: 0.3
+  sector_smoothing_beta: 0.2
+  sector_top_k: 5
+  sector_cs_weight: 1.0
+  sector_ts_weight: 0.0
+  sector_smoothing_freq: signal
+
+  # Stock selection per sector
+  top_k_per_sector: 2
+  weighting_mode: equal
+
+  # Rebalance intent
+  rebalance_freq: M
+
+  # Regime gating
+  use_regime_gating: true
+  gated_off_regimes: [ crisis ]
+
+defensive_sleeve:
+  # Defaults from `DefensiveConfig` in `v2/src/sleeves/defensive/defensive_config.py`
+  defensive_sectors: [ "Consumer Staples", "Health Care", "Utilities" ]
+  defensive_equity_etfs: [ XLP, XLV, XLU ]
+  bond_etfs: [ BND, IEF, SHY ]
+  gold_etfs: [ GLD ]
+  asset_class_for_etf:
+    XLP: equity
+    XLV: equity
+    XLU: equity
+    GLD: gold
+    BND: bond
+    IEF: bond
+    SHY: bond
+  min_price: 5.0
+  min_adv: 500000
+  min_adv_window: 20
+  signals_extra_buffer_days: 30
+  mom_fast_window: 63
+  mom_slow_window: 252
+  vol_window: 30
+  beta_window: 63
+  w_mom_fast: 0.2
+  w_mom_slow: 0.3
+  w_low_vol: 0.3
+  w_low_beta: 0.3
+  top_k: 16
+  max_weight_per_name: 0.06
+  max_weight_per_sector: 0.4
+  asset_class_allocations_by_regime:
+    bull: { equity: 0.55, bond: 0.30, gold: 0.15 }
+    correction: { equity: 0.15, bond: 0.55, gold: 0.30 }
+    bear: { equity: 0.05, bond: 0.55, gold: 0.40 }
+    crisis: { equity: 0.00, bond: 0.40, gold: 0.60 }
+    sideways: { equity: 0.15, bond: 0.55, gold: 0.30 }
+  rebalance_freq: M
+
+sideways_base_sleeve:
+  # Defaults from `SidewaysBaseConfig` in `v2/src/sleeves/sideways_base/sideways_base_config.py`
+  defensive_equity_etfs: [ XLP, XLV, XLU, USMV ]
+  bond_etfs: [ SHY, IEF, BND ]
+  gold_etfs: [ GLD ]
+  cash_proxy_etfs: [ BIL ]
+  asset_class_for_etf:
+    XLP: equity
+    XLV: equity
+    XLU: equity
+    USMV: equity
+    SHY: bond
+    IEF: bond
+    BND: bond
+    BIL: cash
+    GLD: gold
+  min_price: 5.0
+  min_adv: 500000
+  min_adv_window: 20
+  signals_extra_buffer_days: 60
+  vol_window: 20
+  dd_window: 63
+  slope_window: 126
+  ann_factor: 252
+  w_low_vol: 0.5
+  w_low_dd: 0.45
+  w_pos_slope: 0.05
+  top_k: 6
+  max_weight_per_name: 0.4
+  min_weight_cutoff: 0.0
+  asset_class_allocations: { equity: 0.35, bond: 0.45, gold: 0.15, cash: 0.05 }
+  rebalance_freq: M
+
+multi_sleeve_allocator:
+  # Defaults from `MultiSleeveConfig` in `v2/src/allocator/multi_sleeve_config.py`
+  signal_lookback_days: 365
+  regime_lookback_days: 252
+  regime_score_columns: [ bull, correction, bear, crisis, sideways ]
+  regime_sample_freq: M
+  regime_temperature_tau: 0.6
+  trend_filter_enabled: true
+  trend_benchmark: SPY
+  trend_window: 200
+  trend_sample_freq: M
+  sleeve_risk_on_equity_frac:
+    trend: 1.0
+  sleeve_risk_off_equity_frac:
+    trend: 0.7
+  enable_friction_control: true
+  friction_control_config:
+    # Defaults from `FrictionControlConfig` in `v2/src/friction_control/friction_control_config.py`
+    hysteresis_dw_min: 0.005
+    min_trade_notional_abs: 25
+    min_trade_pct_of_aum: 0.003
+    min_holding_rebalances: 0
+  preserve_cash_if_under_target: true
+  sleeve_regime_weights:
+    bull: { trend: 0.88, sideways_base: 0.06, defensive: 0.06, cash: 0.00 }
+    correction: { trend: 0.60, sideways_base: 0.15, defensive: 0.20, cash: 0.05 }
+    bear: { trend: 0.08, sideways_base: 0.02, defensive: 0.60, cash: 0.30 }
+    crisis: { trend: 0.00, sideways_base: 0.00, defensive: 0.75, cash: 0.25 }
+    sideways: { trend: 0.55, sideways_base: 0.20, defensive: 0.20, cash: 0.05 }
