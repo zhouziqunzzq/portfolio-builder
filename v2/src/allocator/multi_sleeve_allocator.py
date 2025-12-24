@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Mapping, Any, Tuple
+from typing import Dict, List, Optional, Mapping, Any, Set, Tuple
 from datetime import datetime, timedelta
 import math
 
@@ -19,6 +19,7 @@ from signal_engine import SignalEngine
 from friction_control.friction_controller import FrictionController
 from context.rebalance import RebalanceContext
 from context.friction_control import FrictionControlContext
+from sleeves.base import BaseSleeve
 from sleeves.common.rebalance_helpers import should_rebalance
 from .multi_sleeve_config import MultiSleeveConfig
 
@@ -57,7 +58,7 @@ class MultiSleeveAllocator:
     def __init__(
         self,
         regime_engine: RegimeEngine,
-        sleeves: Mapping[str, Any],
+        sleeves: Mapping[str, BaseSleeve],
         config: Optional[MultiSleeveConfig] = None,
     ):
         """
@@ -81,7 +82,7 @@ class MultiSleeveAllocator:
         self.signals: SignalEngine = (
             regime_engine.signals
         )  # "steal" SignalEngine from RegimeEngine
-        self.sleeves: Dict[str, Any] = dict(sleeves)
+        self.sleeves: Dict[str, BaseSleeve] = dict(sleeves)
         self.config = config or MultiSleeveConfig()
         self.enabled_sleeves = set()
         for regime_weights in self.config.sleeve_regime_weights.values():
@@ -111,6 +112,23 @@ class MultiSleeveAllocator:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> Set[str]:
+        """
+        Get the overall universe, i.e. all tickers tradable across all enabled sleeves.
+        If as_of is provided, get the universe as-of that date. Otherwise, return the
+        universe of all time (including tickers no longer in the index of individual sleeves).
+        """
+        tickers: Set[str] = set()
+        for name in self.enabled_sleeves:
+            if name == "cash":
+                continue
+            sleeve = self.sleeves.get(name)
+            if sleeve is None:
+                continue
+            sleeve_univ = sleeve.get_universe(as_of)
+            tickers.update(sleeve_univ)
+        return tickers
 
     def generate_global_target_weights(
         self,

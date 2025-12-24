@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -20,6 +20,7 @@ from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
 from vec_signal_engine import VectorizedSignalEngine
+from sleeves.base import BaseSleeve
 from sleeves.common.rebalance_helpers import (
     should_rebalance,
     get_closest_date_on_or_before,
@@ -34,7 +35,7 @@ class DefensiveState:
     last_weights: Optional[Dict[str, float]] = None
 
 
-class DefensiveSleeve:
+class DefensiveSleeve(BaseSleeve):
     """
     Defensive Sleeve (Multi-Asset)
 
@@ -46,15 +47,25 @@ class DefensiveSleeve:
 
     def __init__(
         self,
-        universe: UniverseManager,
         mds: MarketDataStore,
+        universe: UniverseManager,
         signals: SignalEngine,
         config: Optional[DefensiveConfig] = None,
     ):
-        self.um = universe
-        self.mds = mds
-        self.signals = signals
-        self.vec_signals = VectorizedSignalEngine(universe, mds)
+        super().__init__(
+            market_data_store=mds,
+            universe_manager=universe,
+            signal_engine=signals,
+            vectorized_signal_engine=VectorizedSignalEngine(universe, mds),
+        )
+        # Aliases for convenience
+        self.um = self.universe_manager
+        self.mds = self.market_data_store
+        self.signals = self.signal_engine
+        self.vec_engine = self.vectorized_signal_engine or VectorizedSignalEngine(
+            universe, mds
+        )
+
         self.config = config or DefensiveConfig()
         self.state = DefensiveState()
 
@@ -66,7 +77,15 @@ class DefensiveSleeve:
     # Universe
     # ------------------------------------------------------------------
 
-    def get_defensive_universe(
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> Set[str]:
+        """
+        Get the universe, i.e. all tickers tradable for the sleeve.
+        If as_of is provided, get the universe as-of that date. Otherwise, return the
+        universe of all time (including tickers no longer in the index).
+        """
+        return set(self._get_defensive_universe(as_of))
+
+    def _get_defensive_universe(
         self,
         as_of: Optional[datetime | str] = None,
     ) -> List[str]:
@@ -282,7 +301,7 @@ class DefensiveSleeve:
             print(
                 "[DefensiveSleeve] WARNING: no cached signals or scores found, falling back to per-ticker signal computation"
             )
-            universe = self.get_defensive_universe(as_of=as_of)
+            universe = self._get_defensive_universe(as_of=as_of)
             universe = self._apply_liquidity_filters(universe, as_of)
             if not universe:
                 return {}
@@ -514,7 +533,7 @@ class DefensiveSleeve:
         warmup_start: pd.Timestamp,
         end_ts: pd.Timestamp,
     ):
-        VSE = self.vec_signals
+        VSE = self.vec_engine
 
         mom_fast_w = int(getattr(cfg, "mom_fast_window", 50))
         mom_slow_w = int(getattr(cfg, "mom_slow_window", 200))
@@ -557,7 +576,7 @@ class DefensiveSleeve:
         adv_window = int(getattr(cfg, "min_adv_window", 20))
 
         tickers = price_mat.columns.tolist()
-        VSE = self.vec_signals
+        VSE = self.vec_engine
         vol_field_mat = VSE.get_field_matrix(
             tickers,
             start=warmup_start,
@@ -664,9 +683,7 @@ class DefensiveSleeve:
         start: datetime | str,
         end: datetime | str,
         sample_dates: Optional[List[datetime | str]] = None,
-        warmup_buffer: Optional[
-            int
-        ] = None,  # in days; unused for vectorized trend sleeve
+        warmup_buffer: Optional[int] = None,  # in days
     ) -> pd.DataFrame:
         """
         Vectorized precompute for DefensiveSleeve.
@@ -685,7 +702,7 @@ class DefensiveSleeve:
 
         # Build defensive universe
         # Note: as_of=None to get full universe, because we apply membership mask later
-        tickers = self.get_defensive_universe(as_of=None)
+        tickers = self._get_defensive_universe(as_of=None)
         if not tickers:
             self._cached_scores_mat = pd.DataFrame()
             self._cached_signal_mats = {}

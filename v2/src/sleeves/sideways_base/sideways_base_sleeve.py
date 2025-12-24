@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -16,6 +16,7 @@ if str(_ROOT_SRC) not in sys.path:
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
 from signal_engine import SignalEngine
+from sleeves.base import BaseSleeve
 from sleeves.common.rebalance_helpers import should_rebalance
 from context.rebalance import RebalanceContext
 
@@ -28,7 +29,7 @@ class SidewaysBaseState:
     last_weights: Optional[Dict[str, float]] = None
 
 
-class SidewaysBaseSleeve:
+class SidewaysBaseSleeve(BaseSleeve):
     """
     Sideways Base Sleeve (Option A) — long-only whipsaw insurance.
 
@@ -46,8 +47,16 @@ class SidewaysBaseSleeve:
         signals: SignalEngine,
         config: Optional[SidewaysBaseConfig] = None,
     ):
-        self.mds = mds
-        self.signals = signals
+        super().__init__(
+            market_data_store=mds,
+            universe_manager=None,
+            signal_engine=signals,
+            vectorized_signal_engine=None,
+        )
+        # Aliases for convenience
+        self.mds = self.market_data_store
+        self.signals = self.signal_engine
+
         self.config = config or SidewaysBaseConfig()
         self.state = SidewaysBaseState()
 
@@ -55,7 +64,15 @@ class SidewaysBaseSleeve:
     # Universe
     # ------------------------------------------------------------------
 
-    def get_sideways_universe(self) -> List[str]:
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> Set[str]:
+        """
+        Get the universe, i.e. all tickers tradable for the sleeve.
+        If as_of is provided, get the universe as-of that date. Otherwise, return the
+        universe of all time (including tickers no longer in the index).
+        """
+        return set(self._get_sideways_universe())
+
+    def _get_sideways_universe(self) -> List[str]:
         # ETFs only by design (robust + low churn)
         return self.config.sideways_etfs
 
@@ -125,7 +142,7 @@ class SidewaysBaseSleeve:
             f"last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
         )
 
-        universe = self.get_sideways_universe()
+        universe = self._get_sideways_universe()
         universe = self._apply_liquidity_filters(universe, as_of)
         if not universe:
             return {}
@@ -341,3 +358,19 @@ class SidewaysBaseSleeve:
         # final renorm for numerical safety
         s = sum(w2.values())
         return {t: x / s for t, x in w2.items()} if s > 0 else {}
+
+    # ------------------------------------------------------------------
+    # Precompute
+    # ------------------------------------------------------------------
+    def precompute(
+        self,
+        start: datetime | str,
+        end: datetime | str,
+        sample_dates: Optional[List[datetime | str]] = None,
+        warmup_buffer: Optional[int] = None,  # in days
+    ) -> pd.DataFrame:
+        # Not implemented for this sleeve
+        print(
+            "[SidewaysBaseSleeve] Precompute not implemented; returning empty DataFrame"
+        )
+        return pd.DataFrame()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import traceback
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -32,6 +32,7 @@ from utils.stats import (
     sector_mean_snapshot,
     sector_mean_matrix,
 )
+from sleeves.base import BaseSleeve
 from sleeves.common.rebalance_helpers import (
     should_rebalance,
     infer_approx_rebalance_days,
@@ -50,7 +51,7 @@ class TrendState:
     last_stock_weights: Optional[Dict[str, float]] = None
 
 
-class TrendSleeve:
+class TrendSleeve(BaseSleeve):
     """
     Trend / Momentum Sleeve (stock-based, sector-aware).
 
@@ -65,16 +66,27 @@ class TrendSleeve:
 
     def __init__(
         self,
-        universe: UniverseManager,
         mds: MarketDataStore,
+        universe: UniverseManager,
         signals: SignalEngine,
         vec_engine: Optional[VectorizedSignalEngine] = None,
         config: Optional[TrendConfig] = None,
     ) -> None:
-        self.um = universe
-        self.mds = mds
-        self.signals = signals
-        self.vec_engine = vec_engine
+
+        super().__init__(
+            market_data_store=mds,
+            universe_manager=universe,
+            signal_engine=signals,
+            vectorized_signal_engine=vec_engine,
+        )
+        # Aliases for convenience
+        self.um = self.universe_manager
+        self.mds = self.market_data_store
+        self.signals = self.signal_engine
+        self.vec_engine = self.vectorized_signal_engine or VectorizedSignalEngine(
+            universe, mds
+        )
+
         self.config = config or TrendConfig()
         self.state = TrendState()
 
@@ -287,8 +299,20 @@ class TrendSleeve:
         return stock_weights
 
     # ------------------------------------------------------------------
-    # TIME-AWARE UNIVERSE
+    # Universe
     # ------------------------------------------------------------------
+
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> Set[str]:
+        """
+        Get the universe, i.e. all tickers tradable for the sleeve.
+        If as_of is provided, get the universe as-of that date. Otherwise, return the
+        universe of all time (including tickers no longer in the index).
+        """
+        tickers = set(self._get_trend_universe(as_of))
+        # And don't forget about the spread-mom benchmark(s)
+        if self.config.use_spread_mom and self.config.spread_benchmark:
+            tickers.add(self.config.spread_benchmark)
+        return tickers
 
     def _get_trend_universe(
         self,

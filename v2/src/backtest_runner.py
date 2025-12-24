@@ -85,7 +85,8 @@ def parse_args() -> argparse.Namespace:
         "--start",
         dest="backtest_start",
         default=None,
-        help="Backtest start date (YYYY-MM-DD). If omitted, use earliest feasible.",
+        required=True,
+        help="Backtest start date (YYYY-MM-DD).",
     )
     p.add_argument(
         "--end",
@@ -695,30 +696,28 @@ def main() -> int:
     um: UniverseManager = rt["um"]  # type: ignore
     mds: MarketDataStore = rt["mds"]  # type: ignore
     allocator: MultiSleeveAllocator = rt["allocator"]  # type: ignore
-    friction_cfg: FrictionControlConfig = (
-        FrictionControlConfig()
-    )  # TODO: customize config
+
+    # Debug: print universe info
+    # all_tickers = list(sorted(allocator.get_universe()))
+    # print(f"Universe tickers ({len(all_tickers)}):")
+    # print(f"All tickers in universe: {all_tickers}")
 
     # Backtest window
     if args.backtest_start:
         start_dt = pd.to_datetime(args.backtest_start)
     else:
-        try:
-            membership = um.membership_df  # depending on your UM implementation
-            start_dt = pd.to_datetime(membership.index.min())
-        except Exception:
-            start_dt = pd.Timestamp("2015-01-01")
-
+        raise ValueError("Backtest start date (--start) is required.")
     if args.backtest_end:
         end_dt = pd.to_datetime(args.backtest_end)
     else:
+        print(
+            f"[backtest_v2] No backtest end date specified; using today ({pd.Timestamp.today().date()})."
+        )
         end_dt = pd.Timestamp.today().normalize()
-
     if end_dt <= start_dt:
         raise ValueError(
             f"Backtest end {end_dt.date()} must be after start {start_dt.date()}"
         )
-
     print(
         f"Running V2 backtest from {start_dt.date()} to {end_dt.date()} "
         f"(local_only={args.local_only})"

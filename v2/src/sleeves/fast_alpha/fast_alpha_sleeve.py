@@ -126,6 +126,19 @@ class FastAlphaSleeve:
     # ------------------------------------------------------------------
     # Universe
     # ------------------------------------------------------------------
+
+    def get_universe(self, as_of: Optional[datetime | str] = None) -> Set[str]:
+        """
+        Get the universe, i.e. all tickers tradable for the sleeve.
+        If as_of is provided, get the universe as-of that date. Otherwise, return the
+        universe of all time (including tickers no longer in the index).
+        """
+        tickers = set(self._get_universe(as_of))
+        # And don't forget about the spread-mom benchmark(s)
+        if self.config.spread_benchmark:
+            tickers.add(self.config.spread_benchmark)
+        return tickers
+
     def _get_universe(self, as_of: pd.Timestamp) -> List[str]:
         """
         Time-aware membership universe similar to TrendSleeve:
