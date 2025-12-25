@@ -34,8 +34,9 @@ class MarketDataStoreConfig:
 
 @dataclass
 class RuntimeConfig:
-    log_root: str
     log_level: str = "INFO"
+    log_to_file: bool = True
+    log_root: Optional[str] = None
     # Optional path to a JSON file used for runtime state persistence.
     # FileStateManager will require this to be set (non-None).
     state_file: Optional[str] = None

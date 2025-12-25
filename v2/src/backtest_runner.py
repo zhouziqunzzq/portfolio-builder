@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
+import logging
 
 # Make v2/src importable by adding it to sys.path. This allows using
 # direct module imports (e.g. `from universe_manager import ...`) rather
@@ -20,6 +21,7 @@ if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from configs import AppConfig
+from utils.logging import configure_logging
 from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from universe_manager import UniverseManager
 from market_data_store import MarketDataStore
@@ -218,6 +220,16 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     # Note: use the same AppConfig between backtest and live runs for consistency.
     app_cfg = AppConfig.load_from_yaml(Path(args.app_config))
 
+    # Configure global logging
+    root_logger = configure_logging(
+        log_root=Path(app_cfg.runtime.log_root),
+        level=app_cfg.runtime.log_level,
+        log_to_file=app_cfg.runtime.log_to_file,
+    )
+
+    # Module-level logger (will inherit handlers from root_logger)
+    logging.getLogger("backtest_v2")
+
     # Instantiate RuntimeManager
     rm = RuntimeManager.from_app_config(
         app_cfg,
@@ -228,6 +240,7 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
 
     # Extract singletons from RuntimeManager
     return {
+        "logger": root_logger,
         "um": rm["um"],
         "mds": rm["mds"],
         "signals": rm["signals"],
@@ -354,8 +367,10 @@ def generate_target_weights(
         as_of_shifted = as_of - pd.Timedelta(days=1)
         # Apply signal delay if specified
         as_of_shifted -= pd.Timedelta(days=signal_delay_days)
-        print(
-            f"[backtest_v2] Generating weights for {as_of.date()} (using data as of {as_of_shifted.date()})"
+        logging.getLogger("backtest_v2").info(
+            "Generating weights for %s (using data as of %s)",
+            as_of.date(),
+            as_of_shifted.date(),
         )
         w, ctx = allocator.generate_global_target_weights(
             as_of_shifted,
@@ -369,15 +384,15 @@ def generate_target_weights(
         rows[as_of] = w
         contexts[as_of] = ctx
         all_tickers.update(w.keys())
-        # Debug: print weights
-        print(
-            f"  Weights: {', '.join([f'{t}:{v:.4f}' for t,v in w.items() if v > 0.0])}"
+        # Debug: weights
+        logging.getLogger("backtest_v2").debug(
+            "Weights: %s",
+            ", ".join([f"{t}:{v:.4f}" for t, v in w.items() if v > 0.0]),
         )
         # Estimate next AUM for context (simple CAGR growth)
         if last_as_of is not None:
             days_diff = (as_of - last_as_of).days
             approx_aum = approx_aum * (1.0 + approx_CAGR) ** (days_diff / 252.0)
-            # print(f"  Estimated next AUM: {approx_aum:.2f}")
         last_as_of = as_of
 
     if not all_tickers:
@@ -447,11 +462,13 @@ def shift_dates_to_trading_calendar(
             if pos < len(trading):
                 newd = trading[pos]
                 shifted.append(newd)
-                print(f"[backtest_v2] Shifted sample date {dn.date()} -> {newd.date()}")
+                logging.getLogger("backtest_v2").info(
+                    "Shifted sample date %s -> %s", dn.date(), newd.date()
+                )
             else:
                 # No trading day after this date in the calendar; skip it
-                print(
-                    f"[backtest_v2] Dropping sample date {dn.date()}: no later trading day available"
+                logging.getLogger("backtest_v2").warning(
+                    "Dropping sample date %s: no later trading day available", dn.date()
                 )
 
     # Deduplicate while preserving order
@@ -465,19 +482,14 @@ def shift_dates_to_trading_calendar(
     return pd.DatetimeIndex(deduped)
 
 
-# Plot helpers have been moved to `backtest_plots.py` and are imported
-# near the top of this file. The original in-file plotting helpers were
-# removed to keep this runner focused on orchestration.
-
-
-def print_backtest_summary(
+def log_backtest_summary(
     stats: Dict[str, Any],
     allocator: MultiSleeveAllocator,
     result: pd.DataFrame,
     eff_start: Optional[pd.Timestamp],
     eff_end: Optional[pd.Timestamp],
 ) -> None:
-    """Print a standardized backtest summary."""
+    """Log a standardized backtest summary."""
 
     def pct(x):
         return f"{x * 100:.2f}%" if x is not None and not pd.isna(x) else "n/a"
@@ -488,36 +500,46 @@ def print_backtest_summary(
     def money(x):
         return f"${x:,.2f}" if x is not None and not pd.isna(x) else "n/a"
 
-    print("\n================ V2 Backtest Summary ================")
-    print(
-        f"Effective window : "
-        f"{eff_start.date() if eff_start is not None else 'n/a'}"
-        f" -> {eff_end.date() if eff_end is not None else 'n/a'}"
+    logging.getLogger("backtest_v2").info(
+        "================ V2 Backtest Summary ================"
+    )
+    logging.getLogger("backtest_v2").info(
+        "Effective window : %s -> %s",
+        (eff_start.date() if eff_start is not None else "n/a"),
+        (eff_end.date() if eff_end is not None else "n/a"),
     )
     enabled = getattr(allocator, "enabled_sleeves", None)
     enabled_list = ", ".join(sorted(enabled)) if enabled else "n/a"
-    print(f"Enabled Sleeves   : {enabled_list}")
-    print(f"CAGR              : {pct(stats.get('CAGR'))}")
-    print(f"Volatility        : {pct(stats.get('Volatility'))}")
-    print(f"Sharpe (excess)   : {num(stats.get('Sharpe'))}")
-    print(f"Skewness          : {num(stats.get('Skewness'))}")
-    print(f"Kurtosis          : {num(stats.get('Kurtosis'))}")
-    print(f"Max Drawdown      : {pct(stats.get('MaxDrawdown'))}")
+    lg = logging.getLogger("backtest_v2")
+    lg.info("Enabled Sleeves   : %s", enabled_list)
+    lg.info("CAGR              : %s", pct(stats.get("CAGR")))
+    lg.info("Volatility        : %s", pct(stats.get("Volatility")))
+    lg.info("Sharpe (excess)   : %s", num(stats.get("Sharpe")))
+    lg.info("Skewness          : %s", num(stats.get("Skewness")))
+    lg.info("Kurtosis          : %s", num(stats.get("Kurtosis")))
+    lg.info("Max Drawdown      : %s", pct(stats.get("MaxDrawdown")))
     peak_dt = stats.get("DDPeakDate")
     trough_dt = stats.get("DDTroughDate")
     recovery_dt = stats.get("DDRecoveryDate")
     days_in_dd = stats.get("DaysInDrawdown")
-    print(f"Peak Date         : {peak_dt.date() if peak_dt is not None else 'n/a'}")
-    print(f"Trough Date       : {trough_dt.date() if trough_dt is not None else 'n/a'}")
-    print(
-        f"Recovery Date     : {recovery_dt.date() if recovery_dt is not None else 'n/a'}"
+    lg.info(
+        "Peak Date         : %s", (peak_dt.date() if peak_dt is not None else "n/a")
     )
-    print(f"Days in Drawdown  : {int(days_in_dd) if days_in_dd is not None else 'n/a'}")
-    print(f"Avg Daily Turnover: {pct(stats.get('AvgDailyTurnover'))}")
-    print(f"Initial equity     : {money(stats.get('InitialEquity'))}")
-    print(f"Total Costs        : {money(stats.get('TotalCost'))}")
-    print(f"Final equity       : {money(result['equity'].iloc[-1])}")
-    print("=====================================================\n")
+    lg.info(
+        "Trough Date       : %s", (trough_dt.date() if trough_dt is not None else "n/a")
+    )
+    lg.info(
+        "Recovery Date     : %s",
+        (recovery_dt.date() if recovery_dt is not None else "n/a"),
+    )
+    lg.info(
+        "Days in Drawdown  : %s", (int(days_in_dd) if days_in_dd is not None else "n/a")
+    )
+    lg.info("Avg Daily Turnover: %s", pct(stats.get("AvgDailyTurnover")))
+    lg.info("Initial equity     : %s", money(stats.get("InitialEquity")))
+    lg.info("Total Costs        : %s", money(stats.get("TotalCost")))
+    lg.info("Final equity       : %s", money(result["equity"].iloc[-1]))
+    lg.info("=====================================================")
 
 
 # ---------------------------------------------------------------------
@@ -530,14 +552,9 @@ def main() -> int:
 
     # Build runtime stack
     rt = build_runtime(args)
-    um: UniverseManager = rt["um"]  # type: ignore
+    logger = rt["logger"]  # type: ignore
     mds: MarketDataStore = rt["mds"]  # type: ignore
     allocator: MultiSleeveAllocator = rt["allocator"]  # type: ignore
-
-    # Debug: print universe info
-    # all_tickers = list(sorted(allocator.get_universe()))
-    # print(f"Universe tickers ({len(all_tickers)}):")
-    # print(f"All tickers in universe: {all_tickers}")
 
     # Backtest window
     if args.backtest_start:
@@ -547,17 +564,20 @@ def main() -> int:
     if args.backtest_end:
         end_dt = pd.to_datetime(args.backtest_end)
     else:
-        print(
-            f"[backtest_v2] No backtest end date specified; using today ({pd.Timestamp.today().date()})."
+        logging.getLogger("backtest_v2").warning(
+            "No backtest end date specified; using today (%s).",
+            pd.Timestamp.today().date(),
         )
         end_dt = pd.Timestamp.today().normalize()
     if end_dt <= start_dt:
         raise ValueError(
             f"Backtest end {end_dt.date()} must be after start {start_dt.date()}"
         )
-    print(
-        f"Running V2 backtest from {start_dt.date()} to {end_dt.date()} "
-        f"(local_only={args.local_only})"
+    logging.getLogger("backtest_v2").info(
+        "Running V2 backtest from %s to %s (local_only=%s)",
+        start_dt.date(),
+        end_dt.date(),
+        args.local_only,
     )
 
     # Hardcoded benchmark: SPY
@@ -584,11 +604,13 @@ def main() -> int:
         )
         new_count = len(sample_schedule)
         if new_count != orig_count:
-            print(
-                f"[backtest_v2] Sample schedule adjusted: {orig_count} -> {new_count} dates after shifting to trading calendar"
+            logging.getLogger("backtest_v2").info(
+                "Sample schedule adjusted: %s -> %s dates after shifting to trading calendar",
+                orig_count,
+                new_count,
             )
     else:
-        print(
+        logging.getLogger("backtest_v2").info(
             "[backtest_v2] No trading calendar available; skipping sample date shifting."
         )
 
@@ -602,25 +624,27 @@ def main() -> int:
     # Optional vectorized sleeve precompute to accelerate per-date calls.
     # Only sleeves exposing a `precompute` method (e.g., TrendSleeve) will be used.
     if args.skip_precompute:
-        print("[backtest_v2] Skipping sleeve precompute phase as requested.")
+        logging.getLogger("backtest_v2").info(
+            "Skipping sleeve precompute phase as requested."
+        )
     else:
         try:
-            print("[backtest_v2] Starting sleeve precompute phase...")
+            logging.getLogger("backtest_v2").info("Starting sleeve precompute phase...")
             allocator.precompute(
                 start=start_dt,
                 end=end_dt,
                 sample_dates=list(sample_schedule_shifted),
                 warmup_buffer=30,
             )
-            print("[backtest_v2] Sleeve precompute phase completed.")
+            logging.getLogger("backtest_v2").info("Sleeve precompute phase completed.")
         except Exception as e:
-            print(
-                f"[backtest_v2] Sleeve precompute failed; continuing without cache. ({e})"
+            logging.getLogger("backtest_v2").warning(
+                "Sleeve precompute failed; continuing without cache. (%s)", e
             )
 
     # Backtester
     exec_mode = getattr(args, "execution_mode", "open_to_open")
-    print(f"Backtest execution mode: {exec_mode}")
+    logging.getLogger("backtest_v2").info("Backtest execution mode: %s", exec_mode)
     bt_cfg = PortfolioBacktesterConfig(
         execution_mode=exec_mode,
         initial_value=float(args.initial_equity),
@@ -634,7 +658,7 @@ def main() -> int:
 
     # Run backtest in selected mode
     backtest_mode = getattr(args, "backtest_mode", "vectorized").lower()
-    print(f"Backtest mode: {backtest_mode}")
+    logging.getLogger("backtest_v2").info("Backtest mode: %s", backtest_mode)
     rebalance_contexts: Dict[pd.Timestamp, Dict[str, Any]] = {}
     if backtest_mode == "vectorized":
         # Generate sleeve-based target weights (and collect regime context)
@@ -647,11 +671,14 @@ def main() -> int:
             initial_equity=float(args.initial_equity),
         )
         if rebalance_target_weights.empty:
-            print("No weights generated by allocator; aborting.")
+            logging.getLogger("backtest_v2").error(
+                "No weights generated by allocator; aborting."
+            )
             return 1
-        print(
-            f"Generated {len(rebalance_target_weights)} rebalance points; "
-            f"{len(rebalance_target_weights.columns)} unique tickers."
+        logging.getLogger("backtest_v2").info(
+            "Generated %s rebalance points; %s unique tickers.",
+            len(rebalance_target_weights),
+            len(rebalance_target_weights.columns),
         )
         # IMPORTANT:
         # Weights are timestamped on the *execution day t*, not the prior day.
@@ -661,7 +688,9 @@ def main() -> int:
         #   - Target weights are generated for date t
         #   - Trades are assumed to execute on day t at execution prices (default to open prices)
         #   - PnL should therefore accrue from t → t+1
-        print(f"Running backtest in {backtest_mode} mode...")
+        logging.getLogger("backtest_v2").info(
+            "Running backtest in %s mode...", backtest_mode
+        )
         result = bt.run_vectorized(
             weights=rebalance_target_weights,
             config=bt_cfg,
@@ -669,7 +698,9 @@ def main() -> int:
             end=end_dt,
         )
     elif backtest_mode == "iterative":
-        print(f"Running backtest in {backtest_mode} mode...")
+        logging.getLogger("backtest_v2").info(
+            "Running backtest in %s mode...", backtest_mode
+        )
 
         def _gen_weights_fn(
             as_of: pd.Timestamp,
@@ -723,8 +754,8 @@ def main() -> int:
     eff_start = stats.get("EffectiveStart")
     eff_end = stats.get("EffectiveEnd")
 
-    # Print summary
-    print_backtest_summary(stats, allocator, result, eff_start, eff_end)
+    # Log summary
+    log_backtest_summary(stats, allocator, result, eff_start, eff_end)
 
     # Plotting
     do_all = bool(args.plot_all)
@@ -779,15 +810,21 @@ def main() -> int:
         try:
             plot_regime_scores(rebalance_contexts, show=show)
         except Exception as e:
-            print(f"[backtest_v2] Failed to plot regime scores: {e}")
+            logging.getLogger("backtest_v2").exception(
+                "Failed to plot regime scores: %s", e
+            )
         try:
             plot_sleeve_weights(rebalance_contexts, show=show)
         except Exception as e:
-            print(f"[backtest_v2] Failed to plot sleeve weights: {e}")
+            logging.getLogger("backtest_v2").exception(
+                "Failed to plot sleeve weights: %s", e
+            )
         try:
             plot_trend_status(rebalance_contexts, show=show)
         except Exception as e:
-            print(f"[backtest_v2] Failed to plot trend status: {e}")
+            logging.getLogger("backtest_v2").exception(
+                "Failed to plot trend status: %s", e
+            )
 
     # Save backtest results to CSV
     out_dir = Path("data").joinpath("backtests").resolve()
@@ -795,16 +832,18 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"backtest_{stamp}.csv"
     result.to_csv(out_path)
-    print(f"[backtest_v2] Saved detailed backtest result to: {out_path}")
+    logging.getLogger("backtest_v2").info(
+        "Saved detailed backtest result to: %s", out_path
+    )
 
     # Also save summary stats to a separate CSV for easy inspection
     stats_path = out_dir / f"backtest_{stamp}_stats.csv"
     try:
         # Serialize stats as a single-row CSV; convert to DataFrame to handle mixed types
         pd.DataFrame([stats]).to_csv(stats_path, index=False)
-        print(f"[backtest_v2] Saved backtest stats to: {stats_path}")
+        logging.getLogger("backtest_v2").info("Saved backtest stats to: %s", stats_path)
     except Exception as e:
-        print(f"[backtest_v2] Failed to save stats CSV: {e}")
+        logging.getLogger("backtest_v2").warning("Failed to save stats CSV: %s", e)
     return 0
 
 

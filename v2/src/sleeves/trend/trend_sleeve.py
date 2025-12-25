@@ -14,6 +14,7 @@ import pandas as pd
 # than referencing the `src.` package namespace.
 import sys
 from pathlib import Path
+import logging
 
 _ROOT_SRC = Path(__file__).resolve().parents[2]
 if str(_ROOT_SRC) not in sys.path:
@@ -146,6 +147,9 @@ class TrendSleeve(BaseSleeve):
         self.config = config or TrendConfig()
         self.state = TrendState()
 
+        # Logger (instance-level, consistent with other sleeves)
+        self.log = logging.getLogger(self.__class__.__name__)
+
         self._approx_rebalance_days = infer_approx_rebalance_days(
             self.config.rebalance_freq
         )
@@ -192,24 +196,6 @@ class TrendSleeve(BaseSleeve):
         cfg = self.config
         regime_key = (regime or "").lower()
 
-        # # ---------- Rebalance timing check ----------
-        # # Note: We need this because the global scheduler may call this function
-        # # more frequently than the sleeve's intended rebalance frequency.
-        # # If it's not time to rebalance yet, we return the last weights.
-        # if self.state.last_stock_weights is not None and not should_rebalance(
-        #     self.state.last_rebalance_ts,
-        #     rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
-        #     cfg.rebalance_freq,
-        # ):
-        #     print(
-        #         f"[TrendSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
-        #     )
-        #     return self.state.last_stock_weights
-        # # Otherwise, proceed to compute new weights
-        # print(
-        #     f"[TrendSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
-        # )
-
         # ---------- Regime-based gating ----------
         if cfg.use_regime_gating:
             gated_off = {r.lower() for r in cfg.gated_off_regimes}
@@ -217,8 +203,8 @@ class TrendSleeve(BaseSleeve):
                 # Sleeve is turned completely OFF in these regimes.
                 # We *don't* update smoothing state here; next active call
                 # will treat it as a fresh start or a long gap.
-                print(
-                    f"[TrendSleeve] Regime {regime_key} is gated off; skipping weights generation."
+                self.log.info(
+                    "Regime %s is gated off; skipping weights generation.", regime_key
                 )
                 return {}
 
@@ -231,13 +217,26 @@ class TrendSleeve(BaseSleeve):
             rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
             cfg.rebalance_freq,
         ):
-            print(
-                f"[TrendSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+            self.log.info(
+                "Skipping rebalance at %s; last rebalance at %s",
+                rebalance_ctx.rebalance_ts.date(),
+                (
+                    self.state.last_rebalance_ts.date()
+                    if self.state.last_rebalance_ts is not None
+                    else "never"
+                ),
             )
             return self.state.last_stock_weights
         # Otherwise, proceed to compute new weights
-        print(
-            f"[TrendSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        self.log.info(
+            "Rebalancing at %s using data as of %s; last rebalance at %s",
+            rebalance_ctx.rebalance_ts.date(),
+            as_of.date(),
+            (
+                self.state.last_rebalance_ts.date()
+                if self.state.last_rebalance_ts is not None
+                else "never"
+            ),
         )
 
         # ---------- Compute or extract stock scores and sector scores ----------
@@ -257,11 +256,14 @@ class TrendSleeve(BaseSleeve):
                 date_key, self._cached_sector_scores_mat.index
             )
             if stock_as_of != sector_as_of:
-                print(
-                    f"[TrendSleeve] Warning: Stock and sector scores are out of sync at {date_key.date()} (stock: {stock_as_of.date()}, sector: {sector_as_of.date()})"
+                self.log.warning(
+                    "Stock and sector scores are out of sync at %s (stock: %s, sector: %s)",
+                    date_key.date(),
+                    stock_as_of.date(),
+                    sector_as_of.date(),
                 )
             date_key = stock_as_of  # Use the closest available date
-            print(f"[TrendSleeve] Using cached scores for {date_key.date()}")
+            self.log.info("Using cached scores for %s", date_key.date())
 
             # Extract from cache
             stock_scores_series = self._cached_stock_scores_mat.loc[date_key]
@@ -280,8 +282,10 @@ class TrendSleeve(BaseSleeve):
                     vol_mat = self._cached_feature_mats["vol"]
                     vol_as_of = get_closest_date_on_or_before(date_key, vol_mat.index)
                     if vol_as_of != date_key:
-                        print(
-                            f"Warning: Vol data is out of sync at {date_key.date()} (vol: {vol_as_of.date()})"
+                        self.log.warning(
+                            "Vol data is out of sync at %s (vol: %s)",
+                            date_key.date(),
+                            vol_as_of.date(),
                         )
                     # vol_mat_daily = vol_mat.asfreq("D", method="ffill")
                     # if date_key in vol_mat_daily.index:
@@ -577,8 +581,11 @@ class TrendSleeve(BaseSleeve):
                     if s is not None and not s.empty:
                         s_as_of = s.index.max()
                         if signal_as_of is not None and signal_as_of != s_as_of:
-                            print(
-                                f"Warning: {t} signal data is out of sync at {end.date()} (adv: {s_as_of.date()})"
+                            self.log.warning(
+                                "%s signal data is out of sync at %s (adv: %s)",
+                                t,
+                                end.date(),
+                                s_as_of.date(),
                             )
                         signal_as_of = max(signal_as_of, s.index.max())
 
@@ -586,11 +593,10 @@ class TrendSleeve(BaseSleeve):
 
             except Exception as e:
                 # For robustness: skip this ticker if anything fails
-                # Print stacktrace for debugging
-                print(
-                    f"Warning: Failed to compute signals for {t} at {end.date()}: {e}"
+                # Log exception with stacktrace for debugging
+                self.log.exception(
+                    "Failed to compute signals for %s at %s: %s", t, end.date(), e
                 )
-                traceback.print_exc()
                 continue
 
         if not rows:
@@ -604,7 +610,7 @@ class TrendSleeve(BaseSleeve):
         # Drop rows missing key signal inputs
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=keep_cols, how="any")
 
-        print(f"Using signal data as-of {signal_as_of.date()}")
+        self.log.info("Using signal data as-of %s", signal_as_of.date())
         return df
 
     # ------------------------------------------------------------------
@@ -711,8 +717,9 @@ class TrendSleeve(BaseSleeve):
 
         # Cache missing - compute using non-vec logic (without caching)
         for date in date_range:
-            print(
-                f"[TrendSleeve] Computing sector scores for {date.date()} for sector weights interpolation"
+            self.log.info(
+                "Computing sector scores for %s for sector weights interpolation",
+                date.date(),
             )
             date_ts = pd.Timestamp(date).normalize()
             universe = self._get_trend_universe(date_ts)
@@ -869,8 +876,9 @@ class TrendSleeve(BaseSleeve):
                             sector_scores_sig = intermediate_sector_scores[date_key]
 
                             if not sector_scores_sig.empty:
-                                print(
-                                    f"[TrendSleeve] Applying sector weights smoothing for {date_key.date()}"
+                                self.log.info(
+                                    "Applying sector weights smoothing for %s",
+                                    date_key.date(),
                                 )
                                 # Apply softmax and caps for this day
                                 w_soft_day = self._softmax(sector_scores_sig)
@@ -1225,7 +1233,6 @@ class TrendSleeve(BaseSleeve):
             )
             # Apply mask: set non-members to NaN
             stock_score_mat = stock_score_mat.where(membership_mask_final)
-            # print(f"[TrendSleeve] Applied final membership mask to stock scores")
 
         # Cache components for sector scoring
         self._base_stock_score_mat = cs_stock_score_mat
@@ -1443,8 +1450,8 @@ class TrendSleeve(BaseSleeve):
                 # Forward-fill vol_mat to daily frequency to match stock_score_mat
                 vol_mat = vol_mat.asfreq("D", method="ffill")
             if vol_mat is None:
-                print(
-                    "[TrendSleeve] Warning: volatility matrix cache missing; recomputing vol_mat."
+                self.log.warning(
+                    "Volatility matrix cache missing; recomputing vol_mat."
                 )
                 # Fallback: compute on the fly
                 vol_mode = getattr(cfg, "vol_mode", "rolling")
@@ -1491,12 +1498,12 @@ class TrendSleeve(BaseSleeve):
                 if s.empty:
                     continue
 
-                # Debug: Print stock scores for Financials on first date
+                # Debug: Log stock scores for Financials on first date
                 if dt == dates[0] and sector == "Financials":
-                    print(
-                        f"[TrendSleeve] Vec first date {dt.date()}, Financials stock scores:"
+                    self.log.info(
+                        "Vec first date %s, %s stock scores:", dt.date(), sector
                     )
-                    print(f"  {s.sort_values(ascending=False).head(5).to_dict()}")
+                    self.log.debug("%s", s.sort_values(ascending=False).head(5).to_dict())
 
                 top = s.nlargest(cfg.top_k_per_sector).index.tolist()
 
@@ -1600,8 +1607,10 @@ class TrendSleeve(BaseSleeve):
         # Fetch clean price data without membership masking to ensure
         # signal calculations (especially .shift() operations) work correctly.
         # We'll apply membership masking AFTER signal calculation.
-        print(
-            f"[TrendSleeve] Precomputing price matrix from {warmup_start.date()} to {end_ts.date()}"
+        self.log.info(
+            "Precomputing price matrix from %s to %s",
+            warmup_start.date(),
+            end_ts.date(),
         )
         price_mat = self.um.get_price_matrix(
             price_loader=self.mds,

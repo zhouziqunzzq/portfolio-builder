@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, List, Optional, Dict, Tuple
+from typing import Any, Callable, List, Optional, Dict, Tuple, ClassVar
+import logging
 
 import numpy as np
 import pandas as pd
@@ -73,6 +74,8 @@ class PortfolioBacktester:
     """
 
     market_data_store: Optional[MarketDataStore] = None
+    # Class logger (excluded from dataclass fields via ClassVar)
+    log: ClassVar[logging.Logger] = logging.getLogger("PortfolioBacktester")
 
     @staticmethod
     def _prepare_prices_and_weights(
@@ -106,10 +109,9 @@ class PortfolioBacktester:
         # Debug: report missing dates
         missing = weights.index.difference(prices.index)
         if not missing.empty:
-            print(
-                "[PortfolioBacktester] WARNING: missing exec prices for rebalance dates:",
+            PortfolioBacktester.log.warning(
+                "missing exec prices for rebalance dates=%s count=%d",
                 list(missing[:10]),
-                "count=",
                 len(missing),
             )
 

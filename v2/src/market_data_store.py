@@ -13,6 +13,7 @@ implementation to avoid runtime path hacks.
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
+import logging
 import pandas as pd
 import yfinance as yf
 
@@ -61,6 +62,9 @@ class MarketDataStore(BaseMarketDataStore):
                               in memory so repeated calls avoid disk reads.
         """
         super().__init__()
+
+        # Logger for this class
+        self.log = logging.getLogger(self.__class__.__name__)
 
         self.data_root = Path(data_root)
         self.source = source
@@ -115,9 +119,6 @@ class MarketDataStore(BaseMarketDataStore):
                 fetch_start = start_dt - timedelta(days=7)
                 fetch_end = end_dt + timedelta(days=7)
 
-            # print(
-            #     f"[MarketDataStore] Fetching daily bars for {ticker} {fetch_start.date()} -> {fetch_end.date()}"
-            # )
             df_daily = self._ensure_coverage(
                 ticker=ticker,
                 start=fetch_start,
@@ -214,10 +215,7 @@ class MarketDataStore(BaseMarketDataStore):
                 s.name = sym
                 return s
             except Exception as e:
-                print(f"[MarketDataStore] Failed loading ohlcv for {sym}: {e}")
-                import traceback
-
-                traceback.print_exc()
+                self.log.exception("Failed loading ohlcv for %s", sym)
                 return None
 
         out = pd.DataFrame()
@@ -289,8 +287,6 @@ class MarketDataStore(BaseMarketDataStore):
         if self.use_memory_cache and key in self._memory_cache:
             df = self._memory_cache[key]
             # We assume df is already sorted & DateTimeIndex
-            # Print a lighter log than disk loads to avoid noise if desired
-            # print(f"[MarketDataStore] Memory cache hit: {ticker} {interval}")
             return df
 
         # Fallback to disk
@@ -301,7 +297,6 @@ class MarketDataStore(BaseMarketDataStore):
         df = pd.read_parquet(path)
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
-        # print(f"[MarketDataStore] Loaded cached data: {ticker} {interval}")
 
         # Populate memory cache for future calls
         if self.use_memory_cache:
@@ -358,8 +353,12 @@ class MarketDataStore(BaseMarketDataStore):
         if self.source != "yfinance":
             raise NotImplementedError("Only yfinance source currently supported")
 
-        print(
-            f"[MarketDataStore] Fetching online: {ticker} {start.date()} -> {end.date()} {interval}"
+        self.log.info(
+            "Fetching online: %s %s -> %s %s",
+            ticker,
+            start.date(),
+            end.date(),
+            interval,
         )
 
         df = yf.download(
@@ -506,8 +505,11 @@ class MarketDataStore(BaseMarketDataStore):
                 )
                 .dropna()
             )
-            print(
-                f"[MarketDataStore] Aggregated weekly data for {ticker} {df_src.index.min().date()} -> {df_src.index.max().date()}"
+            self.log.debug(
+                "Aggregated weekly data for %s %s -> %s",
+                ticker,
+                df_src.index.min().date(),
+                df_src.index.max().date(),
             )
             return df_agg
 
@@ -525,8 +527,11 @@ class MarketDataStore(BaseMarketDataStore):
                 )
                 .dropna()
             )
-            print(
-                f"[MarketDataStore] Aggregated monthly data for {ticker} {df_src.index.min().date()} -> {df_src.index.max().date()}"
+            self.log.debug(
+                "Aggregated monthly data for %s %s -> %s",
+                ticker,
+                df_src.index.min().date(),
+                df_src.index.max().date(),
             )
             return df_agg
 

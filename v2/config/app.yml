@@ -5,8 +5,9 @@
 # - Paths are relative to the v2/ directory when running v2 runners.
 
 runtime:
-  log_root: data/logs
   log_level: INFO
+  log_to_file: true
+  log_root: data/logs
   state_file: data/state/runtime_state.json
 
 universe_manager:

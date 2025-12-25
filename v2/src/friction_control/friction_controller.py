@@ -21,6 +21,7 @@ from context.friction_control import FrictionControlContext
 
 import pandas as pd
 import numpy as np
+import logging
 
 
 class FrictionControllerVec:
@@ -56,6 +57,8 @@ class FrictionControllerVec:
         self.initial_value = initial_value
         self.keep_cash = keep_cash
         self.config = config if config is not None else FrictionControlConfig()
+        # Logger
+        self.log = logging.getLogger(self.__class__.__name__)
         # Make copies to avoid mutating external DataFrames
         self.prices = prices.copy()
         self.weights = weights.copy()
@@ -69,8 +72,10 @@ class FrictionControllerVec:
         # Print some warning if rebalance dates were dropped due to missing prices
         dropped_dates = set(self.weights_dates) - self.rebalance_dates_set
         if dropped_dates:
-            print(
-                f"[FrictionController] Warning: Dropped {len(dropped_dates)} rebalance dates due to missing price data: {sorted(dropped_dates)}"
+            self.log.warning(
+                "Dropped %d rebalance dates due to missing price data: %s",
+                len(dropped_dates),
+                sorted(dropped_dates),
             )
         self.rebalance_dates = sorted(self.rebalance_dates_set)
         # Ensure columns are aligned & uppercase tickers
@@ -100,7 +105,9 @@ class FrictionControllerVec:
             w_t = self.weights.loc[date]
 
             if date in self.rebalance_dates_set:
-                # print(f"Applying friction controls on rebalance date {date.date()}")
+                self.log.debug(
+                    "Applying friction controls on rebalance date %s", date.date()
+                )
                 # On rebalance date, apply friction controls
                 if w_prev is None:
                     # First rebalance, no previous weights
@@ -133,30 +140,35 @@ class FrictionControllerVec:
                         min_holding_rebalances=self.config.min_holding_rebalances,
                         keep_cash=self.keep_cash,
                     )
-                    # Debug: print intermediate weights
-                    # print(
-                    #     f"  Raw target weights: {', '.join([f'{t}:{v:.4f}' for t,v in w_t.items() if v > 0.0])}"
-                    # )
-                    # print(
-                    #     f"  Previous effective weights: "
-                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_prev.items() if v > 0.0])}"
-                    # )
-                    # print(
-                    #     f"  Post-hysteresis weights: "
-                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_hyst.items() if v > 0.0])}"
-                    # )
-                    # print(
-                    #     f"  Post-min-trade-notional weights: "
-                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_after_notional.items() if v > 0.0])}"
-                    # )
-                    # print(
-                    #     f"  Post-min-holding-period weights: "
-                    #     f"{', '.join([f'{t}:{v:.4f}' for t,v in w_eff.items() if v > 0.0])}"
-                    # )
-                    # print(
-                    #     f"  Updated holding ages: "
-                    #     f"{', '.join([f'{t}:{v}' for t,v in holding_age.items() if v > 0])}"
-                    # )
+                    # Debug: log intermediate weights
+                    # try:
+                    #     self.log.debug(
+                    #         "Raw target weights: %s",
+                    #         ", ".join([f"{t}:{v:.4f}" for t, v in w_t.items() if v > 0.0]),
+                    #     )
+                    #     self.log.debug(
+                    #         "Previous effective weights: %s",
+                    #         ", ".join([f"{t}:{v:.4f}" for t, v in w_prev.items() if v > 0.0]),
+                    #     )
+                    #     self.log.debug(
+                    #         "Post-hysteresis weights: %s",
+                    #         ", ".join([f"{t}:{v:.4f}" for t, v in w_hyst.items() if v > 0.0]),
+                    #     )
+                    #     self.log.debug(
+                    #         "Post-min-trade-notional weights: %s",
+                    #         ", ".join([f"{t}:{v:.4f}" for t, v in w_after_notional.items() if v > 0.0]),
+                    #     )
+                    #     self.log.debug(
+                    #         "Post-min-holding-period weights: %s",
+                    #         ", ".join([f"{t}:{v:.4f}" for t, v in w_eff.items() if v > 0.0]),
+                    #     )
+                    #     self.log.debug(
+                    #         "Updated holding ages: %s",
+                    #         ", ".join([f"{t}:{v}" for t, v in holding_age.items() if v > 0]),
+                    #     )
+                    # except Exception:
+                    #     # Defensive: don't let logging failures break the control flow
+                    #     self.log.exception("Failed to format debug weight strings")
                 W_final_vals.append(w_eff.copy())
                 w_prev = w_eff
             else:
@@ -167,7 +179,7 @@ class FrictionControllerVec:
             daily_return = (self.returns.loc[date] * w_eff).sum()
             aum *= 1.0 + daily_return
 
-        # print(W_final_vals)
+        self.log.debug("Final W_final_vals length=%d", len(W_final_vals))
         W_eff = pd.DataFrame(W_final_vals, index=self.rebalance_dates)
         return W_eff.reindex(self.weights_dates).fillna(0.0)
 

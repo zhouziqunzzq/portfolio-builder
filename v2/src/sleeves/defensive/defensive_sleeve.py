@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import sys
 from pathlib import Path
+import logging
 
 # Make v2/src importable by adding it to sys.path. This allows using
 # direct module imports (e.g. `from universe_manager import ...`) rather
@@ -108,6 +109,8 @@ class DefensiveSleeve(BaseSleeve):
 
         self.config = config or DefensiveConfig()
         self.state = DefensiveState()
+        # Logger
+        self.log = logging.getLogger(self.__class__.__name__)
 
         # Cached precompute results
         self._cached_scores_mat: pd.DataFrame = pd.DataFrame()
@@ -151,7 +154,11 @@ class DefensiveSleeve(BaseSleeve):
             )
             if not mask.empty:
                 row = mask.iloc[0]
-                # print(f"[DefensiveSleeve] Active S&P 500 members on {as_of_dt.date()}: {row.sum()}")
+                self.log.debug(
+                    "Active S&P 500 members on %s: %d",
+                    as_of_dt.date(),
+                    int(row.sum()),
+                )
                 active_tickers = set(row.index[row.astype(bool)])
 
         core: List[str] = []
@@ -237,13 +244,34 @@ class DefensiveSleeve(BaseSleeve):
             rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
             cfg.rebalance_freq,
         ):
-            print(
-                f"[DefensiveSleeve] Skipping rebalance at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+            self.log.info(
+                "Skipping rebalance at %s; last rebalance at %s",
+                (
+                    rebalance_ctx.rebalance_ts.date()
+                    if rebalance_ctx is not None
+                    else as_of.date()
+                ),
+                (
+                    self.state.last_rebalance_ts.date()
+                    if self.state.last_rebalance_ts is not None
+                    else "never"
+                ),
             )
             return self.state.last_weights
 
-        print(
-            f"[DefensiveSleeve] Rebalancing at {rebalance_ctx.rebalance_ts.date() if rebalance_ctx is not None else as_of.date()} using data as of {as_of.date()}; last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        self.log.info(
+            "Rebalancing at %s using data as of %s; last rebalance at %s",
+            (
+                rebalance_ctx.rebalance_ts.date()
+                if rebalance_ctx is not None
+                else as_of.date()
+            ),
+            as_of.date(),
+            (
+                self.state.last_rebalance_ts.date()
+                if self.state.last_rebalance_ts is not None
+                else "never"
+            ),
         )
 
         # Try to use cached precompute outputs (score + vol) first; otherwise
@@ -291,14 +319,14 @@ class DefensiveSleeve(BaseSleeve):
                 if not tmp_scored.empty:
                     # `allocate_by_asset_class` expects a DataFrame with at least 'score' and 'vol'
                     scored_df = tmp_scored
-                    print(
-                        f"[DefensiveSleeve] Using cached precomputed scores for {date_key.date()}"
+                    self.log.info(
+                        "Using cached precomputed scores for %s", date_key.date()
                     )
 
         # 2) If no scored_df from cache, try to assemble raw signals from cached signal mats
         if scored_df is None:
-            print(
-                "[DefensiveSleeve] WARNING: no cached scores found, attempting to assemble from raw signal mats"
+            self.log.warning(
+                "no cached scores found, attempting to assemble from raw signal mats"
             )
             sigs_df: Optional[pd.DataFrame] = None
             if getattr(self, "_cached_signal_mats", None) is not None:
@@ -338,8 +366,8 @@ class DefensiveSleeve(BaseSleeve):
 
         # 3) Final fallback: compute signals one-by-one (non-vec path)
         if scored_df is None or scored_df.empty:
-            print(
-                "[DefensiveSleeve] WARNING: no cached signals or scores found, falling back to per-ticker signal computation"
+            self.log.warning(
+                "no cached signals or scores found, falling back to per-ticker signal computation"
             )
             universe = self._get_defensive_universe(as_of=as_of)
             universe = self._apply_liquidity_filters(universe, as_of)
@@ -651,7 +679,7 @@ class DefensiveSleeve(BaseSleeve):
         try:
             mem_mask = self.um.membership_mask(start=warmup_start, end=end_ts)
         except Exception:
-            print("[DefensiveSleeve] WARNING: failed to load membership mask, skipping")
+            self.log.warning("failed to load membership mask, skipping")
             mem_mask = None
 
         if mem_mask is not None and not mem_mask.empty:
@@ -752,9 +780,7 @@ class DefensiveSleeve(BaseSleeve):
 
         price_mat = self._load_full_price_matrix(warmup_start, end_ts, tickers)
         if price_mat.empty:
-            print(
-                "[DefensiveSleeve] WARNING: empty price matrix in precompute, skipping"
-            )
+            self.log.warning("empty price matrix in precompute, skipping")
             self._cached_scores_mat = pd.DataFrame()
             self._cached_signal_mats = {}
             return self._cached_scores_mat

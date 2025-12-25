@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import math
 
 import pandas as pd
+import logging
 
 import sys
 from pathlib import Path
@@ -194,7 +195,9 @@ class MultiSleeveAllocator:
                     f"Sleeve '{sleeve_name}' is enabled in config but not provided in sleeves."
                 )
 
-        print(f"[MultiSleeveAllocator] Enabled sleeves: {self.enabled_sleeves}")
+        # Logger
+        self.log = logging.getLogger(self.__class__.__name__)
+        self.log.info("Enabled sleeves: %s", self.enabled_sleeves)
 
         # Friction Control
         self.friction_controller: Optional[FrictionController] = None
@@ -264,15 +267,18 @@ class MultiSleeveAllocator:
 
         # 1) Get regime context (primary label + score distribution)
         primary_regime, regime_scores = self._get_regime_context(as_of_ts, rebalance_ts)
-        print(
-            f"[MultiSleeveAllocator] As of {as_of_ts.date()}: primary_regime={primary_regime}, regime_scores={regime_scores}"
+        self.log.info(
+            "As of %s: primary_regime=%s, regime_scores=%s",
+            as_of_ts.date(),
+            primary_regime,
+            regime_scores,
         )
         # Apply temperature shaping to regime scores
         regime_scores = self._shape_regime_scores_temperature(
             regime_scores,
             tau=self.config.regime_temperature_tau,
         )
-        print(f"[MultiSleeveAllocator]  Shaped regime_scores={regime_scores}")
+        self.log.debug("Shaped regime_scores=%s", regime_scores)
 
         # 2) Compute effective sleeve weights via regime-score blending
         sleeve_alloc = self._compute_effective_sleeve_weights(
@@ -300,10 +306,10 @@ class MultiSleeveAllocator:
             rebalance_ctx.regime_scores = regime_scores
 
         for name, sleeve in self.sleeves.items():
-            # print(f"[MultiSleeveAllocator] Processing sleeve '{name}' ...")
+            self.log.debug("Processing sleeve '%s' ...", name)
             alloc = sleeve_alloc.get(name, 0.0)
             if alloc <= 0:
-                # print(f"[MultiSleeveAllocator]  Skipping sleeve '{name}' with zero allocation.")
+                self.log.debug("Skipping sleeve '%s' with zero allocation.", name)
                 continue
 
             local_weights = sleeve.generate_target_weights_for_date(
@@ -345,7 +351,7 @@ class MultiSleeveAllocator:
                     w_new=out,
                     ctx=fc_ctx,
                 )
-            # Debug: print % changes due to friction control
+            # Debug: log % changes due to friction control
             # changes = {}
             # for t in set(out.keys()).union(set(out_adj.keys())):
             #     w_prev = (
@@ -358,10 +364,15 @@ class MultiSleeveAllocator:
             #     if w_new != w_eff:
             #         changes[t] = (w_prev, w_new, w_eff)
             # if changes:
-            #     print(f"[MultiSleeveAllocator] Friction control adjustments:")
+            #     self.log.debug("Friction control adjustments:")
             #     for t, (w_prev, w_new, w_eff) in changes.items():
-            #         print(
-            #             f"    {t}: prev={w_prev:.6f}, new={w_new:.6f}, eff={w_eff:.6f} (delta={w_eff - w_new:+.6f})"
+            #         self.log.debug(
+            #             "%s: prev=%0.6f, new=%0.6f, eff=%0.6f (delta=%+0.6f)",
+            #             t,
+            #             w_prev,
+            #             w_new,
+            #             w_eff,
+            #             w_eff - w_new,
             #         )
             out = out_adj
 
@@ -413,23 +424,25 @@ class MultiSleeveAllocator:
             max_sample_date = max(pd.to_datetime(d) for d in sample_dates)
             start_ts = min(start_ts, min_sample_date)
             end_ts = max(end_ts, max_sample_date)
-            print(f"[MultiSleeveAllocator] Sample dates supplied: {len(sample_dates)}")
-            print(
-                f"[MultiSleeveAllocator] Adjusted precompute date range to [{start_ts.date()}, {end_ts.date()}]"
+            self.log.info("Sample dates supplied: %d", len(sample_dates))
+            self.log.info(
+                "Adjusted precompute date range to [%s, %s]",
+                start_ts.date(),
+                end_ts.date(),
             )
 
-        print(
-            f"[MultiSleeveAllocator] Starting precompute for sleeves over [{start_ts.date()}, {end_ts.date()}]"
+        self.log.info(
+            "Starting precompute for sleeves over [%s, %s]",
+            start_ts.date(),
+            end_ts.date(),
         )
 
         results: Dict[str, pd.DataFrame] = {}
         for name, sleeve in self.sleeves.items():
             if name not in self.enabled_sleeves:
-                print(
-                    f"[MultiSleeveAllocator] Sleeve '{name}' is not enabled; skipping precompute."
-                )
+                self.log.info("Sleeve '%s' is not enabled; skipping precompute.", name)
                 continue
-            print(f"[MultiSleeveAllocator] Precomputing sleeve '{name}' ...")
+            self.log.info("Precomputing sleeve '%s' ...", name)
             try:
                 wmat = sleeve.precompute(
                     start=start_ts,
@@ -438,23 +451,22 @@ class MultiSleeveAllocator:
                     warmup_buffer=warmup_buffer,
                 )
                 if wmat is None or wmat.empty:
-                    print(
-                        f"[MultiSleeveAllocator] Sleeve '{name}' returned empty matrix."
-                    )
+                    self.log.info("Sleeve '%s' returned empty matrix.", name)
                 else:
-                    print(
-                        f"[MultiSleeveAllocator] Sleeve '{name}' weights shape: {wmat.shape} (dates={wmat.shape[0]}, tickers={wmat.shape[1]})"
+                    self.log.info(
+                        "Sleeve '%s' weights shape: %s (dates=%d, tickers=%d)",
+                        name,
+                        wmat.shape,
+                        wmat.shape[0],
+                        wmat.shape[1],
                     )
                 results[name] = wmat.copy() if wmat is not None else pd.DataFrame()
             except Exception as e:
-                # Print the exception and stacktrace
-                import traceback
-
-                traceback.print_exc()
-                print(f"[MultiSleeveAllocator] Sleeve '{name}' precompute failed: {e}")
+                # Log the exception and continue
+                self.log.exception("Sleeve '%s' precompute failed: %s", name, e)
                 results[name] = pd.DataFrame()
 
-        print("[MultiSleeveAllocator] Precompute finished.")
+        self.log.info("Precompute finished.")
         return results
 
     # ------------------------------------------------------------------
@@ -684,15 +696,17 @@ class MultiSleeveAllocator:
         last_trading_date = min(prices.index.max(), smas.index.max())
         if (as_of - last_trading_date).days > 7:
             price_as_of, sma_as_of = None, None
-            print(
-                f"[MultiSleeveAllocator] Trend filter: no recent data as of {as_of.date()}"
-            )
+            self.log.info("Trend filter: no recent data as of %s", as_of.date())
         else:
             price_as_of = prices.iloc[-1]
             sma_as_of = smas.iloc[-1]
-            # print(
-            #     f"[MultiSleeveAllocator] Trend filter for {as_of.date()} (use {last_trading_date.date()}): price={price_as_of}, sma={sma_as_of}"
-            # )
+            self.log.debug(
+                "Trend filter for %s (use %s): price=%s, sma=%s",
+                as_of.date(),
+                last_trading_date.date(),
+                price_as_of,
+                sma_as_of,
+            )
 
         if price_as_of is None or sma_as_of is None:
             trend_status = "risk-on"

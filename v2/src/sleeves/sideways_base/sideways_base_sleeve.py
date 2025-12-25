@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import sys
+import logging
 from pathlib import Path
 
 _ROOT_SRC = Path(__file__).resolve().parents[2]
@@ -99,6 +100,9 @@ class SidewaysBaseSleeve(BaseSleeve):
         self.config = config or SidewaysBaseConfig()
         self.state = SidewaysBaseState()
 
+        # Logger (instance-level, mirror DefensiveSleeve pattern)
+        self.log = logging.getLogger(self.__class__.__name__)
+
     # ------------------------------------------------------------------
     # Universe
     # ------------------------------------------------------------------
@@ -170,15 +174,26 @@ class SidewaysBaseSleeve(BaseSleeve):
         if self.state.last_weights is not None and not should_rebalance(
             self.state.last_rebalance_ts, reb_ts, cfg.rebalance_freq
         ):
-            print(
-                f"[SidewaysBaseSleeve] Skipping rebalance at {reb_ts.date()}; "
-                f"last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+            self.log.info(
+                "Skipping rebalance at %s; last rebalance at %s",
+                reb_ts.date(),
+                (
+                    self.state.last_rebalance_ts.date()
+                    if self.state.last_rebalance_ts is not None
+                    else "never"
+                ),
             )
             return self.state.last_weights
 
-        print(
-            f"[SidewaysBaseSleeve] Rebalancing at {reb_ts.date()} using data as of {as_of.date()}; "
-            f"last rebalance at {self.state.last_rebalance_ts.date() if self.state.last_rebalance_ts is not None else 'never'}"
+        self.log.info(
+            "Rebalancing at %s using data as of %s; last rebalance at %s",
+            reb_ts.date(),
+            as_of.date(),
+            (
+                self.state.last_rebalance_ts.date()
+                if self.state.last_rebalance_ts is not None
+                else "never"
+            ),
         )
 
         universe = self._get_sideways_universe()
@@ -409,7 +424,5 @@ class SidewaysBaseSleeve(BaseSleeve):
         warmup_buffer: Optional[int] = None,  # in days
     ) -> pd.DataFrame:
         # Not implemented for this sleeve
-        print(
-            "[SidewaysBaseSleeve] Precompute not implemented; returning empty DataFrame"
-        )
+        self.log.debug("Precompute not implemented; returning empty DataFrame")
         return pd.DataFrame()

@@ -6,6 +6,7 @@ from typing import Any, Dict, Hashable, Optional, Tuple
 from datetime import datetime
 import pandas as pd
 import numpy as np
+import logging
 
 # Make v2/src importable by adding it to sys.path. This allows using
 # direct module imports (e.g. `from universe_manager import ...`) rather
@@ -102,11 +103,14 @@ class SignalEngine:
         }
 
         self.disable_cache_margin = disable_cache_margin
+        # Logger
+        self.log = logging.getLogger(self.__class__.__name__)
+
         if self.disable_cache_margin:
-            print("[SignalEngine] Cache margin DISABLED")
+            self.log.info("Cache margin DISABLED")
         self.disable_cache_extension = disable_cache_extension
         if self.disable_cache_extension:
-            print("[SignalEngine] Cache extension DISABLED")
+            self.log.info("Cache extension DISABLED")
 
     # ----- public API -----
     def get_series(
@@ -134,20 +138,31 @@ class SignalEngine:
             interval=interval,
             **params,
         )
-        # Print a warning if:
+        # Log a debug warning if:
         # - returned series is empty
         # - returned series end drifts too far from requested end date
         if rst_series.empty:
-            # print(
-            #     f"[SignalEngine] WARNING: returned empty series for {ticker} {signal} from {pd.to_datetime(start).date()} to {pd.to_datetime(end).date()} (interval={interval}, params={params})"
-            # )
-            pass
+            self.log.debug(
+                "Returned empty series for %s %s from %s to %s (interval=%s, params=%s)",
+                ticker,
+                signal,
+                pd.to_datetime(start).date(),
+                pd.to_datetime(end).date(),
+                interval,
+                params,
+            )
         else:
             requested_end = pd.to_datetime(end)
             actual_end = rst_series.index.max()
             if actual_end < requested_end - pd.Timedelta(days=5):
-                print(
-                    f"[SignalEngine] WARNING: returned series for {ticker} {signal} ends at {actual_end.date()}, which is more than 5 days before requested end date {requested_end.date()} (interval={interval}, params={params})"
+                self.log.warning(
+                    "returned series for %s %s ends at %s, which is more than 5 days before requested end date %s (interval=%s, params=%s)",
+                    ticker,
+                    signal,
+                    actual_end.date(),
+                    requested_end.date(),
+                    interval,
+                    params,
                 )
         return rst_series
 
@@ -198,14 +213,30 @@ class SignalEngine:
             # Do we already effectively cover the requested window?
             if start_dt >= effective_start and end_dt <= effective_end:
                 # Full coverage: fast path
-                # print(f"[SignalEngine] CACHE HIT: {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}]")
+                self.log.debug(
+                    "CACHE HIT: %s; Requested [%s to %s], Cached [%s to %s]",
+                    key,
+                    start_dt.date(),
+                    end_dt.date(),
+                    cached_start.date(),
+                    cached_end.date(),
+                )
                 return cached.loc[(cached.index >= start_dt) & (cached.index <= end_dt)]
 
             # Partial coverage: extend range (recompute over union)
             if not self.disable_cache_extension:
                 new_start = min(start_dt, cached_start)
                 new_end = max(end_dt, cached_end)
-                # print(f"[SignalEngine] CACHE HIT (EXTEND RANGE): {key}; Requested [{start_dt.date()} to {end_dt.date()}], Cached [{cached_start.date()} to {cached_end.date()}], New range [{new_start.date()} to {new_end.date()}]")
+                self.log.debug(
+                    "CACHE HIT (EXTEND RANGE): %s; Requested [%s to %s], Cached [%s to %s], New range [%s to %s]",
+                    key,
+                    start_dt.date(),
+                    end_dt.date(),
+                    cached_start.date(),
+                    cached_end.date(),
+                    new_start.date(),
+                    new_end.date(),
+                )
                 series = self._compute_signal_full(
                     ticker=ticker,
                     signal=signal,
@@ -220,7 +251,7 @@ class SignalEngine:
                 return series.loc[(series.index >= start_dt) & (series.index <= end_dt)]
 
         # Cache miss: compute the full series for requested range
-        # print(f"[SignalEngine] CACHE MISS: {key}")
+        self.log.debug("CACHE MISS: %s", key)
         series = self._compute_signal_full(
             ticker=ticker,
             signal=signal,
@@ -772,7 +803,13 @@ class SignalEngine:
 
         price = df[price_col].astype(float)
         price.name = "last_price"
-        # print(f"[SignalEngine] _compute_last_price_full: Retrieved {len(price)} data points for {ticker} from {start.date()} to {end.date()}")
+        self.log.debug(
+            "_compute_last_price_full: Retrieved %d data points for %s from %s to %s",
+            len(price),
+            ticker,
+            start.date(),
+            end.date(),
+        )
         return price
 
     # ----------------------------------------------------------------------

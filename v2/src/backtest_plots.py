@@ -5,6 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import logging
+
+# Module logger
+logger = logging.getLogger("backtest_plots")
 
 
 def _import_matplotlib() -> Tuple[Optional[object], Optional[object]]:
@@ -14,7 +18,7 @@ def _import_matplotlib() -> Tuple[Optional[object], Optional[object]]:
 
         return plt, mdates
     except Exception as e:
-        print(f"[backtest_v2] Matplotlib import failed; skipping plots. ({e})")
+        logger.warning("Matplotlib import failed; skipping plots. (%s)", e)
         return None, None
 
 
@@ -70,7 +74,7 @@ def plot_equity_curve(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved equity plot: {out_path}")
+    logger.info("Saved equity plot: %s", out_path)
     return out_path
 
 
@@ -108,7 +112,7 @@ def plot_drawdown(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved drawdown plot: {out_path}")
+    logger.info("Saved drawdown plot: %s", out_path)
     return out_path
 
 
@@ -162,7 +166,7 @@ def plot_calendar_year_returns(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved calendar-year returns plot: {out_path}")
+    logger.info("Saved calendar-year returns plot: %s", out_path)
     return out_path
 
 
@@ -216,7 +220,7 @@ def plot_rolling_sharpe(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved rolling Sharpe plot: {out_path}")
+    logger.info("Saved rolling Sharpe plot: %s", out_path)
     return out_path
 
 
@@ -253,7 +257,7 @@ def plot_monthly_turnover(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved monthly turnover plot: {out_path}")
+    logger.info("Saved monthly turnover plot: %s", out_path)
     return out_path
 
 
@@ -265,7 +269,7 @@ def plot_regime_scores(
         return None
 
     if not contexts:
-        print("[backtest_v2] No regime contexts to plot.")
+        logger.info("No regime contexts to plot.")
         return None
 
     dates = sorted(contexts.keys())
@@ -307,7 +311,7 @@ def plot_regime_scores(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved regime scores plot: {out_path}")
+    logger.info("Saved regime scores plot: %s", out_path)
     return out_path
 
 
@@ -319,7 +323,7 @@ def plot_sleeve_weights(
         return None
 
     if not contexts:
-        print("[backtest_v2] No sleeve context to plot.")
+        logger.info("No sleeve context to plot.")
         return None
 
     dates = sorted(contexts.keys())
@@ -361,7 +365,7 @@ def plot_sleeve_weights(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved sleeve weights plot: {out_path}")
+    logger.info("Saved sleeve weights plot: %s", out_path)
     return out_path
 
 
@@ -379,7 +383,7 @@ def plot_trend_status(
         return None
 
     if not contexts:
-        print("[backtest_v2] No regime contexts to plot trend status.")
+        logger.info("No regime contexts to plot trend status.")
         return None
 
     dates = sorted(contexts.keys())
@@ -418,5 +422,5 @@ def plot_trend_status(
     if show:
         plt.show()
     plt.close(fig)
-    print(f"[backtest_v2] Saved trend status plot: {out_path}")
+    logger.info("Saved trend status plot: %s", out_path)
     return out_path

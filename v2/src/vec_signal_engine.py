@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence, Dict
+from typing import Iterable, Optional, Sequence, Dict, ClassVar
 
 from datetime import datetime
 import numpy as np
 import pandas as pd
+import logging
 
 # Make v2/src importable by adding it to sys.path. This allows using
 # direct module imports (e.g. `from universe_manager import ...`) rather
@@ -35,6 +36,8 @@ class VectorizedSignalEngine:
 
     universe: UniverseManager
     mds: MarketDataStore
+    # Class logger (not a dataclass field)
+    log: ClassVar[logging.Logger] = logging.getLogger("VectorizedSignalEngine")
 
     # --- core matrix builders -------------------------------------------------
 
@@ -150,8 +153,8 @@ class VectorizedSignalEngine:
                     local_only=local_only,
                 )
                 if df is None or df.empty:
-                    print(
-                        f"[VectorizedSignalEngine] WARNING: no data for {t}, skipping"
+                    VectorizedSignalEngine.log.warning(
+                        "no data for %s, skipping", t
                     )
                     continue
 
@@ -163,8 +166,8 @@ class VectorizedSignalEngine:
                         col = "Adjclose"
                     else:
                         # Just skip this ticker if desired field not present
-                        print(
-                            f"[VectorizedSignalEngine] WARNING: {field} not found for {t}, skipping"
+                        VectorizedSignalEngine.log.warning(
+                            "%s not found for %s, skipping", field, t
                         )
                         continue
                 else:
@@ -173,14 +176,11 @@ class VectorizedSignalEngine:
                 s = df[col].astype(float)
                 s.name = t
                 field_dict[t] = s
-                # print(f"[VectorizedSignalEngine] loaded {field} for {t}, s={s}")
+                VectorizedSignalEngine.log.debug("loaded %s for %s (n=%d)", field, t, len(s))
             except Exception as e:
-                print(
-                    f"[VectorizedSignalEngine] WARNING: failed to load {field} for {t}: {e}"
+                VectorizedSignalEngine.log.exception(
+                    "failed to load %s for %s: %s", field, t, e
                 )
-                import traceback
-
-                traceback.print_exc()
                 continue
 
         if not field_dict:
@@ -432,8 +432,8 @@ class VectorizedSignalEngine:
             interval=interval,
         )
         if df_bench is None or df_bench.empty:
-            print(
-                f"[VectorizedSignalEngine] WARNING: no data for benchmark {benchmark}"
+            VectorizedSignalEngine.log.warning(
+                "no data for benchmark %s", benchmark
             )
             return pd.DataFrame(index=price_mat.index, columns=price_mat.columns)
 
