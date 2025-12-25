@@ -205,3 +205,27 @@ def test_file_state_manager_requires_state_file():
 
     with pytest.raises(ValueError, match=r"runtime\.state_file is None"):
         FileStateManager(rm)
+
+
+def test_file_state_manager_constructor_self_check_missing_object(tmp_path: Path):
+    # Missing one of the required RuntimeManager objects should fail fast.
+    trend = _Obj(1)
+    defensive = _Obj(2)
+    sideways = _Obj(3)
+    # allocator intentionally omitted
+
+    state_file = tmp_path / "state.json"
+    rm = _FakeRuntimeManager(
+        {
+            "trend_sleeve": trend,
+            "defensive_sleeve": defensive,
+            "sideways_base_sleeve": sideways,
+        },
+        state_file=str(state_file),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"RuntimeManager is not wired for FileStateManager.*missing objects",
+    ):
+        FileStateManager(rm)

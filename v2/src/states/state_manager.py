@@ -97,6 +97,38 @@ class FileStateManager(BaseStateManager):
 
         self.state_file = Path(state_file)
 
+        # Fail fast if RuntimeManager wiring is incomplete.
+        self._self_check_managed_objects()
+
+    def _self_check_managed_objects(self) -> None:
+        """Validate that RuntimeManager exposes all managed objects and BaseState."""
+
+        missing: list[str] = []
+        bad_state: list[str] = []
+
+        for name in sorted(self.managed_names()):
+            try:
+                obj = self._get_stateful_object(name)
+            except Exception:
+                missing.append(name)
+                continue
+
+            try:
+                _ = self._get_state(obj)
+            except Exception:
+                bad_state.append(name)
+
+        if missing or bad_state:
+            parts: list[str] = []
+            if missing:
+                parts.append(f"missing objects for: {missing}")
+            if bad_state:
+                parts.append(f"missing/invalid .state for: {bad_state}")
+
+            raise ValueError(
+                "RuntimeManager is not wired for FileStateManager (" + "; ".join(parts) + ")"
+            )
+
     # ---------------------------
     # Managed objects
     # ---------------------------
