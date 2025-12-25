@@ -208,3 +208,11 @@ class RuntimeManager:
 
     def keys(self) -> set[str]:
         return set(self._objects.keys())
+
+    def set(self, name: str, obj: object) -> None:
+        """Register or override a singleton by name."""
+        self._objects[str(name)] = obj
+
+    def __setitem__(self, name: str, obj: object) -> None:
+        """Shorthand for `set(name, obj)`."""
+        self.set(name, obj)

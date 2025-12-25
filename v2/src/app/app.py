@@ -15,6 +15,8 @@ from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from events.event_bus import EventBus, EventBusOptions
 from events.events import BaseEvent
 from events.topic import Topic
+from iml.base_iml import BaseIMLService
+from iml.alpaca_polling_iml import AlpacaPollingIMLService
 
 
 class App:
@@ -35,6 +37,14 @@ class App:
             drop_if_full=event_bus_options.drop_if_full,
             broadcast_topics=event_bus_options.broadcast_topics,
         )
+        # IML
+        self.iml: BaseIMLService = AlpacaPollingIMLService(
+            bus=self.event_bus,
+            rm=self.rm,
+            # Alpaca API credentials loaded from env by default
+        )
+        # TODO: EML
+        # TODO: AutoTrader
 
     def _setup_graceful_shutdown(self) -> asyncio.Event:
         self._stop_event = asyncio.Event()
@@ -72,8 +82,17 @@ class App:
         # Setup graceful shutdown handler
         stop = self._setup_graceful_shutdown()
 
-        # TODO: Initialize service tasks here
-        tasks = []
+        # Initialize service tasks here
+        tasks = [
+            asyncio.create_task(
+                self.iml.run(
+                    sub=self.event_bus.subscribe(
+                        topics={Topic.STOP},
+                    )
+                ),
+                name="IML",
+            ),
+        ]
 
         # Handle graceful shutdown
         await self._handle_graceful_shutdown(tasks)

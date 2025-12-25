@@ -27,3 +27,13 @@ class MarketClockEvent(BaseEvent):
     next_market_open: Optional[datetime] = None
     # If market IS open, next_market_close will be set.
     next_market_close: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class NewBarsEvent(BaseEvent):
+    """Event indicating new bar data is available."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.NEW_BARS, init=False)
+
+    # TODO: Add more fields as needed, e.g., bar data payload

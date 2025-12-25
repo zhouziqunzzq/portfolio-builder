@@ -6,6 +6,7 @@ class Topic(str, Enum):
 
     MARKET_CLOCK = "market_clock"
     BAR = "bar"
+    NEW_BARS = "new_bars"
     REBALANCE_DUE = "rebalance_due"
     PLAN = "plan"
     ORDER = "order"

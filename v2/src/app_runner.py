@@ -11,6 +11,8 @@ if str(_ROOT_SRC) not in sys.path:
 from utils.logging import configure_logging
 from configs import AppConfig
 from app import App
+from runtime_manager import RuntimeManagerOptions
+from events.event_bus import EventBusOptions
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,7 +56,13 @@ def main():
     log.info("Starting V2 Live Runner")
 
     # Create App
-    app = App(config=app_cfg)
+    app = App(
+        config=app_cfg,
+        runtime_manager_options=RuntimeManagerOptions(),  # Use defaults
+        event_bus_options=EventBusOptions(
+            drop_if_full=False,  # Do not drop events for now
+        ),
+    )
 
     # TODO: Implement live runner logic here
     asyncio.run(app.run())
