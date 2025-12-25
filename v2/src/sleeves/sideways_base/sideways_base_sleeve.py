@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -21,12 +21,51 @@ from sleeves.common.rebalance_helpers import should_rebalance
 from context.rebalance import RebalanceContext
 
 from .sideways_base_config import SidewaysBaseConfig
+from states.base_state import BaseState
 
 
 @dataclass
-class SidewaysBaseState:
+class SidewaysBaseState(BaseState):
+    STATE_KEY = "sleeve.sideways_base"
+    SCHEMA_VERSION = 1
+
     last_rebalance_ts: Optional[pd.Timestamp] = None
     last_weights: Optional[Dict[str, float]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        last_rebalance_ts = (
+            self.last_rebalance_ts.isoformat()
+            if self.last_rebalance_ts is not None
+            else None
+        )
+        last_weights = (
+            {str(k): float(v) for k, v in self.last_weights.items()}
+            if self.last_weights is not None
+            else None
+        )
+        return {
+            "last_rebalance_ts": last_rebalance_ts,
+            "last_weights": last_weights,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "SidewaysBaseState":
+        raw_ts = payload.get("last_rebalance_ts")
+        last_rebalance_ts = pd.to_datetime(raw_ts) if raw_ts else None
+
+        raw_weights = payload.get("last_weights")
+        last_weights = None
+        if isinstance(raw_weights, Mapping):
+            last_weights = {str(k): float(v) for k, v in raw_weights.items()}
+
+        return cls(
+            last_rebalance_ts=last_rebalance_ts,
+            last_weights=last_weights,
+        )
+
+    @classmethod
+    def empty(cls) -> "SidewaysBaseState":
+        return cls()
 
 
 class SidewaysBaseSleeve(BaseSleeve):

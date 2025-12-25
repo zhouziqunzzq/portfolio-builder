@@ -22,10 +22,14 @@ from context.friction_control import FrictionControlContext
 from sleeves.base import BaseSleeve
 from sleeves.common.rebalance_helpers import should_rebalance
 from .multi_sleeve_config import MultiSleeveConfig
+from states.base_state import BaseState
 
 
 @dataclass
-class MultiSleeveAllocatorState:
+class MultiSleeveAllocatorState(BaseState):
+    STATE_KEY = "allocator.multi_sleeve"
+    SCHEMA_VERSION = 1
+
     # Regime engine states
     last_regime_sample_ts: Optional[pd.Timestamp] = None
     last_regime_context: Optional[Tuple[str, Dict[str, float]]] = None
@@ -38,6 +42,100 @@ class MultiSleeveAllocatorState:
     last_rebalance_ts: Optional[pd.Timestamp] = None
     last_sleeve_weights: Optional[Dict[str, float]] = None
     last_portfolio: Optional[Dict[str, float]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        def _ts(x: Optional[pd.Timestamp]) -> Optional[str]:
+            return x.isoformat() if x is not None else None
+
+        regime_ctx = None
+        if self.last_regime_context is not None:
+            primary, scores = self.last_regime_context
+            regime_ctx = {
+                "primary": str(primary),
+                "scores": {str(k): float(v) for k, v in dict(scores).items()},
+            }
+        sleeve_w = (
+            {str(k): float(v) for k, v in self.last_sleeve_weights.items()}
+            if self.last_sleeve_weights is not None
+            else None
+        )
+        portfolio_w = (
+            {str(k): float(v) for k, v in self.last_portfolio.items()}
+            if self.last_portfolio is not None
+            else None
+        )
+        return {
+            "last_regime_sample_ts": _ts(self.last_regime_sample_ts),
+            "last_regime_context": regime_ctx,
+            "last_trend_sample_ts": _ts(self.last_trend_sample_ts),
+            "last_trend_status": self.last_trend_status,
+            "last_as_of": _ts(self.last_as_of),
+            "last_rebalance_ts": _ts(self.last_rebalance_ts),
+            "last_sleeve_weights": sleeve_w,
+            "last_portfolio": portfolio_w,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "MultiSleeveAllocatorState":
+        def _pdt(x: Any) -> Optional[pd.Timestamp]:
+            return pd.to_datetime(x) if x else None
+
+        last_regime_sample_ts = _pdt(payload.get("last_regime_sample_ts"))
+        last_trend_sample_ts = _pdt(payload.get("last_trend_sample_ts"))
+        last_as_of = _pdt(payload.get("last_as_of"))
+        last_rebalance_ts = _pdt(payload.get("last_rebalance_ts"))
+
+        # Regime context: preferred dict form, but accept legacy tuple/list
+        last_regime_context = None
+        raw_rc = payload.get("last_regime_context")
+        if isinstance(raw_rc, Mapping):
+            primary = raw_rc.get("primary")
+            if primary is None:
+                primary = raw_rc.get("primary_regime")
+            scores_raw = raw_rc.get("scores")
+            if scores_raw is None:
+                scores_raw = raw_rc.get("regime_scores")
+            if isinstance(primary, str) and isinstance(scores_raw, Mapping):
+                last_regime_context = (
+                    primary,
+                    {str(k): float(v) for k, v in scores_raw.items()},
+                )
+        elif isinstance(raw_rc, (list, tuple)) and len(raw_rc) == 2:
+            primary, scores_raw = raw_rc
+            if isinstance(primary, str) and isinstance(scores_raw, Mapping):
+                last_regime_context = (
+                    primary,
+                    {str(k): float(v) for k, v in scores_raw.items()},
+                )
+
+        last_trend_status = payload.get("last_trend_status")
+        if last_trend_status is not None:
+            last_trend_status = str(last_trend_status)
+
+        raw_sleeve_w = payload.get("last_sleeve_weights")
+        last_sleeve_weights = None
+        if isinstance(raw_sleeve_w, Mapping):
+            last_sleeve_weights = {str(k): float(v) for k, v in raw_sleeve_w.items()}
+
+        raw_portfolio = payload.get("last_portfolio")
+        last_portfolio = None
+        if isinstance(raw_portfolio, Mapping):
+            last_portfolio = {str(k): float(v) for k, v in raw_portfolio.items()}
+
+        return cls(
+            last_regime_sample_ts=last_regime_sample_ts,
+            last_regime_context=last_regime_context,
+            last_trend_sample_ts=last_trend_sample_ts,
+            last_trend_status=last_trend_status,
+            last_as_of=last_as_of,
+            last_rebalance_ts=last_rebalance_ts,
+            last_sleeve_weights=last_sleeve_weights,
+            last_portfolio=last_portfolio,
+        )
+
+    @classmethod
+    def empty(cls) -> "MultiSleeveAllocatorState":
+        return cls()
 
 
 class MultiSleeveAllocator:

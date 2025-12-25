@@ -7,6 +7,7 @@
 runtime:
   log_root: data/logs
   log_level: INFO
+  state_file: data/state/runtime_state.json
 
 universe_manager:
   membership_csv: data/sp500_membership.csv

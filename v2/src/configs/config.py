@@ -36,6 +36,9 @@ class MarketDataStoreConfig:
 class RuntimeConfig:
     log_root: str
     log_level: str = "INFO"
+    # Optional path to a JSON file used for runtime state persistence.
+    # FileStateManager will require this to be set (non-None).
+    state_file: Optional[str] = None
 
 
 @dataclass
@@ -63,9 +66,7 @@ class AppConfig:
         multi_raw = dict(raw.get("multi_sleeve_allocator", {}) or {})
         friction_raw = multi_raw.get("friction_control_config")
         if isinstance(friction_raw, dict):
-            multi_raw["friction_control_config"] = FrictionControlConfig(
-                **friction_raw
-            )
+            multi_raw["friction_control_config"] = FrictionControlConfig(**friction_raw)
         elif friction_raw is None or isinstance(friction_raw, FrictionControlConfig):
             pass
         else:

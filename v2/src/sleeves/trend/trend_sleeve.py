@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import traceback
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -39,16 +39,72 @@ from sleeves.common.rebalance_helpers import (
     get_closest_date_on_or_before,
 )
 from .trend_config import TrendConfig
+from states.base_state import BaseState
 
 
 @dataclass
-class TrendState:
+class TrendState(BaseState):
+    STATE_KEY = "sleeve.trend"
+    SCHEMA_VERSION = 1
+
     # Timestamp of last rebalance
     last_rebalance_ts: Optional[pd.Timestamp] = None
     # Latent smoothed sector weights (before top-k)
     last_sector_weights: Optional[pd.Series] = None
     # Stock weights from last rebalance
     last_stock_weights: Optional[Dict[str, float]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        last_rebalance_ts = (
+            self.last_rebalance_ts.isoformat()
+            if self.last_rebalance_ts is not None
+            else None
+        )
+        last_sector_weights = (
+            {str(k): float(v) for k, v in self.last_sector_weights.to_dict().items()}
+            if self.last_sector_weights is not None
+            else None
+        )
+        last_stock_weights = (
+            {str(k): float(v) for k, v in self.last_stock_weights.items()}
+            if self.last_stock_weights is not None
+            else None
+        )
+
+        return {
+            "last_rebalance_ts": last_rebalance_ts,
+            "last_sector_weights": last_sector_weights,
+            "last_stock_weights": last_stock_weights,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "TrendState":
+        raw_ts = payload.get("last_rebalance_ts")
+        last_rebalance_ts = pd.to_datetime(raw_ts) if raw_ts else None
+
+        raw_sector = payload.get("last_sector_weights")
+        last_sector_weights = None
+        if isinstance(raw_sector, Mapping):
+            # Keep dtype predictable; index is sector string
+            last_sector_weights = pd.Series(
+                {str(k): float(v) for k, v in raw_sector.items()},
+                dtype=float,
+            )
+
+        raw_stock = payload.get("last_stock_weights")
+        last_stock_weights = None
+        if isinstance(raw_stock, Mapping):
+            last_stock_weights = {str(k): float(v) for k, v in raw_stock.items()}
+
+        return cls(
+            last_rebalance_ts=last_rebalance_ts,
+            last_sector_weights=last_sector_weights,
+            last_stock_weights=last_stock_weights,
+        )
+
+    @classmethod
+    def empty(cls) -> "TrendState":
+        return cls()
 
 
 class TrendSleeve(BaseSleeve):

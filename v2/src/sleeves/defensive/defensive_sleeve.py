@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Mapping, Optional, Set
 from datetime import datetime
 
 import numpy as np
@@ -27,12 +27,52 @@ from sleeves.common.rebalance_helpers import (
 )
 from context.rebalance import RebalanceContext
 from .defensive_config import DefensiveConfig
+from states.base_state import BaseState
 
 
 @dataclass
-class DefensiveState:
+class DefensiveState(BaseState):
+    STATE_KEY = "sleeve.defensive"
+    SCHEMA_VERSION = 1
+
     last_rebalance_ts: Optional[pd.Timestamp] = None
     last_weights: Optional[Dict[str, float]] = None
+
+    def to_payload(self) -> Dict[str, Any]:
+        last_rebalance_ts = (
+            self.last_rebalance_ts.isoformat()
+            if self.last_rebalance_ts is not None
+            else None
+        )
+        last_weights = (
+            {str(k): float(v) for k, v in self.last_weights.items()}
+            if self.last_weights is not None
+            else None
+        )
+
+        return {
+            "last_rebalance_ts": last_rebalance_ts,
+            "last_weights": last_weights,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "DefensiveState":
+        raw_ts = payload.get("last_rebalance_ts")
+        last_rebalance_ts = pd.to_datetime(raw_ts) if raw_ts else None
+
+        raw_weights = payload.get("last_weights")
+        last_weights = None
+        if isinstance(raw_weights, Mapping):
+            last_weights = {str(k): float(v) for k, v in raw_weights.items()}
+
+        return cls(
+            last_rebalance_ts=last_rebalance_ts,
+            last_weights=last_weights,
+        )
+
+    @classmethod
+    def empty(cls) -> "DefensiveState":
+        return cls()
 
 
 class DefensiveSleeve(BaseSleeve):
