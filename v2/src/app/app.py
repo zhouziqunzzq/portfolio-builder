@@ -12,6 +12,7 @@ if str(_ROOT_SRC) not in sys.path:
 
 from configs import AppConfig
 from runtime_manager import RuntimeManager, RuntimeManagerOptions
+from states.state_manager import FileStateManager
 from events.event_bus import EventBus, EventBusOptions
 from events.events import BaseEvent
 from events.topic import Topic
@@ -28,15 +29,19 @@ class App:
     ):
         self.log = logging.getLogger(self.__class__.__name__)
         self.config = config
+
+        # Construct RuntimeManager which constructs common infrastructures
         self.rm = RuntimeManager.from_app_config(
             config,
             options=runtime_manager_options,
         )
+        # Event bus
         self.event_bus = EventBus(
             per_subscriber_queue_size=event_bus_options.per_subscriber_queue_size,
             drop_if_full=event_bus_options.drop_if_full,
             broadcast_topics=event_bus_options.broadcast_topics,
         )
+
         # IML
         self.iml: BaseIMLService = AlpacaPollingIMLService(
             bus=self.event_bus,
@@ -46,6 +51,12 @@ class App:
         )
         # TODO: EML
         # TODO: AutoTrader
+
+        # Construct StateManager last to make sure all stateful components are registered
+        self.state_manager = FileStateManager(
+            runtime_manager=self.rm,
+            state_file=self.config.runtime.state_file,
+        )
 
     def _setup_graceful_shutdown(self) -> asyncio.Event:
         self._stop_event = asyncio.Event()
@@ -80,11 +91,19 @@ class App:
     async def run(self):
         self.log.info("App started.")
 
+        # Load persisted state
+        state_loaded = self.state_manager.load_state()
+        if not state_loaded:
+            self.log.info("No persisted state loaded; starting fresh.")
+        else:
+            self.log.info("Persisted state loaded successfully.")
+
         # Setup graceful shutdown handler
         self._setup_graceful_shutdown()
 
         # Initialize service tasks here
         tasks = [
+            # TODO: Periodic state save task
             asyncio.create_task(
                 self.iml.run(
                     sub=self.event_bus.subscribe(
@@ -93,9 +112,15 @@ class App:
                 ),
                 name="IML",
             ),
+            # TODO: EML task
+            # TODO: AutoTrader task
         ]
 
         # Handle graceful shutdown
         await self._handle_graceful_shutdown(tasks)
+
+        # Persist state on shutdown
+        self.state_manager.save_state()
+        self.log.info("State saved on shutdown.")
 
         self.log.info("App finished.")
