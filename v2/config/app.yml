@@ -11,6 +11,12 @@ runtime:
   state_file: data/state/runtime_state.json
   graceful_shutdown_timeout_secs: 5.0
 
+iml:
+  polling_interval_secs: 30.0
+  bar_interval: 1d
+  bar_polling_interval_secs: 7200.0 # 2 hours
+  bar_fetch_lookback_weeks: 260 # 5 years
+
 universe_manager:
   membership_csv: data/sp500_membership.csv
   sectors_yaml: config/sectors.yml

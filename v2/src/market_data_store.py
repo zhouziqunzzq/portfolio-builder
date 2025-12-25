@@ -255,6 +255,12 @@ class MarketDataStore(BaseMarketDataStore):
             return None
         return df.index.min(), df.index.max()
 
+    def reset_memory_cache(self) -> None:
+        """
+        Clear the in-memory OHLCV cache.
+        """
+        self._memory_cache.clear()
+
     # ---------- internal helpers ----------
 
     def _cache_key(

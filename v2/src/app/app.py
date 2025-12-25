@@ -41,6 +41,7 @@ class App:
         self.iml: BaseIMLService = AlpacaPollingIMLService(
             bus=self.event_bus,
             rm=self.rm,
+            config=self.config.iml,
             # Alpaca API credentials loaded from env by default
         )
         # TODO: EML
@@ -80,7 +81,7 @@ class App:
         self.log.info("App started.")
 
         # Setup graceful shutdown handler
-        stop = self._setup_graceful_shutdown()
+        self._setup_graceful_shutdown()
 
         # Initialize service tasks here
         tasks = [

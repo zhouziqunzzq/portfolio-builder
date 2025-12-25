@@ -134,7 +134,7 @@ class FileStateManager(BaseStateManager):
     # ---------------------------
 
     def managed_names(self) -> set[str]:
-        return {"trend", "defensive", "sideways_base", "allocator"}
+        return {"trend", "defensive", "sideways_base", "allocator", "iml"}
 
     def _aliases(self) -> Dict[str, str]:
         return {
@@ -143,11 +143,13 @@ class FileStateManager(BaseStateManager):
             "defensive": "defensive",
             "sideways_base": "sideways_base",
             "allocator": "allocator",
+            "iml": "iml",
             # common variants
             "trend_sleeve": "trend",
             "defensive_sleeve": "defensive",
             "sideways_base_sleeve": "sideways_base",
             "multi_sleeve_allocator": "allocator",
+            "alpaca_polling_iml": "iml",
         }
 
     def _normalize_names(self, names: Optional[Sequence[str]]) -> list[str]:
@@ -186,6 +188,8 @@ class FileStateManager(BaseStateManager):
             return rm.get("sideways_base_sleeve")
         if name == "allocator":
             return rm.get("multi_sleeve_allocator")
+        if name == "iml":
+            return rm.get("iml")
         raise KeyError(name)
 
     def _get_state(self, obj: Any) -> BaseState:
