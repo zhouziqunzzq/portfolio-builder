@@ -226,7 +226,6 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
         level=app_cfg.runtime.log_level,
         log_to_file=app_cfg.runtime.log_to_file,
     )
-
     # Module-level logger (will inherit handlers from root_logger)
     logging.getLogger("backtest_v2")
 

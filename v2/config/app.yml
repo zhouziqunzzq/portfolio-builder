@@ -9,6 +9,7 @@ runtime:
   log_to_file: true
   log_root: data/logs
   state_file: data/state/runtime_state.json
+  graceful_shutdown_timeout_secs: 5.0
 
 universe_manager:
   membership_csv: data/sp500_membership.csv

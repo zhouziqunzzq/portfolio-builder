@@ -41,6 +41,9 @@ class RuntimeConfig:
     # FileStateManager will require this to be set (non-None).
     state_file: Optional[str] = None
 
+    # Event loops config
+    graceful_shutdown_timeout_secs: float = 5.0
+
 
 @dataclass
 class AppConfig:

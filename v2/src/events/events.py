@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from .topic import Topic
 
 
@@ -10,15 +10,17 @@ class BaseEvent:
 
     topic: Topic
     ts: float
-    source: str = ""
-    correlation_id: str = ""
+    source: str = field(default="", kw_only=True)
+    correlation_id: str = field(default="", kw_only=True)
 
 
 @dataclass(frozen=True)
 class MarketClockEvent(BaseEvent):
     """Market clock event indicating market open/close status."""
 
-    topic: Topic = Topic.MARKET_CLOCK
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.MARKET_CLOCK, init=False)
+
     now: datetime
     is_market_open: bool
     # If market is NOT open, next_market_open will be set.

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 import logging
 from typing import Any, Dict, Optional, Set
 from .events import BaseEvent
@@ -26,6 +27,15 @@ class Subscription:
         if not self._closed:
             self._closed = True
             self._bus.unsubscribe(self)
+
+
+@dataclass(frozen=True)
+class EventBusOptions:
+    """Options for EventBus construction."""
+
+    per_subscriber_queue_size: int = 10_000
+    drop_if_full: bool = False
+    broadcast_topics: Optional[Set[Topic]] = frozenset({Topic.STOP})
 
 
 class EventBus:
