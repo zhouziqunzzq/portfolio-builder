@@ -86,9 +86,21 @@ class MarketDataStore(BaseMarketDataStore):
         end: datetime | str,
         interval: str = "1d",
         auto_adjust: bool = True,
-        local_only: bool = False,
+        local_only: bool = Optional[False],
     ) -> pd.DataFrame:
-        local_only = self.local_only or local_only
+        """Get OHLCV data for the given ticker and date range.
+
+        Args:
+            ticker: Ticker symbol.
+            start: Start date (inclusive).
+            end: End date (inclusive).
+            interval: Data interval (e.g., '1d', '1wk', '1mo').
+            auto_adjust: Whether to auto-adjust prices if supported.
+            local_only: If set, overrides instance local_only for this call.
+        Returns:
+            DataFrame with DateTimeIndex and OHLCV columns.
+        """
+        local_only = local_only if local_only is not None else self.local_only
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
 
