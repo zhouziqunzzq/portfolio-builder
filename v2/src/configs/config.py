@@ -41,6 +41,7 @@ class RuntimeConfig:
     # Optional path to a JSON file used for runtime state persistence.
     # FileStateManager will require this to be set (non-None).
     state_file: Optional[str] = None
+    state_persist_interval_secs: float = 30.0
 
     # Event loops config
     graceful_shutdown_timeout_secs: float = 5.0

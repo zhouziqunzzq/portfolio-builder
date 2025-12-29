@@ -13,7 +13,7 @@ if str(_ROOT_SRC) not in sys.path:
 from configs import AppConfig
 from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from states.state_manager import FileStateManager
-from events.event_bus import EventBus, EventBusOptions
+from events.event_bus import EventBus, EventBusOptions, Subscription
 from events.events import BaseEvent
 from events.topic import Topic
 from iml.base_iml import BaseIMLService
@@ -57,6 +57,9 @@ class App:
             runtime_manager=self.rm,
             state_file=self.config.runtime.state_file,
         )
+        self.state_persist_interval_secs = (
+            self.config.runtime.state_persist_interval_secs
+        )
 
     def _setup_graceful_shutdown(self) -> asyncio.Event:
         self._stop_event = asyncio.Event()
@@ -87,6 +90,29 @@ class App:
             self.log.warning(f"Task {t.get_name()} did not exit in time; cancelling...")
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def _run_periodic_state_persistence(self, sub: "Subscription") -> None:
+        """
+        Periodically persist runtime state to disk.
+        Exits cleanly on STOP event.
+        """
+        try:
+            while True:
+                try:
+                    e = await asyncio.wait_for(
+                        sub.next(),
+                        timeout=self.state_persist_interval_secs,
+                    )
+                    sub.task_done()
+                    if e.topic == Topic.STOP:
+                        self.log.debug("STOP event received; exiting state persistence task.")
+                        break
+                except asyncio.TimeoutError:
+                    self.state_manager.save_state()
+                    self.log.debug("Periodic state persistence completed.")
+        except asyncio.CancelledError:
+            self.log.debug("Periodic state persistence task cancelled.")
+            pass
 
     async def run(self):
         self.log.info("App started.")
@@ -103,7 +129,14 @@ class App:
 
         # Initialize service tasks here
         tasks = [
-            # TODO: Periodic state save task
+            asyncio.create_task(
+                self._run_periodic_state_persistence(
+                    sub=self.event_bus.subscribe(
+                        topics={Topic.STOP},
+                    )
+                ),
+                name="StatePersistence",
+            ),
             asyncio.create_task(
                 self.iml.run(
                     sub=self.event_bus.subscribe(
