@@ -171,9 +171,7 @@ class SidewaysBaseSleeve(BaseSleeve):
 
         # ---------- Rebalance timing ----------
         reb_ts = rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
-        if self.state.last_weights is not None and not should_rebalance(
-            self.state.last_rebalance_ts, reb_ts, cfg.rebalance_freq
-        ):
+        if not self.should_rebalance(reb_ts):
             self.log.info(
                 "Skipping rebalance at %s; last rebalance at %s",
                 reb_ts.date(),
@@ -211,6 +209,18 @@ class SidewaysBaseSleeve(BaseSleeve):
         self.state.last_rebalance_ts = reb_ts
         self.state.last_weights = weights
         return weights
+
+    def should_rebalance(
+        self,
+        now: datetime | str,
+    ) -> bool:
+        if self.state.last_weights is None:
+            # Never rebalanced before -> must rebalance
+            return True
+
+        now = pd.to_datetime(now)
+        cfg = self.config
+        return should_rebalance(self.state.last_rebalance_ts, now, cfg.rebalance_freq)
 
     # ------------------------------------------------------------------
     # Signal computation (MVP uses OHLCV directly)

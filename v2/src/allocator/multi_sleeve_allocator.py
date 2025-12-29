@@ -382,6 +382,54 @@ class MultiSleeveAllocator:
         self.state.last_portfolio = out
         return out, context
 
+    def should_rebalance(self, now: datetime | str) -> bool:
+        """Check if rebalance is needed at `now` timestamp.
+        Returns True if any enabled sleeve requires rebalance, or if
+        the regime engine or trend filter wants state update (which may also
+        trigger a rebalance).
+        """
+        # If any enabled sleeve requires rebalance, we rebalance
+        for name in self.enabled_sleeves:
+            if name == "cash":
+                continue
+            sleeve = self.sleeves.get(name)
+            if sleeve is None:
+                self.log.warning(
+                    "Sleeve '%s' is enabled but not found in sleeves; skipping rebalance check.",
+                    name,
+                )
+                continue
+            if sleeve.should_rebalance(now):
+                self.log.debug("Sleeve '%s' requires rebalance at %s.", name, now)
+                return True
+
+        # Check if regime engine wants rebalance
+        if self.state.last_regime_context is None:
+            self.log.debug("No prior regime context; rebalance required.")
+            return True
+        if should_rebalance(
+            self.state.last_regime_sample_ts,
+            pd.to_datetime(now),
+            self.config.regime_sample_freq,
+        ):
+            self.log.debug("Regime engine requires rebalance at %s.", now)
+            return True
+
+        # Check if trend filter wants rebalance
+        if self.config.trend_filter_enabled:
+            if self.state.last_trend_status is None:
+                self.log.debug("No prior trend status; rebalance required.")
+                return True
+            if should_rebalance(
+                self.state.last_trend_sample_ts,
+                pd.to_datetime(now),
+                self.config.trend_sample_freq,
+            ):
+                self.log.debug("Trend filter requires rebalance at %s.", now)
+                return True
+
+        return False
+
     # ------------------------------------------------------------------
     # Vectorized Precompute for All Sleeves
     # ------------------------------------------------------------------

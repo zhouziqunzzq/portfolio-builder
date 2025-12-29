@@ -212,10 +212,8 @@ class TrendSleeve(BaseSleeve):
         # Note: We need this because the global scheduler may call this function
         # more frequently than the sleeve's intended rebalance frequency.
         # If it's not time to rebalance yet, we return the last weights.
-        if self.state.last_stock_weights is not None and not should_rebalance(
-            self.state.last_rebalance_ts,
-            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
-            cfg.rebalance_freq,
+        if not self.should_rebalance(
+            rebalance_ctx.rebalance_ts if rebalance_ctx else as_of
         ):
             self.log.info(
                 "Skipping rebalance at %s; last rebalance at %s",
@@ -357,6 +355,17 @@ class TrendSleeve(BaseSleeve):
         self.state.last_stock_weights = stock_weights
 
         return stock_weights
+
+    def should_rebalance(self, now: datetime | str) -> bool:
+        if self.state.last_stock_weights is None:
+            # Never rebalanced before; must rebalance now
+            return True
+
+        return should_rebalance(
+            self.state.last_rebalance_ts,
+            pd.to_datetime(now),
+            self.config.rebalance_freq,
+        )
 
     # ------------------------------------------------------------------
     # Universe
@@ -1503,7 +1512,9 @@ class TrendSleeve(BaseSleeve):
                     self.log.info(
                         "Vec first date %s, %s stock scores:", dt.date(), sector
                     )
-                    self.log.debug("%s", s.sort_values(ascending=False).head(5).to_dict())
+                    self.log.debug(
+                        "%s", s.sort_values(ascending=False).head(5).to_dict()
+                    )
 
                 top = s.nlargest(cfg.top_k_per_sector).index.tolist()
 

@@ -239,10 +239,8 @@ class DefensiveSleeve(BaseSleeve):
         # Note: We need this because the global scheduler may call this function
         # more frequently than the sleeve's intended rebalance frequency.
         # If it's not time to rebalance yet, we return the last weights.
-        if self.state.last_weights is not None and not should_rebalance(
-            self.state.last_rebalance_ts,
-            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of,
-            cfg.rebalance_freq,
+        if not self.should_rebalance(
+            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
         ):
             self.log.info(
                 "Skipping rebalance at %s; last rebalance at %s",
@@ -385,6 +383,15 @@ class DefensiveSleeve(BaseSleeve):
         )
         self.state.last_weights = weights
         return weights
+
+    def should_rebalance(self, now: datetime | str) -> bool:
+        if self.state.last_weights is None:
+            # Never rebalanced before; must rebalance now
+            return True
+
+        now = pd.to_datetime(now)
+        cfg = self.config
+        return should_rebalance(self.state.last_rebalance_ts, now, cfg.rebalance_freq)
 
     # ------------------------------------------------------------------
     # Multi-Asset Allocation (Option 1)

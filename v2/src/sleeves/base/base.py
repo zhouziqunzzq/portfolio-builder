@@ -83,6 +83,24 @@ class BaseSleeve(ABC):
             "generate_target_weights_for_date() must be implemented by subclasses"
         )
 
+    @abstractmethod
+    def should_rebalance(
+        self,
+        now: datetime | str,
+    ) -> bool:
+        """
+        Determine whether the sleeve should rebalance at the given datetime.
+
+        Args:
+            now: The current datetime to evaluate.
+
+        Returns:
+            A boolean indicating whether to rebalance.
+        """
+        raise NotImplementedError(
+            "should_rebalance() must be implemented by subclasses"
+        )
+
     # ------------------------------------------------------------------
     # Precompute for vectorized signals generation
     # ------------------------------------------------------------------
