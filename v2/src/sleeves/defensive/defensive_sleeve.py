@@ -297,6 +297,7 @@ class DefensiveSleeve(BaseSleeve):
         if (
             getattr(self, "_cached_scores_mat", None) is not None
             and not self._cached_scores_mat.empty
+            and date_key >= self._cached_scores_mat.index.min()
         ):
             score_row = _fetch_row_using_closest(self._cached_scores_mat, date_key)
             vol_row = _fetch_row_using_closest(

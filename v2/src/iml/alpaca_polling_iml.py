@@ -232,16 +232,16 @@ class AlpacaPollingIMLService(BaseIMLService):
         # Grab the MarketDataStore and MultiSleeveAllocator
         mds: MarketDataStore = self.rm.get("market_data_store")
         if not mds:
-            self.log.warning(
+            self.log.error(
                 "MarketDataStore not found in RuntimeManager; cannot check new bars"
             )
-            return False
+            raise RuntimeError("MarketDataStore not found")
         allocator: MultiSleeveAllocator = self.rm.get("multi_sleeve_allocator")
         if not allocator:
-            self.log.warning(
+            self.log.error(
                 "MultiSleeveAllocator not found in RuntimeManager; cannot check new bars"
             )
-            return False
+            raise RuntimeError("MultiSleeveAllocator not found")
 
         # Get all tickers from allocator
         tickers = allocator.get_universe()

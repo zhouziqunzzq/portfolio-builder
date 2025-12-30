@@ -245,7 +245,7 @@ class TrendSleeve(BaseSleeve):
             self._cached_stock_scores_mat is not None
             and not self._cached_stock_scores_mat.empty
             and date_key >= self._cached_stock_scores_mat.index.min()
-            and date_key <= self._cached_stock_scores_mat.index.max()
+            # and date_key <= self._cached_stock_scores_mat.index.max()
         ):
             stock_as_of = get_closest_date_on_or_before(
                 date_key, self._cached_stock_scores_mat.index
@@ -298,6 +298,7 @@ class TrendSleeve(BaseSleeve):
                     if not sigs.empty and "vol" in sigs.columns:
                         stock_scores["vol"] = sigs["vol"]
         else:
+            self.log.debug("No cached scores available; computing from scratch.")
             # Compute from scratch
             universe = self._get_trend_universe(as_of)
             if not universe:
@@ -1708,7 +1709,8 @@ class TrendSleeve(BaseSleeve):
         self._cached_stock_scores_mat = stock_score_mat.copy()
         self._cached_sector_scores_mat = sector_scores_mat.copy()
 
-        return pd.DataFrame()
+        # Return sector scores for inspection
+        return sector_scores_mat
 
     # Convenience accessor (deprecated - returns empty DataFrame)
     def get_precomputed_weights(self) -> Optional[pd.DataFrame]:

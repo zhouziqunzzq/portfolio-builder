@@ -140,7 +140,7 @@ class FileStateManager(BaseStateManager):
     # ---------------------------
 
     def managed_names(self) -> set[str]:
-        return {"trend", "defensive", "sideways_base", "allocator", "iml"}
+        return {"trend", "defensive", "sideways_base", "allocator", "iml", "at"}
 
     def _aliases(self) -> Dict[str, str]:
         return {
@@ -150,12 +150,14 @@ class FileStateManager(BaseStateManager):
             "sideways_base": "sideways_base",
             "allocator": "allocator",
             "iml": "iml",
+            "at": "at",
             # common variants
             "trend_sleeve": "trend",
             "defensive_sleeve": "defensive",
             "sideways_base_sleeve": "sideways_base",
             "multi_sleeve_allocator": "allocator",
             "alpaca_polling_iml": "iml",
+            "multi_sleeve_at": "at",
         }
 
     def _normalize_names(self, names: Optional[Sequence[str]]) -> list[str]:
@@ -185,18 +187,7 @@ class FileStateManager(BaseStateManager):
     def _get_stateful_object(self, name: str) -> Any:
         # Obtain references from RuntimeManager
         # (We intentionally use rm.get(...) to avoid tight coupling.)
-        rm = self.runtime_manager
-        if name == "trend":
-            return rm.get("trend_sleeve")
-        if name == "defensive":
-            return rm.get("defensive_sleeve")
-        if name == "sideways_base":
-            return rm.get("sideways_base_sleeve")
-        if name == "allocator":
-            return rm.get("multi_sleeve_allocator")
-        if name == "iml":
-            return rm.get("iml")
-        raise KeyError(name)
+        return self.runtime_manager.get(name)
 
     def _get_state(self, obj: Any) -> BaseState:
         st = getattr(obj, "state", None)
