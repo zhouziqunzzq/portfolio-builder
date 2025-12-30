@@ -2,20 +2,20 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-"""
-Inlined production copy of the project's MarketDataStore.
-
-This file used to be a thin wrapper that modified sys.path and re-exported
-the project-level implementation. For production packaging we inline the
-implementation to avoid runtime path hacks.
-"""
-
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import json
 import logging
 import pandas as pd
 import yfinance as yf
+
+import sys
+
+_ROOT_SRC = Path(__file__).resolve().parent
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from utils.tz import to_canonical_eastern_naive
 
 
 class BaseMarketDataStore(ABC):
@@ -89,6 +89,16 @@ class MarketDataStore(BaseMarketDataStore):
         local_only: bool = Optional[False],
     ) -> pd.DataFrame:
         """Get OHLCV data for the given ticker and date range.
+        Timezone convention
+        -------------------
+        This class stores and returns OHLCV indices as tz-naive timestamps.
+        For daily (and coarser) bars, these timestamps should be interpreted as
+        US/Eastern calendar dates.
+
+        - If callers pass tz-aware `start`/`end`, they are converted to US/Eastern
+            and then the tzinfo is dropped (tz-naive) before any comparisons.
+        - If callers pass tz-naive `start`/`end`, they are assumed to already be
+            in the US/Eastern convention.
 
         Args:
             ticker: Ticker symbol.
@@ -101,8 +111,9 @@ class MarketDataStore(BaseMarketDataStore):
             DataFrame with DateTimeIndex and OHLCV columns.
         """
         local_only = local_only if local_only is not None else self.local_only
-        start_dt = pd.to_datetime(start)
-        end_dt = pd.to_datetime(end)
+
+        start_dt = to_canonical_eastern_naive(start)
+        end_dt = to_canonical_eastern_naive(end)
 
         # For daily (and coarser) data, normalize to midnight so we compare by date
         if interval in ("1d", "1wk", "1mo"):
@@ -243,7 +254,9 @@ class MarketDataStore(BaseMarketDataStore):
         if out.empty:
             return None
         # Restrict to requested window and sort
-        out = out.loc[pd.to_datetime(start) : pd.to_datetime(end)].sort_index()
+        start_dt = to_canonical_eastern_naive(start).normalize()
+        end_dt = to_canonical_eastern_naive(end).normalize()
+        out = out.loc[start_dt:end_dt].sort_index()
 
         return out
 
@@ -313,7 +326,12 @@ class MarketDataStore(BaseMarketDataStore):
             return None
 
         df = pd.read_parquet(path)
-        df.index = pd.to_datetime(df.index)
+        idx = pd.to_datetime(df.index)
+        # Be defensive: parquet round-trips can preserve tz-awareness.
+        # Canonicalize any tz-aware index to US/Eastern, then drop tzinfo.
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_convert("US/Eastern").tz_localize(None)
+        df.index = idx
         df = df.sort_index()
 
         # Populate memory cache for future calls
@@ -348,7 +366,7 @@ class MarketDataStore(BaseMarketDataStore):
             "adjusted": bool(auto_adjust),
             "start": df_sorted.index.min().strftime("%Y-%m-%d"),
             "end": df_sorted.index.max().strftime("%Y-%m-%d"),
-            "last_updated": datetime.utcnow().isoformat() + "Z",
+            "last_updated": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "source": self.source,
         }
         with open(self._meta_path(ticker, interval, auto_adjust), "w") as f:
@@ -430,6 +448,10 @@ class MarketDataStore(BaseMarketDataStore):
         """
         if interval != "1d":
             raise ValueError("Only 1d supported in _ensure_coverage")
+
+        # Canonicalize for safe comparisons against cached index values.
+        start = to_canonical_eastern_naive(start).to_pydatetime()
+        end = to_canonical_eastern_naive(end).to_pydatetime()
 
         df_cached = self._load_cached_df(ticker, interval, auto_adjust)
 

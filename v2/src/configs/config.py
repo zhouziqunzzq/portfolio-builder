@@ -19,6 +19,7 @@ from sleeves.sideways_base.sideways_base_config import SidewaysBaseConfig
 from allocator.multi_sleeve_config import MultiSleeveConfig
 from friction_control.friction_control_config import FrictionControlConfig
 from iml.config import IMLConfig
+from at.config import ATConfig
 
 
 @dataclass
@@ -68,6 +69,9 @@ class AppConfig:
     # IML
     iml: IMLConfig
 
+    # AT
+    at: ATConfig
+
     @staticmethod
     def load_from_yaml(path: Path) -> AppConfig:
         raw = _load_yaml(path)
@@ -95,6 +99,7 @@ class AppConfig:
             ),
             multi_sleeve_allocator=MultiSleeveConfig(**multi_raw),
             iml=IMLConfig(**raw.get("iml", {})),
+            at=ATConfig(**raw.get("at", {})),
         )
 
         return cfg

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from .topic import Topic
 
 
@@ -37,3 +37,14 @@ class NewBarsEvent(BaseEvent):
     topic: Topic = field(default=Topic.NEW_BARS, init=False)
 
     # TODO: Add more fields as needed, e.g., bar data payload
+
+
+@dataclass(frozen=True)
+class RebalancePlanRequestEvent(BaseEvent):
+    """Event indicating a rebalance plan request."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.REBALANCE_PLAN, init=False)
+
+    rebalance_id: str
+    weights: Dict[str, float]  # Mapping of tickers to target weights

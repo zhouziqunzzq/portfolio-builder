@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
+from utils.tz import to_canonical_eastern_naive
+
 from .base_iml import BaseIMLService
 from .config import IMLConfig
 
@@ -29,12 +31,13 @@ class PollingIMLState(BaseState):
     last_bar_refresh_time: Optional[datetime] = None
 
     def to_payload(self) -> Dict[str, Any]:
+        last = (
+            to_canonical_eastern_naive(self.last_bar_refresh_time).to_pydatetime()
+            if self.last_bar_refresh_time is not None
+            else None
+        )
         return {
-            "last_bar_refresh_time": (
-                self.last_bar_refresh_time.isoformat()
-                if self.last_bar_refresh_time is not None
-                else None
-            ),
+            "last_bar_refresh_time": (last.isoformat() if last is not None else None),
         }
 
     @classmethod
@@ -45,6 +48,11 @@ class PollingIMLState(BaseState):
             if last_bar_refresh_time_str is not None
             else None
         )
+
+        if last_bar_refresh_time is not None:
+            last_bar_refresh_time = to_canonical_eastern_naive(
+                last_bar_refresh_time
+            ).to_pydatetime()
         return cls(
             last_bar_refresh_time=last_bar_refresh_time,
         )
@@ -61,6 +69,11 @@ class AlpacaPollingIMLService(BaseIMLService):
     - Polls Alpaca market clock periodically
     - Emits `MarketClockEvent` to the event bus
     - Bars handling is intentionally not implemented yet
+
+    Timezone convention
+    -------------------
+    This service uses tz-naive US/Eastern timestamps when interacting with
+    `MarketDataStore` daily bars (and when persisting `PollingIMLState`).
     """
 
     def __init__(
@@ -149,7 +162,8 @@ class AlpacaPollingIMLService(BaseIMLService):
         # Emit one immediately on startup.
         while self._running:
             try:
-                now: datetime = datetime.now()
+                # Get current time in local timezone
+                now: datetime = datetime.now().astimezone()
 
                 # Check market clock
                 clock_event = await self.get_market_clock()
@@ -205,7 +219,11 @@ class AlpacaPollingIMLService(BaseIMLService):
 
     async def check_new_bars(self, now: Optional[datetime] = None) -> bool:
         if now is None:
-            now = datetime.now()
+            now = datetime.now().astimezone()
+
+        # Canonicalize to match MarketDataStore's daily OHLCV convention:
+        # tz-naive timestamps interpreted as US/Eastern.
+        now = to_canonical_eastern_naive(now).to_pydatetime()
 
         # Check if bars should be fetched
         if not self._should_fetch_new_bars(now):
@@ -230,8 +248,10 @@ class AlpacaPollingIMLService(BaseIMLService):
         self.log.debug(f"Checking new bars for universe of {len(tickers)} tickers")
 
         # Invoke MarketDataStore to refresh bars for these tickers
-        end = now
-        start = end - pd.Timedelta(weeks=self.config.bar_fetch_lookback_weeks)
+        end_ts = pd.Timestamp(now)
+        start_ts = end_ts - pd.Timedelta(weeks=self.config.bar_fetch_lookback_weeks)
+        start = start_ts.to_pydatetime()
+        end = end_ts.to_pydatetime()
         has_new_bars = await asyncio.to_thread(
             self._fetch_new_bars,
             mds,
@@ -289,7 +309,9 @@ class AlpacaPollingIMLService(BaseIMLService):
         """
         has_new_bars = False
         for ticker in tickers:
-            self.log.debug(f"Fetching OHLCV data for ticker {ticker} from {start.date()} to {end.date()}")
+            self.log.debug(
+                f"Fetching OHLCV data for ticker {ticker} from {start.date()} to {end.date()}"
+            )
             df = mds.get_ohlcv(
                 ticker=ticker,
                 start=start,
@@ -316,6 +338,8 @@ class AlpacaPollingIMLService(BaseIMLService):
                 has_new_bars = True
 
         # Update last bar refresh time
-        self.state.last_bar_refresh_time = now or datetime.now()
+        self.state.last_bar_refresh_time = to_canonical_eastern_naive(
+            now or datetime.now().astimezone()
+        ).to_pydatetime()
 
         return has_new_bars

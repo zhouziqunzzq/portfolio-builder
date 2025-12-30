@@ -98,3 +98,38 @@ def test_should_rebalance_table_driven():
             raise AssertionError(
                 f"Case '{case['name']}' failed: expected {expected}, got {result}"
             ) from e
+
+
+def test_should_rebalance_with_mixed_timezones():
+    """Verify behavior when `last` and `current` have different timezones.
+
+    The implementation normalizes to Eastern before comparing; these tests
+    compute the expected result by explicitly converting both to Eastern
+    and applying the same logic.
+    """
+    from v2.src.utils.tz import as_eastern
+
+    def iso_pair(ts: pd.Timestamp):
+        ic = ts.isocalendar()
+        try:
+            return ic.year, ic.week
+        except AttributeError:
+            return ic[0], ic[1]
+
+    last = pd.Timestamp("2025-12-28 23:30:00", tz="US/Eastern")
+    curr = pd.Timestamp("2025-12-29 05:00:00", tz="UTC") # Equivalent to 00:00 ET on 2025-12-29
+
+    last_e = as_eastern(last)
+    curr_e = as_eastern(curr)
+
+    # Daily expectation (compare dates in Eastern)
+    expected_daily = curr_e.date() > last_e.date()
+    assert should_rebalance(last, curr, "D") is expected_daily
+
+    # Weekly expectation (compare ISO year/week in Eastern)
+    expected_weekly = iso_pair(curr_e) > iso_pair(last_e)
+    assert should_rebalance(last, curr, "W") is expected_weekly
+
+    # Monthly expectation (compare year/month in Eastern)
+    expected_monthly = (curr_e.month > last_e.month) or (curr_e.year > last_e.year)
+    assert should_rebalance(last, curr, "M") is expected_monthly

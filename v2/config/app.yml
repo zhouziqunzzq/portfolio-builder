@@ -18,6 +18,9 @@ iml:
   bar_polling_interval_secs: 7200.0 # 2 hours
   bar_fetch_lookback_weeks: 260 # 5 years
 
+at:
+  polling_interval_secs: 30.0
+
 universe_manager:
   membership_csv: data/sp500_membership.csv
   sectors_yaml: config/sectors.yml

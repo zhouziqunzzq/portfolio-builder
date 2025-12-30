@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import sys
 import time
+from typing import Dict, List
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
@@ -18,6 +19,8 @@ from events.events import BaseEvent
 from events.topic import Topic
 from iml.base_iml import BaseIMLService
 from iml.alpaca_polling_iml import AlpacaPollingIMLService
+from at.base_at import BaseATService
+from at.multi_sleeve_at import MultiSleeveATService
 
 
 class App:
@@ -50,7 +53,13 @@ class App:
             # Alpaca API credentials loaded from env by default
         )
         # TODO: EML
-        # TODO: AutoTrader
+        # AutoTrader (AT)
+        self.at: BaseATService = MultiSleeveATService(
+            bus=self.event_bus,
+            rm=self.rm,
+            config=self.config.at,
+            name="MultiSleeveAT",
+        )
 
         # Construct StateManager last to make sure all stateful components are registered
         self.state_manager = FileStateManager(
@@ -70,7 +79,8 @@ class App:
 
     async def _handle_graceful_shutdown(
         self,
-        tasks: list[asyncio.Task],
+        tasks: List[asyncio.Task],
+        subscriptions: Dict[str, Subscription],
     ) -> None:
         if not tasks:
             return
@@ -90,7 +100,12 @@ class App:
             self.log.warning(f"Task {t.get_name()} did not exit in time; cancelling...")
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-    
+
+        # Cleanup subscriptions
+        for svc, sub in subscriptions.items():
+            self.log.debug(f"Closing subscription for {svc}...")
+            await sub.close()
+
     async def _run_periodic_state_persistence(self, sub: "Subscription") -> None:
         """
         Periodically persist runtime state to disk.
@@ -105,7 +120,9 @@ class App:
                     )
                     sub.task_done()
                     if e.topic == Topic.STOP:
-                        self.log.debug("STOP event received; exiting state persistence task.")
+                        self.log.debug(
+                            "STOP event received; exiting state persistence task."
+                        )
                         break
                 except asyncio.TimeoutError:
                     self.state_manager.save_state()
@@ -127,30 +144,45 @@ class App:
         # Setup graceful shutdown handler
         self._setup_graceful_shutdown()
 
-        # Initialize service tasks here
+        # Initialize service tasks and subscriptions
+        subs: Dict[str, Subscription] = {
+            "StatePersistence": self.event_bus.subscribe(
+                topics={Topic.STOP},
+            ),
+            "IML": self.event_bus.subscribe(
+                topics={Topic.STOP},
+            ),
+            "AT": self.event_bus.subscribe(
+                topics={
+                    Topic.STOP,
+                    Topic.MARKET_CLOCK,
+                },
+            ),
+        }
         tasks = [
             asyncio.create_task(
                 self._run_periodic_state_persistence(
-                    sub=self.event_bus.subscribe(
-                        topics={Topic.STOP},
-                    )
+                    sub=subs["StatePersistence"],
                 ),
                 name="StatePersistence",
             ),
             asyncio.create_task(
                 self.iml.run(
-                    sub=self.event_bus.subscribe(
-                        topics={Topic.STOP},
-                    )
+                    sub=subs["IML"],
                 ),
                 name="IML",
             ),
             # TODO: EML task
-            # TODO: AutoTrader task
+            asyncio.create_task(
+                self.at.run(
+                    sub=subs["AT"],
+                ),
+                name="AT",
+            ),
         ]
 
         # Handle graceful shutdown
-        await self._handle_graceful_shutdown(tasks)
+        await self._handle_graceful_shutdown(tasks, subscriptions=subs)
 
         # Persist state on shutdown
         self.state_manager.save_state()

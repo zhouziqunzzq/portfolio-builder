@@ -1,6 +1,15 @@
 from typing import Optional
 import pandas as pd
 
+import sys
+from pathlib import Path
+
+_ROOT_SRC = Path(__file__).resolve().parents[2]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from utils.tz import as_eastern
+
 VALID_REBALANCE_FREQS = {"D", "W", "M"}
 
 
@@ -26,6 +35,10 @@ def should_rebalance(
 
     if last_rebalance_ts is None:
         return True  # Always rebalance if never done before
+
+    # Unify timestamps to Eastern Time for comparison
+    last_rebalance_ts = as_eastern(last_rebalance_ts)
+    current_ts = as_eastern(current_ts)
 
     if current_ts <= last_rebalance_ts:
         # We don't allow rebalancing "backwards" in time

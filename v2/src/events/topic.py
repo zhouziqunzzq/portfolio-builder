@@ -8,7 +8,7 @@ class Topic(str, Enum):
     BAR = "bar"
     NEW_BARS = "new_bars"
     REBALANCE_DUE = "rebalance_due"
-    PLAN = "plan"
+    REBALANCE_PLAN = "rebalance_plan"
     ORDER = "order"
     FILL = "fill"
     LOG = "log"

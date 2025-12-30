@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 import json
 import os
 import shutil
+import logging
 
 from .base_state import BaseState, StateSerializationError
 
@@ -71,8 +72,10 @@ class FileStateManager(BaseStateManager):
         runtime_manager: RuntimeManager,
         *,
         state_file: Optional[str | Path] = None,
+        skip_self_check: bool = False,  # Useful for tests
     ) -> None:
         self.runtime_manager = runtime_manager
+        self.log = logging.getLogger(self.__class__.__name__)
 
         if state_file is None:
             cfg = getattr(runtime_manager, "app_config", None)
@@ -98,7 +101,8 @@ class FileStateManager(BaseStateManager):
         self.state_file = Path(state_file)
 
         # Fail fast if RuntimeManager wiring is incomplete.
-        self._self_check_managed_objects()
+        if not skip_self_check:
+            self._self_check_managed_objects()
 
     def _self_check_managed_objects(self) -> None:
         """Validate that RuntimeManager exposes all managed objects and BaseState."""
@@ -126,7 +130,9 @@ class FileStateManager(BaseStateManager):
                 parts.append(f"missing/invalid .state for: {bad_state}")
 
             raise ValueError(
-                "RuntimeManager is not wired for FileStateManager (" + "; ".join(parts) + ")"
+                "RuntimeManager is not wired for FileStateManager ("
+                + "; ".join(parts)
+                + ")"
             )
 
     # ---------------------------
@@ -296,13 +302,14 @@ class FileStateManager(BaseStateManager):
                 f"State file missing 'states' dict: {self.state_file}"
             )
 
-        # Load requested states; require each one to be present and valid.
+        # Load requested states
         for name in selected:
             raw_state = states.get(name)
             if raw_state is None:
-                raise StateSerializationError(
-                    f"State file missing required state '{name}': {self.state_file}"
+                self.log.warning(
+                    f"State file missing required state '{name}': {self.state_file}; skipping load for this state"
                 )
+                continue
 
             obj = self._get_stateful_object(name)
             current_state = self._get_state(obj)

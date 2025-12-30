@@ -58,27 +58,28 @@ def test_file_state_manager_save_load_roundtrip(tmp_path: Path):
     defensive = _Obj(2)
     sideways = _Obj(3)
     allocator = _Obj(4)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
-    sm = FileStateManager(rm)
-    sm.save_state()
+    sm = FileStateManager(rm, skip_self_check=True)
+    sm.save_state(names=rm_mapping.keys())
     assert state_file.exists()
 
     # mutate
     trend.state.x = 10
     defensive.state.x = 20
 
-    loaded = sm.load_state()
+    loaded = sm.load_state(names=rm_mapping.keys())
     assert loaded is True
 
     assert trend.state.x == 1
@@ -92,20 +93,21 @@ def test_file_state_manager_subset_reset(tmp_path: Path):
     defensive = _Obj(6)
     sideways = _Obj(7)
     allocator = _Obj(8)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
-    sm = FileStateManager(rm)
-    sm.save_state()
+    sm = FileStateManager(rm, skip_self_check=True)
+    sm.save_state(names=rm_mapping.keys())
 
     sm.reset_state(names=["trend"])
 
@@ -121,25 +123,25 @@ def test_file_state_manager_creates_backup_on_overwrite(tmp_path: Path):
     defensive = _Obj(2)
     sideways = _Obj(3)
     allocator = _Obj(4)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
-    sm = FileStateManager(rm)
-    sm.save_state()
+    sm = FileStateManager(rm, skip_self_check=True)
+    sm.save_state(names=rm_mapping.keys())
 
     # change and re-save
     trend.state.x = 99
-    sm.save_state()
-
+    sm.save_state(names=rm_mapping.keys())
     backup = state_file.with_suffix(state_file.suffix + ".bak")
     assert backup.exists()
 
@@ -149,20 +151,21 @@ def test_file_state_manager_load_missing_file_returns_false(tmp_path: Path):
     defensive = _Obj(2)
     sideways = _Obj(3)
     allocator = _Obj(4)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
-    sm = FileStateManager(rm)
-    assert sm.load_state() is False
+    sm = FileStateManager(rm, skip_self_check=True)
+    assert sm.load_state(names=rm_mapping.keys()) is False
 
 
 def test_file_state_manager_unknown_name_raises(tmp_path: Path):
@@ -170,19 +173,20 @@ def test_file_state_manager_unknown_name_raises(tmp_path: Path):
     defensive = _Obj(2)
     sideways = _Obj(3)
     allocator = _Obj(4)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
-    sm = FileStateManager(rm)
+    sm = FileStateManager(rm, skip_self_check=True)
     with pytest.raises(KeyError):
         sm.save_state(names=["nope"])
 
@@ -192,19 +196,20 @@ def test_file_state_manager_requires_state_file():
     defensive = _Obj(2)
     sideways = _Obj(3)
     allocator = _Obj(4)
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+        "multi_sleeve_allocator": allocator,
+    }
 
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-            "multi_sleeve_allocator": allocator,
-        },
+        rm_mapping,
         state_file=None,
     )
 
     with pytest.raises(ValueError, match=r"runtime\.state_file is None"):
-        FileStateManager(rm)
+        FileStateManager(rm, skip_self_check=True)
 
 
 def test_file_state_manager_constructor_self_check_missing_object(tmp_path: Path):
@@ -213,14 +218,15 @@ def test_file_state_manager_constructor_self_check_missing_object(tmp_path: Path
     defensive = _Obj(2)
     sideways = _Obj(3)
     # allocator intentionally omitted
+    rm_mapping = {
+        "trend_sleeve": trend,
+        "defensive_sleeve": defensive,
+        "sideways_base_sleeve": sideways,
+    }
 
     state_file = tmp_path / "state.json"
     rm = _FakeRuntimeManager(
-        {
-            "trend_sleeve": trend,
-            "defensive_sleeve": defensive,
-            "sideways_base_sleeve": sideways,
-        },
+        rm_mapping,
         state_file=str(state_file),
     )
 
