@@ -18,6 +18,10 @@ iml:
   bar_polling_interval_secs: 7200.0 # 2 hours
   bar_fetch_lookback_weeks: 260 # 5 years
 
+eml:
+  polling_interval_secs: 30.0
+  include_positions: true
+
 at:
   polling_interval_secs: 30.0
   precompute_lookback_weeks: 52 # 1 year

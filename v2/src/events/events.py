@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from .topic import Topic
 
 
@@ -48,3 +48,16 @@ class RebalancePlanRequestEvent(BaseEvent):
 
     rebalance_id: str
     weights: Dict[str, float]  # Mapping of tickers to target weights
+
+
+@dataclass(frozen=True)
+class AccountSnapshotEvent(BaseEvent):
+    """Event containing broker account + positions snapshot.
+
+    Intended to be published periodically by EML services.
+    """
+
+    topic: Topic = field(default=Topic.ACCOUNT, init=False)
+
+    account: Dict[str, Any]
+    positions: List[Dict[str, Any]] = field(default_factory=list)

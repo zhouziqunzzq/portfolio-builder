@@ -163,16 +163,23 @@ class MultiSleeveATService(BaseATService):
                 self.log.debug("Rebalance check: should_rebalance=%s", should_rebalance)
                 if should_rebalance:
                     event = await self._generate_rebalance_plan_request(now=now)
+                    # Update state with pending rebalance info first
+                    self.state.pending_rebalance_ts = now.to_pydatetime()
+                    self.state.pending_rebalance_id = event.rebalance_id
+                    self.state.pending_rebalance_weights = event.weights
+                    self.log.debug(
+                        "Updated state with pending rebalance: ts=%s id=%s weights=%s",
+                        self.state.pending_rebalance_ts,
+                        self.state.pending_rebalance_id,
+                        self.state.pending_rebalance_weights,
+                    )
+                    # Then emit the event
                     await self.emit_rebalance_plan_request(event)
                     self.log.info(
                         "Emitted RebalancePlanRequestEvent: rebalance_id=%s target_weights=%s",
                         event.rebalance_id,
                         event.weights,
                     )
-                    # Update state with pending rebalance info
-                    self.state.pending_rebalance_ts = now.to_pydatetime()
-                    self.state.pending_rebalance_id = event.rebalance_id
-                    self.state.pending_rebalance_weights = event.weights
 
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
@@ -203,6 +210,14 @@ class MultiSleeveATService(BaseATService):
             return
 
         # TODO: Handle RebalanceRequestConfirmationEvent
+
+        self.log.debug(
+            "Ignoring event: topic=%s type=%s source=%s ts=%s",
+            getattr(event, "topic", None),
+            type(event).__name__,
+            getattr(event, "source", ""),
+            getattr(event, "ts", None),
+        )
 
     async def _check_should_rebalance(self, now: Optional[datetime] = None) -> bool:
         """Check if a rebalance should be triggered.

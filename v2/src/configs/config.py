@@ -19,6 +19,7 @@ from sleeves.sideways_base.sideways_base_config import SidewaysBaseConfig
 from allocator.multi_sleeve_config import MultiSleeveConfig
 from friction_control.friction_control_config import FrictionControlConfig
 from iml.config import IMLConfig
+from eml.config import EMLConfig
 from at.config import ATConfig
 
 
@@ -69,6 +70,9 @@ class AppConfig:
     # IML
     iml: IMLConfig
 
+    # EML
+    eml: EMLConfig
+
     # AT
     at: ATConfig
 
@@ -99,6 +103,7 @@ class AppConfig:
             ),
             multi_sleeve_allocator=MultiSleeveConfig(**multi_raw),
             iml=IMLConfig(**raw.get("iml", {})),
+            eml=EMLConfig(**raw.get("eml", {})),
             at=ATConfig(**raw.get("at", {})),
         )
 

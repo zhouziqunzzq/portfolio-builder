@@ -19,6 +19,8 @@ from events.events import BaseEvent
 from events.topic import Topic
 from iml.base_iml import BaseIMLService
 from iml.alpaca_polling_iml import AlpacaPollingIMLService
+from eml.base_eml import BaseEML
+from eml.alpaca_eml import AlpacaEMLService
 from at.base_at import BaseATService
 from at.multi_sleeve_at import MultiSleeveATService
 
@@ -52,13 +54,18 @@ class App:
             config=self.config.iml,
             # Alpaca API credentials loaded from env by default
         )
-        # TODO: EML
+        # EML
+        self.eml: BaseEML = AlpacaEMLService(
+            bus=self.event_bus,
+            rm=self.rm,
+            config=self.config.eml,
+            # Alpaca API credentials loaded from env by default
+        )
         # AutoTrader (AT)
         self.at: BaseATService = MultiSleeveATService(
             bus=self.event_bus,
             rm=self.rm,
             config=self.config.at,
-            name="MultiSleeveAT",
         )
 
         # Construct StateManager last to make sure all stateful components are registered
@@ -152,10 +159,17 @@ class App:
             "IML": self.event_bus.subscribe(
                 topics={Topic.STOP},
             ),
+            "EML": self.event_bus.subscribe(
+                topics={
+                    Topic.STOP,
+                    Topic.REBALANCE_PLAN,
+                },
+            ),
             "AT": self.event_bus.subscribe(
                 topics={
                     Topic.STOP,
                     Topic.MARKET_CLOCK,
+                    Topic.ACCOUNT,
                 },
             ),
         }
@@ -172,7 +186,12 @@ class App:
                 ),
                 name="IML",
             ),
-            # TODO: EML task
+            asyncio.create_task(
+                self.eml.run(
+                    sub=subs["EML"],
+                ),
+                name="EML",
+            ),
             asyncio.create_task(
                 self.at.run(
                     sub=subs["AT"],
