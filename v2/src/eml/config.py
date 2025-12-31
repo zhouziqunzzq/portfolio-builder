@@ -10,6 +10,16 @@ class EMLConfig:
     # If True, fetch positions alongside account snapshot.
     include_positions: bool = True
 
+    # Safety: cancel any outstanding/open orders on startup.
+    cancel_open_orders_on_startup: bool = True
+
+    # Safety: cancel any outstanding/open orders on shutdown (best-effort).
+    # Default False to avoid surprising behavior; enable explicitly in app config.
+    cancel_open_orders_on_shutdown: bool = False
+
+    # Timeout for waiting for order fills (in seconds).
+    wait_for_order_fill_timeout_secs: float = 30.0
+
     # Rebalance execution knobs
     min_order_size: float = 1.0  # Minimum order size to place in USD
     cash_buffer_pct: Optional[float] = (

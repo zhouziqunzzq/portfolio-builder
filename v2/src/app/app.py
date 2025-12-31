@@ -162,6 +162,7 @@ class App:
             "EML": self.event_bus.subscribe(
                 topics={
                     Topic.STOP,
+                    Topic.MARKET_CLOCK,
                     Topic.REBALANCE_PLAN,
                 },
             ),

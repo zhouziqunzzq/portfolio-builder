@@ -59,10 +59,10 @@ def test_file_state_manager_save_load_roundtrip(tmp_path: Path):
     sideways = _Obj(3)
     allocator = _Obj(4)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     state_file = tmp_path / "state.json"
@@ -94,10 +94,10 @@ def test_file_state_manager_subset_reset(tmp_path: Path):
     sideways = _Obj(7)
     allocator = _Obj(8)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     state_file = tmp_path / "state.json"
@@ -124,10 +124,10 @@ def test_file_state_manager_creates_backup_on_overwrite(tmp_path: Path):
     sideways = _Obj(3)
     allocator = _Obj(4)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     state_file = tmp_path / "state.json"
@@ -152,10 +152,10 @@ def test_file_state_manager_load_missing_file_returns_false(tmp_path: Path):
     sideways = _Obj(3)
     allocator = _Obj(4)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     state_file = tmp_path / "state.json"
@@ -174,10 +174,10 @@ def test_file_state_manager_unknown_name_raises(tmp_path: Path):
     sideways = _Obj(3)
     allocator = _Obj(4)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     state_file = tmp_path / "state.json"
@@ -197,10 +197,10 @@ def test_file_state_manager_requires_state_file():
     sideways = _Obj(3)
     allocator = _Obj(4)
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
-        "multi_sleeve_allocator": allocator,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
+        "allocator": allocator,
     }
 
     rm = _FakeRuntimeManager(
@@ -219,9 +219,9 @@ def test_file_state_manager_constructor_self_check_missing_object(tmp_path: Path
     sideways = _Obj(3)
     # allocator intentionally omitted
     rm_mapping = {
-        "trend_sleeve": trend,
-        "defensive_sleeve": defensive,
-        "sideways_base_sleeve": sideways,
+        "trend": trend,
+        "defensive": defensive,
+        "sideways_base": sideways,
     }
 
     state_file = tmp_path / "state.json"

@@ -1,6 +1,4 @@
 from abc import ABC, abstractmethod
-import asyncio
-import logging
 
 
 from pathlib import Path
@@ -10,12 +8,13 @@ _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
-from events.event_bus import EventBus, Subscription
-from events.topic import Topic
+from events.event_bus import EventBus
 from events.events import MarketClockEvent, NewBarsEvent
 
+from services.base_service import BaseService
 
-class BaseIMLService(ABC):
+
+class BaseIMLService(BaseService, ABC):
     """
     Base class for all Information Market Link (IML) services.
 
@@ -37,36 +36,8 @@ class BaseIMLService(ABC):
         bar_interval: str,
         name: str = "IML",
     ):
-        self.log = logging.getLogger(self.__class__.__name__)
-        self.bus = bus
+        super().__init__(bus=bus, name=name)
         self.bar_interval = bar_interval
-        self.name = name
-
-        self._running = False
-
-    async def run(self, sub: "Subscription") -> None:
-        """
-        Main entrypoint.
-
-        Concrete implementations should implement:
-          - _run_loop()  (polling / streaming loop)
-        """
-        self._running = True
-        await self._on_startup()
-
-        run_task = asyncio.create_task(self._run_loop(), name=f"{self.name}.loop")
-
-        try:
-            while True:
-                e = await sub.next()
-                sub.task_done()
-                if e.topic == Topic.STOP:
-                    break
-        finally:
-            self._running = False
-            run_task.cancel()
-            await asyncio.gather(run_task, return_exceptions=True)
-            await self._on_shutdown()
 
     @abstractmethod
     async def _run_loop(self) -> None:
@@ -104,17 +75,3 @@ class BaseIMLService(ABC):
 
     async def emit_new_bars(self, new_bars_event: "NewBarsEvent") -> None:
         await self.bus.publish(new_bars_event)
-
-    # Lifecycle hooks
-
-    async def _on_startup(self) -> None:
-        """
-        Optional initialization hook.
-        """
-        self.log.info(f"{self.name} starting up...")
-
-    async def _on_shutdown(self) -> None:
-        """
-        Optional cleanup hook (close sockets, flush state).
-        """
-        self.log.info(f"{self.name} stopping...")

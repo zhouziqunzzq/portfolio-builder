@@ -64,7 +64,7 @@ def main():
         ),
     )
 
-    # TODO: Implement live runner logic here
+    # Run App
     asyncio.run(app.run())
 
     log.info("V2 Live Runner shutdown complete")

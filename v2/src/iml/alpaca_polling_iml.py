@@ -200,7 +200,7 @@ class AlpacaPollingIMLService(BaseIMLService):
         """Fetch clock from Alpaca (runs sync client in a worker thread)."""
 
         # alpaca-py is synchronous; avoid blocking the event loop.
-        c = await asyncio.to_thread(self._trading.get_clock)
+        c = await self._run_in_thread(self._trading.get_clock)
 
         # Alpaca's model is typically: timestamp, is_open, next_open, next_close.
         now = getattr(c, "timestamp", None)
@@ -252,7 +252,7 @@ class AlpacaPollingIMLService(BaseIMLService):
         start_ts = end_ts - pd.Timedelta(weeks=self.config.bar_fetch_lookback_weeks)
         start = start_ts.to_pydatetime()
         end = end_ts.to_pydatetime()
-        has_new_bars = await asyncio.to_thread(
+        has_new_bars = await self._run_in_thread(
             self._fetch_new_bars,
             mds,
             tickers,
@@ -307,8 +307,19 @@ class AlpacaPollingIMLService(BaseIMLService):
         Update last bar refresh time in state.
         Naively return True if new bars are found for any ticker.
         """
+        # Allow graceful shutdown: if we are stopping, abort without mutating state.
+        if self._shutdown_requested():
+            self.log.info("Shutdown requested; aborting bar fetch")
+            return False
+
         has_new_bars = False
         for ticker in tickers:
+            if self._shutdown_requested():
+                self.log.info(
+                    "Shutdown requested; aborting bar fetch mid-loop (has_new_bars=%s so far)",
+                    has_new_bars,
+                )
+                return False
             self.log.debug(
                 f"Fetching OHLCV data for ticker {ticker} from {start.date()} to {end.date()}"
             )
@@ -337,9 +348,10 @@ class AlpacaPollingIMLService(BaseIMLService):
                 )
                 has_new_bars = True
 
-        # Update last bar refresh time
-        self.state.last_bar_refresh_time = to_canonical_eastern_naive(
-            now or datetime.now().astimezone()
-        ).to_pydatetime()
+        # Update last bar refresh time (only if not shutting down)
+        if not self._shutdown_requested():
+            self.state.last_bar_refresh_time = to_canonical_eastern_naive(
+                now or datetime.now().astimezone()
+            ).to_pydatetime()
 
         return has_new_bars

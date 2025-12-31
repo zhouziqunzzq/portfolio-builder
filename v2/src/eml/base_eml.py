@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import asyncio
-import logging
 
 from pathlib import Path
 import sys
+from typing import Optional
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
-from events.event_bus import EventBus, Subscription
-from events.topic import Topic
-from events.events import BaseEvent, RebalancePlanRequestEvent
+from events.event_bus import EventBus
+from events.events import BaseEvent, RebalancePlanRequestEvent, MarketClockEvent
+
+from services.base_service import BaseService
 
 
-class BaseEML(ABC):
+class BaseEML(BaseService, ABC):
     """Base class for all Execution Market Link (EML) services.
 
     EML responsibilities:
@@ -35,42 +35,10 @@ class BaseEML(ABC):
         bus: "EventBus",
         name: str = "EML",
     ):
-        self.log = logging.getLogger(self.__class__.__name__)
-        self.bus = bus
-        self.name = name
+        super().__init__(bus=bus, name=name)
 
-        self._running = False
-
-    async def run(self, sub: "Subscription") -> None:
-        """Main entrypoint.
-        - start a background loop task
-        - consume bus events until STOP
-        - delegate non-STOP events to `_handle_event`
-        - always shutdown cleanly
-        """
-
-        self._running = True
-        await self._on_startup()
-
-        run_task = asyncio.create_task(self._run_loop(), name=f"{self.name}.loop")
-
-        try:
-            while True:
-                e = await sub.next()
-                try:
-                    if e.topic == Topic.STOP:
-                        break
-
-                    await self._handle_event(e)
-                except Exception:
-                    self.log.exception("Error processing event in EML service")
-                finally:
-                    sub.task_done()
-        finally:
-            self._running = False
-            run_task.cancel()
-            await asyncio.gather(run_task, return_exceptions=True)
-            await self._on_shutdown()
+        # Internal caches
+        self._market_clock: Optional[MarketClockEvent] = None
 
     @abstractmethod
     async def _run_loop(self) -> None:
@@ -89,6 +57,7 @@ class BaseEML(ABC):
 
         Default behavior:
         - dispatch `RebalancePlanRequestEvent` to `execute_rebalance_plan()`
+        - update internal market clock on `MarketClockEvent`
         - ignore other event types
 
         Concrete implementations may override this if they want to handle
@@ -102,10 +71,24 @@ class BaseEML(ABC):
             getattr(event, "ts", None),
         )
 
+        # Handle RebalancePlanRequestEvent
         if isinstance(event, RebalancePlanRequestEvent):
             await self.execute_rebalance_plan(event)
             return
 
+        # Handle MarketClockEvent
+        if isinstance(event, MarketClockEvent):
+            self._market_clock = event
+            self.log.debug(
+                "Stored market clock: now=%s is_open=%s next_market_open=%s next_market_close=%s",
+                event.now,
+                event.is_market_open,
+                event.next_market_open,
+                event.next_market_close,
+            )
+            return
+
+        # Default: ignore other events
         self.log.debug(
             "Ignoring event: topic=%s type=%s source=%s ts=%s",
             getattr(event, "topic", None),
@@ -157,15 +140,3 @@ class BaseEML(ABC):
         """
 
         await self.bus.publish(event)
-
-    # Lifecycle hooks
-
-    async def _on_startup(self) -> None:
-        """Optional initialization hook."""
-
-        self.log.info(f"{self.name} starting up...")
-
-    async def _on_shutdown(self) -> None:
-        """Optional cleanup hook (close sockets, flush state)."""
-
-        self.log.info(f"{self.name} stopping...")

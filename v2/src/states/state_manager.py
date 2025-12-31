@@ -189,6 +189,10 @@ class FileStateManager(BaseStateManager):
     def _get_stateful_object(self, name: str) -> Any:
         # Obtain references from RuntimeManager
         # (We intentionally use rm.get(...) to avoid tight coupling.)
+        # Apply aliasing if applicable.
+        alias = self._aliases()
+        if name in alias:
+            name = alias[name]
         return self.runtime_manager.get(name)
 
     def _get_state(self, obj: Any) -> BaseState:
