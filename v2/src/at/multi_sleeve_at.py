@@ -287,6 +287,7 @@ class MultiSleeveATService(BaseATService):
     async def _check_should_rebalance(self, now: Optional[datetime] = None) -> bool:
         """Check if a rebalance should be triggered.
         A rebalance should be triggered if:
+        - Market data is fresh for today (at least one BarsCheckedEvent received today), AND
         - The MultiSleeveAllocator indicates a rebalance is needed, AND
         - AT has received a valid AccountSnapshotEvent with adj_equity > 0, AND
         - The market is currently open, or will be open later today.
