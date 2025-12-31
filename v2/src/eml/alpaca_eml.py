@@ -305,6 +305,27 @@ class AlpacaEMLService(BaseEML):
         # in the main loop, to avoid blocking the event handler.
 
     def _execute_pending_rebalance_plans(self) -> None:
+        """Execute any pending rebalance requests recorded in `self.state`.
+
+        This is a synchronous, potentially-blocking method intended to run off the
+        asyncio event loop thread (e.g., via `BaseService._run_in_thread`).
+
+        Behavior:
+        - Reads pending requests from `self.state.pending_rebalance_requests`.
+        - Market gating: executes only if `self._market_clock` is present and
+            indicates `is_market_open is True`. If the clock is missing or the market
+            is closed/unknown, the method logs and returns without side effects.
+        - Deterministic ordering: processes requests oldest-first (by `request_ts`).
+        - For each request:
+            - Rehydrates a `RebalancePlanRequestEvent` from the stored payload.
+            - Executes it via `_execute_rebalance_plan`.
+            - On success, marks it executed via `self.state.mark_rebalance_executed`.
+
+        Error handling:
+        - `EMLShutdownRequested`: exits early and leaves remaining plans pending.
+        - Any other exception: logs and continues to the next plan; the failed plan
+            remains pending and is not marked executed.
+        """
         pending = self.state.pending_rebalance_requests
         if not pending:
             self.log.debug("No pending rebalance plans to execute")
@@ -374,6 +395,31 @@ class AlpacaEMLService(BaseEML):
                 )
 
     def _execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
+        """Synchronously execute a single rebalance plan by placing broker orders.
+
+        This method is intentionally synchronous and may block while waiting for
+        orders to fill. Call it from a worker thread (e.g., via `_run_in_thread`) and
+        not directly on the asyncio event loop.
+
+        High-level flow:
+        1) Validate minimal event shape (`rebalance_id`, `weights`).
+        2) Normalize/clean target weights (drop near-zero weights, normalize symbols).
+        3) Fetch current account/positions and compute desired notional deltas.
+        4) Build market orders subject to:
+            - min order size (`self.config.min_order_size`)
+            - float-noise thresholds
+            - deterministic symbol sorting
+        5) Sanity check all symbols are tradable.
+        6) Best-effort cancel all currently-open broker orders (pre-flight safety).
+        7) Execute sells first, then buys, waiting for each order to fill.
+
+        Shutdown/error semantics:
+        - If shutdown is requested during blocking execution, helper methods raise
+            `EMLShutdownRequested`, which is re-raised to allow upstream callers to
+            abort without mutating pending state.
+        - On any other exception, the method attempts a best-effort cancel of open
+            orders (cleanup) and then re-raises.
+        """
         # NOTE:
         # In this repo, v2 code often runs with `v2/src` injected onto `sys.path`.
         # Depending on how code is invoked (tests vs runners), the same dataclass
@@ -386,78 +432,102 @@ class AlpacaEMLService(BaseEML):
             raise TypeError(
                 "event must have attributes 'rebalance_id' and 'weights' (RebalancePlanRequestEvent-like)"
             )
-        self.log.info(
-            "Executing rebalance plan: rebalance_id=%s weights=%s",
-            rebalance_id,
-            weights,
-        )
 
-        # 1) Normalize target weights
-        target_weights = self._normalize_target_weights(weights)
-        self.log.debug(
-            "Normalized target weights: rebalance_id=%s target_weights=%s",
-            rebalance_id,
-            target_weights,
-        )
-
-        # 2) Fetch current account + positions
-        account = self._get_account()
-        positions = self._list_positions() if self.config.include_positions else []
-
-        equity = self._get_effective_equity(account)
-        if equity <= 0:
-            raise RuntimeError(f"Invalid account equity for execution: {equity}")
-        pos_by_symbol = self._positions_by_symbol(positions)
-
-        self.log.debug(
-            "Account equity=%.2f positions=%s",
-            equity,
-            pos_by_symbol,
-        )
-
-        # 3) Compute desired notional deltas
-        deltas = self._compute_target_deltas(
-            target_weights=target_weights,
-            equity=equity,
-            positions_by_symbol=pos_by_symbol,
-        )
-        self.log.debug(
-            "Computed target deltas: rebalance_id=%s deltas=%s",
-            rebalance_id,
-            deltas,
-        )
-
-        # 4) Build sell/buy orders subject to min-order size and float-noise thresholds
-        sells, buys = self._build_market_orders(
-            deltas=deltas,
-            positions_by_symbol=pos_by_symbol,
-            min_order_size=float(self.config.min_order_size),
-        )
-
-        if not sells and not buys:
+        try:
             self.log.info(
-                "No executable orders after filtering; treating as executed: rebalance_id=%s",
+                "Executing rebalance plan: rebalance_id=%s weights=%s",
+                rebalance_id,
+                weights,
+            )
+
+            # 1) Normalize target weights
+            target_weights = self._normalize_target_weights(weights)
+            self.log.debug(
+                "Normalized target weights: rebalance_id=%s target_weights=%s",
+                rebalance_id,
+                target_weights,
+            )
+
+            # 2) Fetch current account + positions
+            account = self._get_account()
+            positions = self._list_positions() if self.config.include_positions else []
+
+            equity = self._get_effective_equity(account)
+            if equity <= 0:
+                raise RuntimeError(f"Invalid account equity for execution: {equity}")
+            pos_by_symbol = self._positions_by_symbol(positions)
+
+            self.log.debug(
+                "Account equity=%.2f positions=%s",
+                equity,
+                pos_by_symbol,
+            )
+
+            # 3) Compute desired notional deltas
+            deltas = self._compute_target_deltas(
+                target_weights=target_weights,
+                equity=equity,
+                positions_by_symbol=pos_by_symbol,
+            )
+            self.log.debug(
+                "Computed target deltas: rebalance_id=%s deltas=%s",
+                rebalance_id,
+                deltas,
+            )
+
+            # 4) Build sell/buy orders subject to min-order size and float-noise thresholds
+            sells, buys = self._build_market_orders(
+                deltas=deltas,
+                positions_by_symbol=pos_by_symbol,
+                min_order_size=float(self.config.min_order_size),
+            )
+
+            if not sells and not buys:
+                self.log.info(
+                    "No executable orders after filtering; treating as executed: rebalance_id=%s",
+                    rebalance_id,
+                )
+                return
+
+            self.log.debug(
+                "Built market orders: rebalance_id=%s sells=%s buys=%s",
+                rebalance_id,
+                sells,
+                buys,
+            )
+
+            # 5) Sanity check tradability for all tickers in final plan
+            self._assert_symbols_tradable([o["symbol"] for o in (sells + buys)])
+            self.log.debug(
+                "All symbols in rebalance plan are tradable: rebalance_id=%s",
                 rebalance_id,
             )
-            return
 
-        self.log.debug(
-            "Built market orders: rebalance_id=%s sells=%s buys=%s",
-            rebalance_id,
-            sells,
-            buys,
-        )
+            # 5b) Safety: cancel any outstanding orders before placing new ones.
+            try:
+                self._cancel_all_open_orders()
+            except Exception:
+                self.log.exception(
+                    "Failed to cancel open orders before rebalance execution (continuing): rebalance_id=%s",
+                    rebalance_id,
+                )
 
-        # 5) Sanity check tradability for all tickers in final plan
-        self._assert_symbols_tradable([o["symbol"] for o in (sells + buys)])
-        self.log.debug(
-            "All symbols in rebalance plan are tradable: rebalance_id=%s",
-            rebalance_id,
-        )
-
-        # 6) Execute sells first (cash generation), then buys; block until filled
-        self._execute_orders_blocking(sells)
-        self._execute_orders_blocking(buys)
+            # 6) Execute sells first (cash generation), then buys; block until filled
+            self._execute_orders_blocking(sells)
+            self._execute_orders_blocking(buys)
+        except EMLShutdownRequested:
+            raise
+        except Exception:
+            # Best-effort cleanup: if execution fails mid-plan, try canceling any
+            # potentially-open orders before returning control.
+            try:
+                self._cancel_all_open_orders()
+            except Exception:
+                self.log.exception(
+                    "Failed to cancel open orders after rebalance execution error (continuing): rebalance_id=%s",
+                    rebalance_id,
+                )
+            raise
 
     # ----------------------------
     # Helpers (testable)

@@ -38,6 +38,16 @@ class _FakeTradingClient:
         self._orders = {}  # id -> dict(status, polls)
         self._next_id = 1
 
+        self.cancel_all_called = 0
+        self.actions = []
+        self.next_order_final_status = "filled"
+        self.next_order_fill_after = 2
+
+    def cancel_orders(self):
+        self.cancel_all_called += 1
+        self.actions.append("cancel_orders")
+        return {"ok": True}
+
     def set_asset(self, symbol: str, *, tradable=True, status="active"):
         self._assets[str(symbol).upper()] = _FakeAsset(tradable=tradable, status=status)
 
@@ -79,6 +89,8 @@ class _FakeTradingClient:
         oid = f"O{self._next_id}"
         self._next_id += 1
 
+        self.actions.append("submit_order")
+
         # Convert enums to readable values for asserts
         side_s = str(side).lower()
         if "buy" in side_s:
@@ -96,8 +108,11 @@ class _FakeTradingClient:
             }
         )
 
-        # Default behavior: 2 polls to fill
-        self._orders[oid] = {"polls": 0, "fill_after": 2, "final": "filled"}
+        self._orders[oid] = {
+            "polls": 0,
+            "fill_after": int(self.next_order_fill_after),
+            "final": str(self.next_order_final_status),
+        }
         return _FakeOrder(oid, status="new")
 
     def get_order_by_id(self, order_id: str):
@@ -304,3 +319,50 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
     assert "r1" in svc.state.pending_rebalance_requests
     assert svc.state.executed_rebalance_history == []
     assert trading.submitted == []
+
+
+def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatch):
+    trading = _FakeTradingClient()
+    trading.set_asset("AAA", tradable=True)
+
+    svc = AlpacaEMLService(
+        bus=EventBus(),
+        trading_client=trading,
+        config=EMLConfig(include_positions=False, min_order_size=1.0),
+    )
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    e = RebalancePlanRequestEvent(
+        ts=time.time(), rebalance_id="r1", weights={"AAA": 1.0}
+    )
+    svc._execute_rebalance_plan(e)
+
+    assert trading.cancel_all_called >= 1
+    assert trading.submitted
+    assert trading.actions[0] == "cancel_orders"
+
+
+def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypatch):
+    trading = _FakeTradingClient()
+    trading.set_asset("AAA", tradable=True)
+    trading.next_order_final_status = "rejected"
+    trading.next_order_fill_after = 1
+
+    svc = AlpacaEMLService(
+        bus=EventBus(),
+        trading_client=trading,
+        config=EMLConfig(include_positions=False, min_order_size=1.0),
+    )
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    e = RebalancePlanRequestEvent(
+        ts=time.time(), rebalance_id="r1", weights={"AAA": 1.0}
+    )
+
+    with pytest.raises(RuntimeError):
+        svc._execute_rebalance_plan(e)
+
+    # One cancel before submitting, one cancel after error.
+    assert trading.cancel_all_called >= 2
