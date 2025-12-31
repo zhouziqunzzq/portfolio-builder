@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import os
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from events.event_bus import EventBus
 from events.events import (
@@ -11,11 +12,14 @@ from events.events import (
     BrokerAccount,
     BrokerPosition,
     RebalancePlanRequestEvent,
+    RebalancePlanConfirmationEvent,
 )
 from runtime_manager import RuntimeManager
+from states.base_state import BaseState
 
 from .base_eml import BaseEML
 from .config import EMLConfig
+from .state import EMLState
 
 
 class AlpacaEMLService(BaseEML):
@@ -82,7 +86,9 @@ class AlpacaEMLService(BaseEML):
             self._base_url,
         )
 
-        # TODO: Add order management state here as needed.
+        # State
+        # This will be managed by StateManager externally.
+        self.state = EMLState()
 
     def _build_trading_client(self):
         if not self._api_key or not self._secret_key:
@@ -107,11 +113,11 @@ class AlpacaEMLService(BaseEML):
     async def _run_loop(self) -> None:
         while self._running:
             try:
+                # Fetch account + positions
                 account = await asyncio.to_thread(self._get_account)
                 positions: List[BrokerPosition] = []
                 if self.config.include_positions:
                     positions = await asyncio.to_thread(self._list_positions)
-
                 event = AccountSnapshotEvent(
                     ts=time.time(),
                     source=self.name,
@@ -125,6 +131,11 @@ class AlpacaEMLService(BaseEML):
                 )
                 await self.emit_account_event(event)
 
+                # TODO: Execute any pending rebalance plans
+
+                # GC execution history (best-effort; keep state from growing unbounded)
+                self._gc_execution_history()
+
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
                 raise
@@ -134,13 +145,96 @@ class AlpacaEMLService(BaseEML):
                 await asyncio.sleep(min(30.0, max(1.0, self._poll_interval_seconds)))
 
     async def execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
-        # Not implemented yet.
-        # For now we just log; future: translate weights into orders + publish order updates.
-        self.log.warning(
-            "Rebalance execution not implemented yet; ignoring RebalancePlanRequestEvent: rebalance_id=%s weights=%s",
-            event.rebalance_id,
-            event.weights,
-        )
+        """Execute a rebalance plan request.
+        This function simply records the pending rebalance request in state, and
+        emits a RebalancePlanConfirmationEvent. Actual execution of the rebalance
+        plan (placing orders) is handled asynchronously in the main loop. See `_run_loop()`
+        and `_execute_pending_rebalance_plans()`.
+
+        Args:
+            event: RebalancePlanRequestEvent
+        Returns:
+            None
+        """
+        # Track pending rebalance requests in persisted state, and send back confirmation.
+        now_ts = time.time()
+        try:
+            if self.state.has_pending_rebalance_request(event.rebalance_id):
+                self.log.info(
+                    "RebalancePlanRequestEvent already pending; ignoring duplicate: rebalance_id=%s",
+                    event.rebalance_id,
+                )
+            else:
+                self.state.remember_pending_rebalance_request(event)
+            # We still send back confirmation even if duplicate.
+            confirmation_event = RebalancePlanConfirmationEvent(
+                ts=now_ts,
+                rebalance_id=event.rebalance_id,
+                confirmed_ts=now_ts,
+                source=self.name,
+            )
+            await self.emit(confirmation_event)
+            self.log.info(
+                "Published RebalancePlanConfirmationEvent: rebalance_id=%s",
+                event.rebalance_id,
+            )
+        except Exception:
+            self.log.exception(
+                "Failed to store pending rebalance request in state: rebalance_id=%s",
+                getattr(event, "rebalance_id", None),
+            )
+
+        # Note: Actual execution of the rebalance plan (placing orders) is handled asynchronously
+        # in the main loop, to avoid blocking the event handler.
+
+    def _execute_pending_rebalance_plans(self) -> None:
+        pass
+
+    def _execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
+        pass
+
+    def _gc_execution_history(self, *, now_ts: Optional[float] = None) -> None:
+        """Discard executed rebalance history entries older than max_execution_history_days."""
+
+        max_days_int = self.config.max_execution_history_days
+        if max_days_int <= 0:
+            self.log.debug(
+                "EMLConfig: max_execution_history_days <= 0; skipping execution history GC."
+            )
+            return
+
+        now = float(now_ts if now_ts is not None else time.time())
+        cutoff = now - (max_days_int * 86400.0)
+        hist = self.state.executed_rebalance_history
+
+        before = len(hist)
+        kept: List[Dict[str, Any]] = []
+        for item in hist:
+            if not isinstance(item, dict):
+                continue
+            ts = item.get("executed_ts")
+            try:
+                ts_f = float(ts)
+            except Exception:
+                ts_f = 0.0
+            if ts_f >= cutoff:
+                kept.append(item)
+            else:
+                self.log.debug(
+                    "GC'ing executed rebalance history entry: rebalance_id=%s executed_ts=%s",
+                    item.get("rebalance_id"),
+                    item.get("executed_ts"),
+                )
+
+        if len(kept) != before:
+            kept.sort(key=lambda x: float(x.get("executed_ts", 0.0) or 0.0))
+            self.state.executed_rebalance_history = kept
+            self.log.info(
+                "GC'd executed rebalance history: removed=%d kept=%d cutoff=%s",
+                before - len(kept),
+                len(kept),
+                datetime.fromtimestamp(cutoff).isoformat(),
+            )
 
     @staticmethod
     def _to_float(v: Any) -> Optional[float]:

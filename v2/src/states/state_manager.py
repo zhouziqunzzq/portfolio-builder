@@ -140,7 +140,7 @@ class FileStateManager(BaseStateManager):
     # ---------------------------
 
     def managed_names(self) -> set[str]:
-        return {"trend", "defensive", "sideways_base", "allocator", "iml", "at"}
+        return {"trend", "defensive", "sideways_base", "allocator", "iml", "eml", "at"}
 
     def _aliases(self) -> Dict[str, str]:
         return {
@@ -150,6 +150,7 @@ class FileStateManager(BaseStateManager):
             "sideways_base": "sideways_base",
             "allocator": "allocator",
             "iml": "iml",
+            "eml": "eml",
             "at": "at",
             # common variants
             "trend_sleeve": "trend",
@@ -157,6 +158,7 @@ class FileStateManager(BaseStateManager):
             "sideways_base_sleeve": "sideways_base",
             "multi_sleeve_allocator": "allocator",
             "alpaca_polling_iml": "iml",
+            "alpaca_eml": "eml",
             "multi_sleeve_at": "at",
         }
 

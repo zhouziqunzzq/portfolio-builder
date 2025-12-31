@@ -170,6 +170,7 @@ class App:
                     Topic.STOP,
                     Topic.MARKET_CLOCK,
                     Topic.ACCOUNT,
+                    Topic.REBALANCE_PLAN,
                 },
             ),
         }

@@ -20,6 +20,7 @@ from events.events import (
     BaseEvent,
     MarketClockEvent,
     RebalancePlanRequestEvent,
+    RebalancePlanConfirmationEvent,
 )
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -227,7 +228,30 @@ class MultiSleeveATService(BaseATService):
             )
             return
 
-        # TODO: Handle RebalanceRequestConfirmationEvent
+        # Handle RebalancePlanConfirmationEvent
+        if isinstance(event, RebalancePlanConfirmationEvent):
+            if (
+                self.state.pending_rebalance_id is not None
+                and event.rebalance_id == self.state.pending_rebalance_id
+            ):
+                # Move pending rebalance to last confirmed rebalance
+                self.state.last_rebalance_ts = datetime.fromtimestamp(event.ts)
+                self.state.last_rebalance_id = event.rebalance_id
+                self.state.last_rebalance_weights = self.state.pending_rebalance_weights
+                self.state.pending_rebalance_ts = None
+                self.state.pending_rebalance_id = None
+                self.state.pending_rebalance_weights = None
+                self.log.info(
+                    "Rebalance confirmed: id=%s ts=%s. Moved pending rebalance to last confirmed rebalance.",
+                    event.rebalance_id,
+                    datetime.fromtimestamp(event.ts),
+                )
+            else:
+                self.log.warning(
+                    "Received RebalancePlanConfirmationEvent for unknown rebalance_id=%s",
+                    event.rebalance_id,
+                )
+            return
 
         self.log.debug(
             "Ignoring event: topic=%s type=%s source=%s ts=%s",

@@ -18,3 +18,6 @@ class EMLConfig:
     cash_buffer_abs: Optional[float] = (
         None  # Or keep this absolute amount in cash; mutually exclusive with cash_buffer_pct
     )
+
+    # Execution history retention knobs
+    max_execution_history_days: int = 365  # Retain execution history for this many days; set to 0 or less to disable

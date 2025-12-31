@@ -51,6 +51,17 @@ class RebalancePlanRequestEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
+class RebalancePlanConfirmationEvent(BaseEvent):
+    """Event indicating a rebalance plan has been confirmed."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.REBALANCE_PLAN, init=False)
+
+    rebalance_id: str
+    confirmed_ts: float
+
+
+@dataclass(frozen=True)
 class BrokerAccount:
     """Normalized broker account snapshot.
 
