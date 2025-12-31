@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from .topic import Topic
 
 
@@ -51,6 +51,36 @@ class RebalancePlanRequestEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
+class BrokerAccount:
+    """Normalized broker account snapshot.
+
+    This is intentionally a small, stable set of fields needed by the app.
+    Execution adapters (EML) should map broker-specific payloads into this model.
+    """
+
+    id: Optional[str] = None
+    status: Optional[str] = None
+    cash: Optional[float] = None
+    buying_power: Optional[float] = None
+    portfolio_value: Optional[float] = None
+    equity: Optional[float] = None
+    last_equity: Optional[float] = None
+    adj_equity: Optional[float] = None  # Adjusted equity after cash buffers, if any
+
+
+@dataclass(frozen=True)
+class BrokerPosition:
+    """Normalized broker position snapshot."""
+
+    symbol: str
+    qty: Optional[float] = None
+    market_value: Optional[float] = None
+    avg_entry_price: Optional[float] = None
+    side: Optional[str] = None
+    unrealized_pl: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class AccountSnapshotEvent(BaseEvent):
     """Event containing broker account + positions snapshot.
 
@@ -59,5 +89,5 @@ class AccountSnapshotEvent(BaseEvent):
 
     topic: Topic = field(default=Topic.ACCOUNT, init=False)
 
-    account: Dict[str, Any]
-    positions: List[Dict[str, Any]] = field(default_factory=list)
+    account: BrokerAccount
+    positions: List[BrokerPosition] = field(default_factory=list)

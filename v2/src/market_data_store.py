@@ -120,6 +120,16 @@ class MarketDataStore(BaseMarketDataStore):
             start_dt = start_dt.normalize()
             end_dt = end_dt.normalize()
 
+        self.log.debug(
+            "Getting OHLCV: %s %s -> %s (interval=%s, auto_adjust=%s, local_only=%s)",
+            ticker,
+            start_dt.date(),
+            end_dt.date(),
+            interval,
+            auto_adjust,
+            local_only,
+        )
+
         # If requesting coarser-than-daily intervals, fetch daily bars and
         # aggregate client-side to guarantee reproducible rules. Build a
         # single `df_source` and apply common slicing/cleanup below to avoid
@@ -453,20 +463,39 @@ class MarketDataStore(BaseMarketDataStore):
         start = to_canonical_eastern_naive(start).to_pydatetime()
         end = to_canonical_eastern_naive(end).to_pydatetime()
 
+        self.log.debug(
+            "Ensuring coverage: %s %s -> %s (interval=%s, auto_adjust=%s, local_only=%s)",
+            ticker,
+            start.date(),
+            end.date(),
+            interval,
+            auto_adjust,
+            local_only,
+        )
+
         df_cached = self._load_cached_df(ticker, interval, auto_adjust)
 
         # If running in local-only mode, never attempt to fetch online.
         if local_only:
+            self.log.debug("Local-only mode; using cached data only for %s", ticker)
             if df_cached is None:
                 return pd.DataFrame()
             return df_cached
 
         if df_cached is None or df_cached.empty:
+            self.log.debug("No cached data for %s; fetching full range online", ticker)
             df_new = self._fetch_online(ticker, start, end, interval, auto_adjust)
             df_combined = df_new
         else:
             cached_start = df_cached.index.min()
             cached_end = df_cached.index.max()
+
+            self.log.debug(
+                "Cached coverage for %s: %s -> %s",
+                ticker,
+                cached_start.date(),
+                cached_end.date(),
+            )
 
             dfs = [df_cached]
 
@@ -474,6 +503,12 @@ class MarketDataStore(BaseMarketDataStore):
             if start < cached_start:
                 missing_left_start = start
                 missing_left_end = cached_start
+                self.log.debug(
+                    "Detected left gap for %s: %s -> %s",
+                    ticker,
+                    missing_left_start.date(),
+                    missing_left_end.date(),
+                )
                 df_left = self._fetch_online(
                     ticker, missing_left_start, missing_left_end, interval, auto_adjust
                 )
@@ -485,7 +520,15 @@ class MarketDataStore(BaseMarketDataStore):
                 missing_right_start = (
                     cached_end + timedelta(days=1) if interval == "1d" else cached_end
                 )
-                if missing_right_start < end:
+                # If the gap is exactly one day (missing_right_start == end), we still
+                # need to fetch that single day to satisfy inclusive [start, end].
+                if missing_right_start <= end:
+                    self.log.debug(
+                        "Detected right gap for %s: %s -> %s",
+                        ticker,
+                        missing_right_start.date(),
+                        end.date(),
+                    )
                     df_right = self._fetch_online(
                         ticker, missing_right_start, end, interval, auto_adjust
                     )

@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from events.event_bus import EventBus
-from events.events import AccountSnapshotEvent, RebalancePlanRequestEvent
+from events.events import (
+    AccountSnapshotEvent,
+    BrokerAccount,
+    BrokerPosition,
+    RebalancePlanRequestEvent,
+)
 from runtime_manager import RuntimeManager
 
 from .base_eml import BaseEML
@@ -42,6 +47,7 @@ class AlpacaEMLService(BaseEML):
         if config is None:
             self.log.warning("No EMLConfig provided; using default configuration")
             config = EMLConfig()
+        self._validate_config(config)
         self.config = config
 
         if self.config.polling_interval_secs <= 0:
@@ -101,8 +107,8 @@ class AlpacaEMLService(BaseEML):
     async def _run_loop(self) -> None:
         while self._running:
             try:
-                account = await asyncio.to_thread(self._get_account_info)
-                positions: List[Dict[str, Any]] = []
+                account = await asyncio.to_thread(self._get_account)
+                positions: List[BrokerPosition] = []
                 if self.config.include_positions:
                     positions = await asyncio.to_thread(self._list_positions)
 
@@ -136,23 +142,51 @@ class AlpacaEMLService(BaseEML):
             event.weights,
         )
 
-    def _get_account_info(self) -> Dict[str, Any]:
+    @staticmethod
+    def _to_float(v: Any) -> Optional[float]:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        return None
+
+    def _get_account(self) -> BrokerAccount:
         acct = self._trading.get_account()
         raw = getattr(acct, "_raw", None)
         if raw is not None:
-            return raw
+            return BrokerAccount(
+                id=raw.get("id"),
+                status=raw.get("status"),
+                cash=self._to_float(raw.get("cash")),
+                buying_power=self._to_float(raw.get("buying_power")),
+                portfolio_value=self._to_float(raw.get("portfolio_value")),
+                equity=self._to_float(raw.get("equity")),
+                last_equity=self._to_float(raw.get("last_equity")),
+                adj_equity=self._get_equity_adj(self._to_float(raw.get("equity"))),
+            )
 
-        return {
-            "id": getattr(acct, "id", None),
-            "status": getattr(acct, "status", None),
-            "cash": getattr(acct, "cash", None),
-            "buying_power": getattr(acct, "buying_power", None),
-            "portfolio_value": getattr(acct, "portfolio_value", None),
-            "equity": getattr(acct, "equity", None),
-            "last_equity": getattr(acct, "last_equity", None),
-        }
+        return BrokerAccount(
+            id=getattr(acct, "id", None),
+            status=getattr(acct, "status", None),
+            cash=self._to_float(getattr(acct, "cash", None)),
+            buying_power=self._to_float(getattr(acct, "buying_power", None)),
+            portfolio_value=self._to_float(getattr(acct, "portfolio_value", None)),
+            equity=self._to_float(getattr(acct, "equity", None)),
+            last_equity=self._to_float(getattr(acct, "last_equity", None)),
+            adj_equity=self._get_equity_adj(
+                self._to_float(getattr(acct, "equity", None))
+            ),
+        )
 
-    def _list_positions(self) -> List[Dict[str, Any]]:
+    def _list_positions(self) -> List[BrokerPosition]:
         try:
             pos_list = self._trading.get_all_positions()
         except Exception:
@@ -161,22 +195,62 @@ class AlpacaEMLService(BaseEML):
             except Exception:
                 pos_list = []
 
-        out: List[Dict[str, Any]] = []
+        out: List[BrokerPosition] = []
         for p in pos_list:
             raw = getattr(p, "_raw", None)
             if raw is not None:
-                out.append(raw)
+                symbol = raw.get("symbol")
+                if not symbol:
+                    continue
+                out.append(
+                    BrokerPosition(
+                        symbol=str(symbol),
+                        qty=self._to_float(raw.get("qty")),
+                        market_value=self._to_float(raw.get("market_value")),
+                        avg_entry_price=self._to_float(raw.get("avg_entry_price")),
+                        side=raw.get("side"),
+                        unrealized_pl=self._to_float(raw.get("unrealized_pl")),
+                    )
+                )
                 continue
 
+            symbol = getattr(p, "symbol", None)
+            if not symbol:
+                continue
             out.append(
-                {
-                    "symbol": getattr(p, "symbol", None),
-                    "qty": getattr(p, "qty", None),
-                    "market_value": getattr(p, "market_value", None),
-                    "avg_entry_price": getattr(p, "avg_entry_price", None),
-                    "side": getattr(p, "side", None),
-                    "unrealized_pl": getattr(p, "unrealized_pl", None),
-                }
+                BrokerPosition(
+                    symbol=str(symbol),
+                    qty=self._to_float(getattr(p, "qty", None)),
+                    market_value=self._to_float(getattr(p, "market_value", None)),
+                    avg_entry_price=self._to_float(getattr(p, "avg_entry_price", None)),
+                    side=getattr(p, "side", None),
+                    unrealized_pl=self._to_float(getattr(p, "unrealized_pl", None)),
+                )
             )
 
         return out
+
+    @staticmethod
+    def _validate_config(config: EMLConfig) -> None:
+        if config.cash_buffer_pct is not None and config.cash_buffer_abs is not None:
+            raise ValueError(
+                "EMLConfig: cash_buffer_pct and cash_buffer_abs are mutually exclusive; only one may be set."
+            )
+
+    def _get_equity_adj(self, equity_abs: Optional[float]) -> Optional[float]:
+        """Compute adjusted equity after applying cash buffer settings.
+
+        Returns None if equity_abs is None.
+        """
+        if equity_abs is None:
+            return None
+
+        if self.config.cash_buffer_pct is not None:
+            buffer_amt = equity_abs * self.config.cash_buffer_pct
+            return max(0.0, equity_abs - buffer_amt)
+
+        if self.config.cash_buffer_abs is not None:
+            buffer_amt = self.config.cash_buffer_abs
+            return max(0.0, equity_abs - buffer_amt)
+
+        return equity_abs

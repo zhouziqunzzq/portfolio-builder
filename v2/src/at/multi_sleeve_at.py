@@ -15,7 +15,12 @@ if str(_ROOT_SRC) not in sys.path:
 from .base_at import BaseATService
 from .config import ATConfig
 from runtime_manager import RuntimeManager
-from events.events import BaseEvent, MarketClockEvent, RebalancePlanRequestEvent
+from events.events import (
+    AccountSnapshotEvent,
+    BaseEvent,
+    MarketClockEvent,
+    RebalancePlanRequestEvent,
+)
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from market_data_store import MarketDataStore
@@ -113,7 +118,7 @@ class MultiSleeveATService(BaseATService):
 
         # Internal caches
         self._market_clock: Optional[MarketClockEvent] = None
-        self._account_info: Any = None  # TODO: Get from EML
+        self._account_snapshot: Optional[AccountSnapshotEvent] = None
 
     async def _run_loop(self) -> None:
         """Background loop."""
@@ -209,6 +214,19 @@ class MultiSleeveATService(BaseATService):
             )
             return
 
+        # Handle AccountSnapshotEvent
+        if isinstance(event, AccountSnapshotEvent):
+            self._account_snapshot = event
+            self.log.debug(
+                "Stored account snapshot: equity=%s adj_equity=%s cash=%s buying_power=%s positions=%d",
+                getattr(event.account, "equity", None),
+                getattr(event.account, "adj_equity", None),
+                getattr(event.account, "cash", None),
+                getattr(event.account, "buying_power", None),
+                len(getattr(event, "positions", []) or []),
+            )
+            return
+
         # TODO: Handle RebalanceRequestConfirmationEvent
 
         self.log.debug(
@@ -223,6 +241,7 @@ class MultiSleeveATService(BaseATService):
         """Check if a rebalance should be triggered.
         A rebalance should be triggered if:
         - The MultiSleeveAllocator indicates a rebalance is needed, AND
+        - AT has received a valid AccountSnapshotEvent with adj_equity > 0, AND
         - The market is currently open, or will be open later today.
 
         Args:
@@ -233,6 +252,20 @@ class MultiSleeveATService(BaseATService):
         if now is None:
             now_native = datetime.now().astimezone()
             now = to_canonical_eastern_naive(pd.Timestamp(now_native))
+
+        if self._account_snapshot is None:
+            self.log.warning(
+                "Refusing to rebalance: no AccountSnapshotEvent received yet (need account.adj_equity for AUM)"
+            )
+            return False
+
+        aum = getattr(self._account_snapshot.account, "adj_equity", None)
+        if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
+            self.log.warning(
+                "Refusing to rebalance: invalid account.adj_equity=%s in latest AccountSnapshotEvent",
+                aum,
+            )
+            return False
 
         allocator: MultiSleeveAllocator = self.rm.get("multi_sleeve_allocator")
         if not allocator:
@@ -290,6 +323,16 @@ class MultiSleeveATService(BaseATService):
             now_native = datetime.now().astimezone()
             now = to_canonical_eastern_naive(pd.Timestamp(now_native))
 
+        if self._account_snapshot is None:
+            raise RuntimeError(
+                "Cannot generate rebalance plan: no AccountSnapshotEvent received yet"
+            )
+        aum = getattr(self._account_snapshot.account, "adj_equity", None)
+        if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
+            raise RuntimeError(
+                f"Cannot generate rebalance plan: invalid account.adj_equity={aum}"
+            )
+
         allocator: MultiSleeveAllocator = self.rm.get("multi_sleeve_allocator")
         if not allocator:
             self.log.error("MultiSleeveAllocator not found in RuntimeManager")
@@ -327,7 +370,7 @@ class MultiSleeveATService(BaseATService):
         as_of = now - pd.Timedelta(days=1)
         rebal_ctx = RebalanceContext(
             rebalance_ts=now.to_pydatetime(),
-            aum=100_000.0,  # TODO: Get from EML
+            aum=float(aum),
         )
         self.log.debug("Generating global target weights as_of=%s", as_of)
         weights, allocator_ctx = allocator.generate_global_target_weights(

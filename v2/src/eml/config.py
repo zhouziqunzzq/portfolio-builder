@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -8,3 +9,12 @@ class EMLConfig:
 
     # If True, fetch positions alongside account snapshot.
     include_positions: bool = True
+
+    # Rebalance execution knobs
+    min_order_size: float = 1.0  # Minimum order size to place in USD
+    cash_buffer_pct: Optional[float] = (
+        0.01  # Keep this % of account value in cash; mutually exclusive with cash_buffer_abs
+    )
+    cash_buffer_abs: Optional[float] = (
+        None  # Or keep this absolute amount in cash; mutually exclusive with cash_buffer_pct
+    )
