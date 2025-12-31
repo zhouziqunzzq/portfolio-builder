@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 
 import pytest
 
@@ -9,6 +10,7 @@ from v2.src.events.event_bus import EventBus
 from v2.src.events.events import (
     BrokerAccount,
     BrokerPosition,
+    MarketClockEvent,
     RebalancePlanRequestEvent,
 )
 
@@ -223,8 +225,82 @@ def test_execute_pending_marks_state_executed(monkeypatch):
         "correlation_id": "",
     }
 
+    # Pending execution is gated on a known, open market clock.
+    svc._market_clock = MarketClockEvent(
+        ts=time.time(),
+        source="test",
+        now=datetime.now(),
+        is_market_open=True,
+    )
+
     svc._execute_pending_rebalance_plans()
     assert "r1" not in svc.state.pending_rebalance_requests
     assert any(
         x.get("rebalance_id") == "r1" for x in svc.state.executed_rebalance_history
     )
+
+
+def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
+    trading = _FakeTradingClient()
+    trading.set_asset("AAA", tradable=True)
+
+    svc = AlpacaEMLService(
+        bus=EventBus(),
+        trading_client=trading,
+        config=EMLConfig(include_positions=False, min_order_size=1.0),
+    )
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    svc.state = EMLState()
+    svc.state.pending_rebalance_requests["r1"] = {
+        "rebalance_id": "r1",
+        "request_ts": time.time(),
+        "weights": {"AAA": 1.0},
+        "source": "test",
+        "correlation_id": "",
+    }
+
+    # No market clock set => should skip execution.
+    assert getattr(svc, "_market_clock", None) is None
+    svc._execute_pending_rebalance_plans()
+
+    assert "r1" in svc.state.pending_rebalance_requests
+    assert svc.state.executed_rebalance_history == []
+    assert trading.submitted == []
+
+
+def test_execute_pending_skips_when_market_closed(monkeypatch):
+    trading = _FakeTradingClient()
+    trading.set_asset("AAA", tradable=True)
+
+    svc = AlpacaEMLService(
+        bus=EventBus(),
+        trading_client=trading,
+        config=EMLConfig(include_positions=False, min_order_size=1.0),
+    )
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    svc.state = EMLState()
+    svc.state.pending_rebalance_requests["r1"] = {
+        "rebalance_id": "r1",
+        "request_ts": time.time(),
+        "weights": {"AAA": 1.0},
+        "source": "test",
+        "correlation_id": "",
+    }
+
+    svc._market_clock = MarketClockEvent(
+        ts=time.time(),
+        source="test",
+        now=datetime.now(),
+        is_market_open=False,
+        next_market_open=datetime.now(),
+    )
+
+    svc._execute_pending_rebalance_plans()
+
+    assert "r1" in svc.state.pending_rebalance_requests
+    assert svc.state.executed_rebalance_history == []
+    assert trading.submitted == []

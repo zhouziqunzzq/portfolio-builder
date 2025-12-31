@@ -3,13 +3,14 @@ from abc import ABC, abstractmethod
 
 from pathlib import Path
 import sys
+from typing import Tuple
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from events.event_bus import EventBus
-from events.events import MarketClockEvent, NewBarsEvent
+from events.events import MarketClockEvent, NewBarsEvent, BarsCheckedEvent
 
 from services.base_service import BaseService
 
@@ -59,12 +60,12 @@ class BaseIMLService(BaseService, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def check_new_bars(self) -> bool:
+    async def check_new_bars(self) -> Tuple[bool, bool]:
         """
         Fetch newly CLOSED bars since last call.
-        Return True if new bars are available.
         Note: Bars will be separately fetched from common runtime -> market data store.
-            This method may refresh market data store and return True to indicate new data is present.
+        Returns:
+            Tuple[bool, bool]: (has_new_bars, bars_checked)
         """
         raise NotImplementedError
 
@@ -75,3 +76,6 @@ class BaseIMLService(BaseService, ABC):
 
     async def emit_new_bars(self, new_bars_event: "NewBarsEvent") -> None:
         await self.bus.publish(new_bars_event)
+
+    async def emit_bars_checked(self, bars_checked_event: "BarsCheckedEvent") -> None:
+        await self.bus.publish(bars_checked_event)

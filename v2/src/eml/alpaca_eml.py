@@ -23,10 +23,8 @@ from events.events import (
     BrokerPosition,
     RebalancePlanRequestEvent,
     RebalancePlanConfirmationEvent,
-    MarketClockEvent,
 )
 from runtime_manager import RuntimeManager
-from states.base_state import BaseState
 
 from .base_eml import BaseEML
 from .config import EMLConfig
@@ -309,6 +307,27 @@ class AlpacaEMLService(BaseEML):
     def _execute_pending_rebalance_plans(self) -> None:
         pending = self.state.pending_rebalance_requests
         if not pending:
+            self.log.debug("No pending rebalance plans to execute")
+            return
+
+        # Only execute when we are sure the market is open.
+        clock = getattr(self, "_market_clock", None)
+        if clock is None:
+            self.log.info(
+                "Skipping pending rebalance execution: market clock unknown (pending=%d)",
+                len(pending),
+            )
+            return
+
+        is_open = getattr(clock, "is_market_open", None)
+        if is_open is not True:
+            self.log.debug(
+                "Skipping pending rebalance execution: market not open (is_market_open=%s now=%s next_open=%s pending=%d)",
+                is_open,
+                getattr(clock, "now", None),
+                getattr(clock, "next_market_open", None),
+                len(pending),
+            )
             return
 
         # Process oldest-first for determinism.

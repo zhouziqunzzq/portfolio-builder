@@ -21,6 +21,7 @@ from events.events import (
     MarketClockEvent,
     RebalancePlanRequestEvent,
     RebalancePlanConfirmationEvent,
+    BarsCheckedEvent,
 )
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -44,6 +45,9 @@ class MultiSleeveATState(BaseState):
     last_rebalance_id: Optional[str] = None
     last_rebalance_weights: Optional[Dict[str, float]] = None
 
+    # Market data freshness info
+    last_market_data_ts: Optional[datetime] = None
+
     def to_payload(self) -> Dict[str, Any]:
         return {
             "pending_rebalance_ts": (
@@ -58,6 +62,11 @@ class MultiSleeveATState(BaseState):
             ),
             "last_rebalance_id": self.last_rebalance_id,
             "last_rebalance_weights": self.last_rebalance_weights,
+            "last_market_data_ts": (
+                self.last_market_data_ts.isoformat()
+                if self.last_market_data_ts
+                else None
+            ),
         }
 
     @classmethod
@@ -75,6 +84,10 @@ class MultiSleeveATState(BaseState):
         state.last_rebalance_ts = datetime.fromisoformat(last_ts) if last_ts else None
         state.last_rebalance_id = payload.get("last_rebalance_id")
         state.last_rebalance_weights = payload.get("last_rebalance_weights")
+        market_data_ts = payload.get("last_market_data_ts")
+        state.last_market_data_ts = (
+            datetime.fromisoformat(market_data_ts) if market_data_ts else None
+        )
         return state
 
     @classmethod
@@ -215,6 +228,16 @@ class MultiSleeveATService(BaseATService):
             )
             return
 
+        # Handle BarsCheckedEvent
+        if isinstance(event, BarsCheckedEvent):
+            # Update last market data timestamp in state
+            self.state.last_market_data_ts = datetime.fromtimestamp(event.ts)
+            self.log.debug(
+                "Updated last market data timestamp in state: %s",
+                self.state.last_market_data_ts,
+            )
+            return
+
         # Handle AccountSnapshotEvent
         if isinstance(event, AccountSnapshotEvent):
             self._account_snapshot = event
@@ -277,12 +300,12 @@ class MultiSleeveATService(BaseATService):
             now_native = datetime.now().astimezone()
             now = to_canonical_eastern_naive(pd.Timestamp(now_native))
 
+        # Ensure we have a valid account snapshot with adj_equity
         if self._account_snapshot is None:
             self.log.warning(
                 "Refusing to rebalance: no AccountSnapshotEvent received yet (need account.adj_equity for AUM)"
             )
             return False
-
         aum = getattr(self._account_snapshot.account, "adj_equity", None)
         if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
             self.log.warning(
@@ -323,8 +346,22 @@ class MultiSleeveATService(BaseATService):
             now.date(),
         )
 
-        return allocator_wants_rebalance and (
-            is_market_open_now or is_market_open_today
+        # Check market data freshness - require at least one BarsCheckedEvent received
+        # for today's date.
+        is_market_data_fresh = (
+            self.state.last_market_data_ts is not None
+            and self.state.last_market_data_ts.date() == now.date()
+        )
+        self.log.debug(
+            "Market data freshness check: is_market_data_fresh=%s last_market_data_ts=%s",
+            is_market_data_fresh,
+            self.state.last_market_data_ts,
+        )
+
+        return (
+            is_market_data_fresh
+            and allocator_wants_rebalance
+            and (is_market_open_now or is_market_open_today)
         )
         # return allocator_wants_rebalance  # TEMPORARY OVERRIDE FOR TESTING
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import pandas as pd
 
@@ -14,7 +14,7 @@ from utils.tz import to_canonical_eastern_naive
 from .base_iml import BaseIMLService
 from .config import IMLConfig
 
-from events.events import MarketClockEvent, NewBarsEvent
+from events.events import MarketClockEvent, NewBarsEvent, BarsCheckedEvent
 from events.event_bus import EventBus
 from runtime_manager import RuntimeManager
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -177,7 +177,7 @@ class AlpacaPollingIMLService(BaseIMLService):
                 await self.emit_market_clock(clock_event)
 
                 # Check for new bars
-                has_new_bars = await self.check_new_bars(now=now)
+                has_new_bars, bars_checked = await self.check_new_bars(now=now)
                 if has_new_bars:
                     new_bars_event = NewBarsEvent(
                         ts=time.time(),
@@ -185,6 +185,12 @@ class AlpacaPollingIMLService(BaseIMLService):
                     )
                     self.log.debug("New bars detected; emitting NewBarsEvent")
                     await self.emit_new_bars(new_bars_event)
+                if bars_checked:
+                    bars_checked_event = BarsCheckedEvent(
+                        ts=time.time(),
+                        source=self.name,
+                    )
+                    await self.emit_bars_checked(bars_checked_event)
 
                 # Sleep until next poll
                 self.log.debug(f"Sleeping for {self._poll_interval_seconds} seconds")
@@ -217,7 +223,7 @@ class AlpacaPollingIMLService(BaseIMLService):
             next_market_close=next_close if is_open else None,
         )
 
-    async def check_new_bars(self, now: Optional[datetime] = None) -> bool:
+    async def check_new_bars(self, now: Optional[datetime] = None) -> Tuple[bool, bool]:
         if now is None:
             now = datetime.now().astimezone()
 
@@ -227,7 +233,7 @@ class AlpacaPollingIMLService(BaseIMLService):
 
         # Check if bars should be fetched
         if not self._should_fetch_new_bars(now):
-            return False
+            return False, False
 
         # Grab the MarketDataStore and MultiSleeveAllocator
         mds: MarketDataStore = self.rm.get("market_data_store")
@@ -261,7 +267,7 @@ class AlpacaPollingIMLService(BaseIMLService):
             now=now,
         )
 
-        return has_new_bars
+        return has_new_bars, True  # bars_checked=True
 
     def _should_fetch_new_bars(
         self,

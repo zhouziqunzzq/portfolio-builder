@@ -170,6 +170,7 @@ class App:
                 topics={
                     Topic.STOP,
                     Topic.MARKET_CLOCK,
+                    Topic.BAR,
                     Topic.ACCOUNT,
                     Topic.REBALANCE_PLAN,
                 },

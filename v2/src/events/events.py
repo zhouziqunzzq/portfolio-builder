@@ -34,9 +34,17 @@ class NewBarsEvent(BaseEvent):
     """Event indicating new bar data is available."""
 
     # Fixed topic for this event type (not part of __init__).
-    topic: Topic = field(default=Topic.NEW_BARS, init=False)
+    topic: Topic = field(default=Topic.BAR, init=False)
 
     # TODO: Add more fields as needed, e.g., bar data payload
+
+
+@dataclass(frozen=True)
+class BarsCheckedEvent(BaseEvent):
+    """Event indicating that new bars have been checked."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.BAR, init=False)
 
 
 @dataclass(frozen=True)
