@@ -206,7 +206,7 @@ class SidewaysBaseSleeve(BaseSleeve):
         scored = self._compute_scores_only(sigs)
         weights = self.allocate_by_asset_class(scored, regime=regime)
 
-        self.state.last_rebalance_ts = reb_ts
+        self.state.last_rebalance_ts = pd.Timestamp(reb_ts)
         self.state.last_weights = weights
         return weights
 

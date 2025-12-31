@@ -350,9 +350,8 @@ class TrendSleeve(BaseSleeve):
         stock_weights = {t: w / total for t, w in stock_weights.items()}
 
         # Don't forget to update state for a successful rebalance
-        self.state.last_rebalance_ts = (
-            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
-        )
+        reb_ts = rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
+        self.state.last_rebalance_ts = pd.Timestamp(reb_ts)
         self.state.last_stock_weights = stock_weights
 
         return stock_weights

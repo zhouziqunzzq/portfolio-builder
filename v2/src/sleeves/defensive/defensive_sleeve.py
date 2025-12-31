@@ -379,9 +379,10 @@ class DefensiveSleeve(BaseSleeve):
 
         # Single allocation call (unified)
         weights = self.allocate_by_asset_class(scored_df, regime)
-        self.state.last_rebalance_ts = (
+        reb_ts = (
             rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
         )
+        self.state.last_rebalance_ts = pd.Timestamp(reb_ts)
         self.state.last_weights = weights
         return weights
 
