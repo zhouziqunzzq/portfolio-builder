@@ -2,10 +2,11 @@
 .vscode/
 __pycache__
 
-# Cached market data files
+# Cached data files
 test_data/
 data/
 production/data/
+data_prod_alpaca/
 
 plots/
 
