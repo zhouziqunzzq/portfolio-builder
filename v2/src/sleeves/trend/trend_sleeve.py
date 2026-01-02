@@ -1543,6 +1543,32 @@ class TrendSleeve(BaseSleeve):
 
         return out
 
+    def _load_full_price_matrix(
+        self,
+        warmup_start: pd.Timestamp,
+        end_ts: pd.Timestamp,
+        nan_ratio_threshold: float = 0.9,
+    ):
+        price_mat = self.um.get_price_matrix(
+            price_loader=self.mds,
+            start=warmup_start,
+            end=end_ts,
+            tickers=self.um.tickers,
+            field="Close",  # Use Close prices for trend calculations
+            interval=self.config.signals_interval,
+            auto_adjust=True,  # Use adjusted prices
+            auto_apply_membership_mask=False,  # Changed: Don't mask prices
+            local_only=getattr(self.mds, "local_only", False),
+        )
+        # Drop tickers with all-NaN prices
+        price_mat = price_mat.dropna(axis=1, how="all")
+        # Keep dates with NaN ratios less than or equal to threshold
+        price_mat = price_mat.loc[price_mat.isna().mean(axis=1) <= nan_ratio_threshold]
+        if price_mat.empty:
+            return pd.DataFrame()
+        price_mat.columns = [c.upper() for c in price_mat.columns]
+        return price_mat
+
     # ------------------------------------------------------------------
     # Precompute (vectorized end-to-end)
     # ------------------------------------------------------------------
@@ -1623,25 +1649,11 @@ class TrendSleeve(BaseSleeve):
             warmup_start.date(),
             end_ts.date(),
         )
-        price_mat = self.um.get_price_matrix(
-            price_loader=self.mds,
-            start=warmup_start,
-            end=end_ts,
-            tickers=self.um.tickers,
-            field="Close",  # Use Close prices for trend calculations
-            interval=cfg.signals_interval,
-            auto_adjust=True,  # Use adjusted prices
-            auto_apply_membership_mask=False,  # Changed: Don't mask prices
-            local_only=getattr(self.mds, "local_only", False),
+        price_mat = self._load_full_price_matrix(
+            warmup_start=warmup_start,
+            end_ts=end_ts,
+            nan_ratio_threshold=0.9,
         )
-
-        # Drop tickers with no data at all
-        price_mat = price_mat.dropna(axis=1, how="all")
-        if price_mat.empty:
-            self._cached_stock_scores_mat = pd.DataFrame()
-            self._cached_sector_scores_mat = pd.DataFrame()
-            return pd.DataFrame()
-
         # Normalize tickers to uppercase and align sector_map to columns
         price_mat.columns = [c.upper() for c in price_mat.columns]
         sector_map = self.um.sector_map

@@ -379,9 +379,7 @@ class DefensiveSleeve(BaseSleeve):
 
         # Single allocation call (unified)
         weights = self.allocate_by_asset_class(scored_df, regime)
-        reb_ts = (
-            rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
-        )
+        reb_ts = rebalance_ctx.rebalance_ts if rebalance_ctx is not None else as_of
         self.state.last_rebalance_ts = pd.Timestamp(reb_ts)
         self.state.last_weights = weights
         return weights
@@ -586,7 +584,11 @@ class DefensiveSleeve(BaseSleeve):
         return start_ts - pd.Timedelta(days=warmup_days)
 
     def _load_full_price_matrix(
-        self, warmup_start: pd.Timestamp, end_ts: pd.Timestamp, tickers: List[str]
+        self,
+        warmup_start: pd.Timestamp,
+        end_ts: pd.Timestamp,
+        tickers: List[str],
+        nan_ratio_threshold: float = 0.9,
     ):
         price_mat = self.um.get_price_matrix(
             price_loader=self.mds,
@@ -599,7 +601,10 @@ class DefensiveSleeve(BaseSleeve):
             auto_apply_membership_mask=False,
             local_only=getattr(self.mds, "local_only", False),
         )
+        # Drop tickers with all-NaN prices
         price_mat = price_mat.dropna(axis=1, how="all")
+        # Keep dates with NaN ratios less than or equal to threshold
+        price_mat = price_mat.loc[price_mat.isna().mean(axis=1) <= nan_ratio_threshold]
         if price_mat.empty:
             return pd.DataFrame()
         price_mat.columns = [c.upper() for c in price_mat.columns]
@@ -787,7 +792,9 @@ class DefensiveSleeve(BaseSleeve):
             self._cached_signal_mats = {}
             return self._cached_scores_mat
 
-        price_mat = self._load_full_price_matrix(warmup_start, end_ts, tickers)
+        price_mat = self._load_full_price_matrix(
+            warmup_start, end_ts, tickers, nan_ratio_threshold=0.9
+        )
         if price_mat.empty:
             self.log.warning("empty price matrix in precompute, skipping")
             self._cached_scores_mat = pd.DataFrame()
