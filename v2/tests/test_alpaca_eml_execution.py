@@ -321,6 +321,59 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
     assert trading.submitted == []
 
 
+def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
+    trading = _FakeTradingClient()
+    trading.set_asset("AAA", tradable=True)
+
+    svc = AlpacaEMLService(
+        bus=EventBus(),
+        trading_client=trading,
+        config=EMLConfig(
+            include_positions=False,
+            min_order_size=1.0,
+            max_pending_rebalance_execution_retries=2,
+        ),
+    )
+
+    svc.state = EMLState()
+    svc.state.pending_rebalance_requests["r1"] = {
+        "rebalance_id": "r1",
+        "request_ts": time.time(),
+        "weights": {"AAA": 1.0},
+        "source": "test",
+        "correlation_id": "",
+        "status": "pending",
+        "execution_failures": 0,
+    }
+
+    svc._market_clock = MarketClockEvent(
+        ts=time.time(),
+        source="test",
+        now=datetime.now(),
+        is_market_open=True,
+    )
+
+    def _boom(_event):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(svc, "_execute_rebalance_plan", _boom)
+
+    # 1st attempt fails -> still pending
+    svc._execute_pending_rebalance_plans()
+    assert "r1" in svc.state.pending_rebalance_requests
+    assert svc.state.pending_rebalance_requests["r1"].get("execution_failures") == 1
+    assert svc.state.executed_rebalance_history == []
+    assert svc.state.failed_rebalance_requests == []
+
+    # 2nd attempt fails -> moved to failed, pending cleared
+    svc._execute_pending_rebalance_plans()
+    assert "r1" not in svc.state.pending_rebalance_requests
+    assert svc.state.executed_rebalance_history == []
+    assert len(svc.state.failed_rebalance_requests) == 1
+    assert svc.state.failed_rebalance_requests[0].get("rebalance_id") == "r1"
+    assert svc.state.failed_rebalance_requests[0].get("status") == "failed"
+
+
 def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatch):
     trading = _FakeTradingClient()
     trading.set_asset("AAA", tradable=True)

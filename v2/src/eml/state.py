@@ -11,10 +11,13 @@ from states.base_state import BaseState
 
 class EMLState(BaseState):
     STATE_KEY = "eml.alpaca"
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     # Pending rebalance requests (rebalance_id -> request payload)
     pending_rebalance_requests: Dict[str, Dict[str, Any]]
+
+    # Failed rebalance requests ordered by failure timestamp (ascending)
+    failed_rebalance_requests: List[Dict[str, Any]]
 
     # Executed rebalance requests ordered by execution timestamp (ascending)
     executed_rebalance_history: List[Dict[str, Any]]
@@ -23,15 +26,19 @@ class EMLState(BaseState):
         self,
         *,
         pending_rebalance_requests: Optional[Dict[str, Dict[str, Any]]] = None,
+        failed_rebalance_requests: Optional[List[Dict[str, Any]]] = None,
         executed_rebalance_history: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.pending_rebalance_requests = dict(pending_rebalance_requests or {})
+        self.failed_rebalance_requests = list(failed_rebalance_requests or [])
         self.executed_rebalance_history = list(executed_rebalance_history or [])
         self._sort_history_inplace()
+        self._sort_failed_inplace()
 
     def to_payload(self) -> Dict[str, Any]:
         return {
             "pending_rebalance_requests": self.pending_rebalance_requests,
+            "failed_rebalance_requests": self.failed_rebalance_requests,
             "executed_rebalance_history": self.executed_rebalance_history,
         }
 
@@ -42,6 +49,12 @@ class EMLState(BaseState):
             pending = {}
         if not isinstance(pending, dict):
             pending = {}
+
+        failed = payload.get("failed_rebalance_requests")
+        if failed is None:
+            failed = []
+        if not isinstance(failed, list):
+            failed = []
 
         executed = payload.get("executed_rebalance_history")
         if executed is None:
@@ -58,6 +71,12 @@ class EMLState(BaseState):
                 continue
             pending_out[k] = dict(v)
 
+        failed_out: List[Dict[str, Any]] = []
+        for item in failed:
+            if not isinstance(item, dict):
+                continue
+            failed_out.append(dict(item))
+
         executed_out: List[Dict[str, Any]] = []
         for item in executed:
             if not isinstance(item, dict):
@@ -66,12 +85,17 @@ class EMLState(BaseState):
 
         return cls(
             pending_rebalance_requests=pending_out,
+            failed_rebalance_requests=failed_out,
             executed_rebalance_history=executed_out,
         )
 
     @classmethod
     def empty(cls) -> "EMLState":
-        return cls(pending_rebalance_requests={}, executed_rebalance_history=[])
+        return cls(
+            pending_rebalance_requests={},
+            failed_rebalance_requests=[],
+            executed_rebalance_history=[],
+        )
 
     def has_pending_rebalance_request(self, rebalance_id: str) -> bool:
         return str(rebalance_id) in self.pending_rebalance_requests
@@ -85,7 +109,52 @@ class EMLState(BaseState):
             "weights": dict(event.weights or {}),
             "source": getattr(event, "source", ""),
             "correlation_id": getattr(event, "correlation_id", ""),
+            "status": "pending",
+            "execution_failures": 0,
         }
+
+    def increment_pending_rebalance_execution_failure(self, rebalance_id: str) -> int:
+        rid = str(rebalance_id)
+        req = self.pending_rebalance_requests.get(rid)
+        if req is None:
+            return 0
+
+        cur = req.get("execution_failures", 0)
+        try:
+            cur_i = int(cur)
+        except Exception:
+            cur_i = 0
+
+        nxt = cur_i + 1
+        req["execution_failures"] = nxt
+        return nxt
+
+    def mark_rebalance_failed(
+        self,
+        *,
+        rebalance_id: str,
+        failed_ts: Optional[float] = None,
+        error: str = "",
+    ) -> Dict[str, Any]:
+        rid = str(rebalance_id)
+        now_ts = float(failed_ts if failed_ts is not None else time.time())
+
+        req = self.pending_rebalance_requests.pop(rid, None)
+        if req is None:
+            req = {"rebalance_id": rid}
+
+        entry = {
+            **dict(req),
+            "rebalance_id": rid,
+            "status": "failed",
+            "failed_ts": now_ts,
+        }
+        if error:
+            entry["error"] = str(error)
+
+        self.failed_rebalance_requests.append(entry)
+        self._sort_failed_inplace()
+        return entry
 
     def mark_rebalance_executed(
         self,
@@ -107,6 +176,16 @@ class EMLState(BaseState):
         }
         self.executed_rebalance_history.append(entry)
         self._sort_history_inplace()
+
+    def _sort_failed_inplace(self) -> None:
+        def _key(x: Dict[str, Any]) -> float:
+            v = x.get("failed_ts")
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        self.failed_rebalance_requests.sort(key=_key)
 
     def _sort_history_inplace(self) -> None:
         def _key(x: Dict[str, Any]) -> float:

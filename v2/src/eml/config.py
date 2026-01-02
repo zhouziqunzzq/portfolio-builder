@@ -31,3 +31,8 @@ class EMLConfig:
 
     # Execution history retention knobs
     max_execution_history_days: int = 365  # Retain execution history for this many days; set to 0 or less to disable
+
+    # Pending rebalance retry cap
+    # If a pending rebalance execution attempt fails this many times, it is moved
+    # to `failed_rebalance_requests` in EML state for manual intervention.
+    max_pending_rebalance_execution_retries: int = 10

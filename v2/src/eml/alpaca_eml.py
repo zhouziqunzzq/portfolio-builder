@@ -159,6 +159,13 @@ class AlpacaEMLService(BaseEML):
     async def _run_loop(self) -> None:
         while self._running:
             try:
+                failed = getattr(self.state, "failed_rebalance_requests", None)
+                if isinstance(failed, list) and failed:
+                    self.log.warning(
+                        "EML has %d failed rebalance request(s); manual intervention may be required",
+                        len(failed),
+                    )
+
                 # Fetch account + positions
                 account = await self._run_in_thread(self._get_account)
                 positions: List[BrokerPosition] = []
@@ -393,6 +400,28 @@ class AlpacaEMLService(BaseEML):
                     "Failed executing pending rebalance plan: rebalance_id=%s",
                     rebalance_id,
                 )
+
+                # Retry accounting + cap -> move to failed list and clear pending
+                try:
+                    failures = self.state.increment_pending_rebalance_execution_failure(
+                        rebalance_id
+                    )
+                    max_retries = self.config.max_pending_rebalance_execution_retries
+                    if failures >= max_retries:
+                        self.state.mark_rebalance_failed(
+                            rebalance_id=rebalance_id,
+                            error="max retries exceeded",
+                        )
+                        self.log.warning(
+                            "Pending rebalance marked failed after %d failed attempt(s): rebalance_id=%s",
+                            failures,
+                            rebalance_id,
+                        )
+                except Exception:
+                    self.log.exception(
+                        "Failed updating retry/failed state for pending rebalance: rebalance_id=%s",
+                        rebalance_id,
+                    )
 
     def _execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
         """Synchronously execute a single rebalance plan by placing broker orders.
@@ -1173,6 +1202,18 @@ class AlpacaEMLService(BaseEML):
         if config.cash_buffer_pct is not None and config.cash_buffer_abs is not None:
             raise ValueError(
                 "EMLConfig: cash_buffer_pct and cash_buffer_abs are mutually exclusive; only one may be set."
+            )
+
+        max_retries = getattr(config, "max_pending_rebalance_execution_retries", 10)
+        try:
+            max_retries_i = int(max_retries)
+        except Exception as e:
+            raise ValueError(
+                "EMLConfig: max_pending_rebalance_execution_retries must be an integer"
+            ) from e
+        if max_retries_i <= 0:
+            raise ValueError(
+                "EMLConfig: max_pending_rebalance_execution_retries must be > 0"
             )
 
     def _get_equity_adj(self, equity_abs: Optional[float]) -> Optional[float]:

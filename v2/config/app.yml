@@ -27,6 +27,7 @@ eml:
   cash_buffer_pct: 0.01
   # cash_buffer_abs: 1000.0 # Mutually exclusive with `cash_buffer_pct`
   max_execution_history_days: 365
+  max_pending_rebalance_execution_retries: 10
 
 at:
   polling_interval_secs: 30.0
