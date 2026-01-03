@@ -377,6 +377,7 @@ class MultiSleeveAllocator:
             out = out_adj
 
         # store state
+        self.state.last_rebalance_ts = rebalance_ts
         self.state.last_as_of = as_of_ts
         self.state.last_sleeve_weights = sleeve_alloc
         self.state.last_portfolio = out
@@ -429,6 +430,35 @@ class MultiSleeveAllocator:
                 return True
 
         return False
+
+    def get_last_rebalance_datetime(self) -> Optional[datetime]:
+        """Get the datetime of the last rebalance executed by the allocator.
+
+        Returns:
+            A datetime object representing the last rebalance time, or None if no rebalances have occurred.
+        """
+        candidates: List[Optional[datetime]] = [
+            # Allocator-level last rebalance
+            self.state.last_rebalance_ts,
+            # Regime engine last sample
+            self.state.last_regime_sample_ts,
+            # Trend filter last sample
+            self.state.last_trend_sample_ts,
+        ]
+        # Sleeve-level last rebalances
+        for name in self.enabled_sleeves:
+            if name == "cash":
+                continue
+            sleeve = self.sleeves.get(name)
+            if sleeve is None:
+                continue
+            sleeve_last = sleeve.get_last_rebalance_datetime()
+            candidates.append(sleeve_last)
+        # Return the most recent datetime among candidates
+        valid_candidates = [dt for dt in candidates if dt is not None]
+        if not valid_candidates:
+            return None
+        return max(valid_candidates)
 
     # ------------------------------------------------------------------
     # Vectorized Precompute for All Sleeves

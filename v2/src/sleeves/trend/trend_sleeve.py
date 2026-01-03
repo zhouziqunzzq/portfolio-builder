@@ -367,6 +367,13 @@ class TrendSleeve(BaseSleeve):
             self.config.rebalance_freq,
         )
 
+    def get_last_rebalance_datetime(self) -> Optional[datetime]:
+        return (
+            self.state.last_rebalance_ts.to_pydatetime()
+            if self.state.last_rebalance_ts is not None
+            else None
+        )
+
     # ------------------------------------------------------------------
     # Universe
     # ------------------------------------------------------------------

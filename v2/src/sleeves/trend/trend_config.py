@@ -74,7 +74,7 @@ class TrendConfig:
     sector_softmax_alpha: float = 1.0
     sector_w_min: float = 0.0
     sector_w_max: float = 0.30
-    sector_smoothing_beta: float = 0.3
+    sector_smoothing_beta: float = 0.2
     sector_top_k: int = 5
 
     # Sector-level component weights

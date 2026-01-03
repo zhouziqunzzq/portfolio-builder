@@ -101,6 +101,18 @@ class BaseSleeve(ABC):
             "should_rebalance() must be implemented by subclasses"
         )
 
+    @abstractmethod
+    def get_last_rebalance_datetime(self) -> Optional[datetime]:
+        """
+        Get the datetime of the last rebalance executed by the sleeve.
+
+        Returns:
+            A datetime object representing the last rebalance time, or None if no rebalances have occurred.
+        """
+        raise NotImplementedError(
+            "get_last_rebalance_datetime() must be implemented by subclasses"
+        )
+
     # ------------------------------------------------------------------
     # Precompute for vectorized signals generation
     # ------------------------------------------------------------------

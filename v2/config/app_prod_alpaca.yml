@@ -33,6 +33,7 @@ eml:
 at:
   polling_interval_secs: 30.0
   precompute_lookback_weeks: 52 # 1 year
+  bootstrap_lookback_weeks: 52 # 1 year
 
 universe_manager:
   membership_csv: data_prod_alpaca/sp500_membership.csv

@@ -393,6 +393,13 @@ class DefensiveSleeve(BaseSleeve):
         cfg = self.config
         return should_rebalance(self.state.last_rebalance_ts, now, cfg.rebalance_freq)
 
+    def get_last_rebalance_datetime(self) -> Optional[datetime]:
+        return (
+            self.state.last_rebalance_ts.to_pydatetime()
+            if self.state.last_rebalance_ts is not None
+            else None
+        )
+
     # ------------------------------------------------------------------
     # Multi-Asset Allocation (Option 1)
     # ------------------------------------------------------------------

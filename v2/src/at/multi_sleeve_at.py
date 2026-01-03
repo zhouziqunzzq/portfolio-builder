@@ -409,9 +409,27 @@ class MultiSleeveATService(BaseATService):
         self.log.debug("Reset MarketDataStore memory cache")
 
         # Precompute signals/scores
-        lookback_weeks = self.config.precompute_lookback_weeks
         end = now
-        start = end - pd.Timedelta(weeks=lookback_weeks)
+        precompute_weeks = int(self.config.precompute_lookback_weeks)
+
+        # Determine whether we need a one-time bootstrap.
+        trend_sleeve = allocator.sleeves.get("trend")
+        bootstrap_needed = (
+            self.state.last_rebalance_ts is None
+            and trend_sleeve is not None
+            and trend_sleeve.get_last_rebalance_datetime() is None
+        )
+
+        if bootstrap_needed:
+            # When bootstrapping, we need caches covering BOTH:
+            #   (a) the bootstrap simulation window (bootstrap_lookback_weeks), and
+            #   (b) the normal precompute window used for the live rebalance request.
+            bootstrap_weeks = int(
+                getattr(self.config, "bootstrap_lookback_weeks", 0) or 0
+            )
+            start = end - pd.Timedelta(weeks=(bootstrap_weeks + precompute_weeks))
+        else:
+            start = end - pd.Timedelta(weeks=precompute_weeks)
         self.log.debug(
             "Starting allocator precompute: start=%s end=%s",
             start,
@@ -427,6 +445,13 @@ class MultiSleeveATService(BaseATService):
             end,
             precompute_rst,
         )
+
+        if bootstrap_needed:
+            try:
+                self._bootstrap_weights(now=now.to_pydatetime())
+            except Exception:
+                # Never block live operation on bootstrap; log and continue.
+                self.log.exception("Bootstrap failed; continuing without bootstrap")
 
         # Generate target weights
         as_of = now - pd.Timedelta(days=1)
@@ -456,6 +481,111 @@ class MultiSleeveATService(BaseATService):
             source=self.name,
         )
         return event
+
+    def _bootstrap_weights(self, now: Optional[datetime] = None) -> Dict[str, float]:
+        """Bootstrap sleeve internal state for first-time live deployment.
+
+        This is primarily intended to warm the trend sleeve's sector weights
+        smoothing/hysteresis so day-1 live allocations don't start from a fully
+        cold state.
+
+        Constraints
+        -----------
+        - Does not emit any rebalance events / orders.
+        - Avoids mutating allocator-level state (friction control baseline, last
+          portfolio, etc.). Only sleeve-level state is advanced.
+
+        Returns
+        -------
+        Dict[str, float]
+            Latest bootstrapped trend sleeve stock weights (if any), else {}.
+        """
+
+        if now is None:
+            now_native = datetime.now().astimezone()
+            now_ts = to_canonical_eastern_naive(pd.Timestamp(now_native))
+            now = now_ts.to_pydatetime()
+
+        allocator: MultiSleeveAllocator = self.rm.get("multi_sleeve_allocator")
+        if not allocator:
+            self.log.error("MultiSleeveAllocator not found in RuntimeManager")
+            raise RuntimeError("MultiSleeveAllocator not found")
+        trend = allocator.sleeves.get("trend")
+        if trend is None:
+            self.log.info("No trend sleeve configured; skipping bootstrap")
+            return {}
+        if trend.get_last_rebalance_datetime() is not None:
+            self.log.debug("Trend sleeve already has state; skipping bootstrap")
+            return (
+                getattr(getattr(trend, "state", None), "last_stock_weights", None) or {}
+            )
+
+        lookback_weeks = int(getattr(self.config, "bootstrap_lookback_weeks", 52) or 52)
+        end_as_of = (pd.Timestamp(now) - pd.Timedelta(days=1)).normalize()
+        start_boot = (end_as_of - pd.Timedelta(weeks=lookback_weeks)).normalize()
+        if end_as_of <= start_boot:
+            self.log.warning(
+                "Invalid bootstrap window: start=%s end=%s; skipping bootstrap",
+                start_boot.date(),
+                end_as_of.date(),
+            )
+            return {}
+
+        # Ensure sleeve isn't gated off during warm-up.
+        regime = "bull"
+        dummy_aum = 1_000_000.0
+
+        self.log.info(
+            "Bootstrapping trend sleeve via daily forward simulation [%s, %s]",
+            start_boot.date(),
+            end_as_of.date(),
+        )
+
+        last_weights: Dict[str, float] = {}
+
+        steps = 0
+        rebalances = 0
+        daily_dates = pd.date_range(start=start_boot, end=end_as_of, freq="D")
+        for dt in daily_dates:
+            steps += 1
+
+            dt_ts = pd.Timestamp(dt).to_pydatetime()
+            try:
+                if not trend.should_rebalance(dt_ts):
+                    continue
+            except Exception:
+                # If the sleeve rejects the timestamp (e.g. due to timezone issues),
+                # skip this day; bootstrap is best-effort.
+                self.log.exception("Bootstrap should_rebalance failed at %s", dt.date())
+                continue
+
+            rebalances += 1
+            rebal_ctx = RebalanceContext(
+                rebalance_ts=pd.Timestamp(dt).to_pydatetime(),
+                aum=float(dummy_aum),
+            )
+            # IMPORTANT: signals must use data up to t-1 (no lookahead).
+            as_of = (pd.Timestamp(dt) - pd.Timedelta(days=1)).normalize()
+            # Wide lookback for safety; caches from allocator.precompute are preferred.
+            start_for_signals = (as_of - pd.Timedelta(days=730)).normalize()
+            try:
+                last_weights = trend.generate_target_weights_for_date(
+                    as_of=as_of,
+                    start_for_signals=start_for_signals,
+                    regime=regime,
+                    rebalance_ctx=rebal_ctx,
+                )
+            except Exception:
+                self.log.exception("Bootstrap rebalance step failed for %s", dt.date())
+                continue
+
+        self.log.info(
+            "Bootstrap complete (days=%d, rebalances=%d); trend last_rebalance_ts=%s",
+            steps,
+            rebalances,
+            getattr(getattr(trend, "state", None), "last_rebalance_ts", None),
+        )
+        return last_weights
 
     @staticmethod
     def _generate_rebalance_id() -> str:

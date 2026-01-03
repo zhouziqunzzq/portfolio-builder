@@ -95,6 +95,9 @@ class AlpacaPollingIMLService(BaseIMLService):
             )
             config = IMLConfig()
         self.config = config
+        self.bar_polling_enabled = config.bar_polling_enabled
+        if not self.bar_polling_enabled:
+            self.log.warning("Bar polling is disabled in AlpacaPollingIMLService")
         self.bar_interval = config.bar_interval
         if self.bar_interval != "1d":
             raise ValueError("AlpacaPollingIMLService only supports '1d' bar interval")
@@ -224,6 +227,11 @@ class AlpacaPollingIMLService(BaseIMLService):
         )
 
     async def check_new_bars(self, now: Optional[datetime] = None) -> Tuple[bool, bool]:
+        # If bar polling is disabled, skip entirely.
+        if not self.bar_polling_enabled:
+            self.log.debug("Bar polling is disabled; skipping check_new_bars")
+            return False, False  # has_new_bars=False, bars_checked=False
+
         if now is None:
             now = datetime.now().astimezone()
 
