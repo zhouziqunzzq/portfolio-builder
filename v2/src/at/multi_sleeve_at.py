@@ -372,6 +372,7 @@ class MultiSleeveATService(BaseATService):
         """Generate a RebalancePlanRequestEvent by:
         - Resetting MarketDataStore caches to ensure fresh data.
         - Invoking the precompute logic in MultiSleeveAllocator to prepare sleeves for rebalancing.
+        - Bootstrapping sleeve state if needed (e.g., trend sleeve sector weights).
         - Fetching target weights from MultiSleeveAllocator.
         - Generate a unique rebalance ID.
         - Creating and returning a RebalancePlanRequestEvent with ID and weights.
@@ -411,7 +412,6 @@ class MultiSleeveATService(BaseATService):
         # Precompute signals/scores
         end = now
         precompute_weeks = int(self.config.precompute_lookback_weeks)
-
         # Determine whether we need a one-time bootstrap.
         trend_sleeve = allocator.sleeves.get("trend")
         bootstrap_needed = (
@@ -419,7 +419,6 @@ class MultiSleeveATService(BaseATService):
             and trend_sleeve is not None
             and trend_sleeve.get_last_rebalance_datetime() is None
         )
-
         if bootstrap_needed:
             # When bootstrapping, we need caches covering BOTH:
             #   (a) the bootstrap simulation window (bootstrap_lookback_weeks), and
@@ -446,6 +445,7 @@ class MultiSleeveATService(BaseATService):
             precompute_rst,
         )
 
+        # Bootstrap sleeve state if needed
         if bootstrap_needed:
             try:
                 self._bootstrap_weights(now=now.to_pydatetime())
