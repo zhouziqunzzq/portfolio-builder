@@ -1,7 +1,7 @@
 services:
   v2_app:
     env_file:
-      - ./.env_live_alpaca
+      - ./.env.live_alpaca
     command: ["python", "run_app.py", "--config", "config/app_live_alpaca.yml"]
     volumes:
       - ./data_live_alpaca:/app/v2/data_live_alpaca

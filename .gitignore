@@ -20,4 +20,7 @@ orb_*.csv
 
 # Production environment files
 .env
+.env.*
+!.env.*.example
 .env_*
+!.env_*.example

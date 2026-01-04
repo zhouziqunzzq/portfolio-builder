@@ -1,7 +1,7 @@
 services:
   v2_app:
     env_file:
-      - ./.env_paper_alpaca
+      - ./.env.paper_alpaca
     command: ["python", "run_app.py", "--config", "config/app_paper_alpaca.yml"]
     volumes:
       - ./data_paper_alpaca:/app/v2/data_paper_alpaca

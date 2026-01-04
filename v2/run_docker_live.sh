@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
-ENV_FILE="$script_dir/.env_live_alpaca"
+ENV_FILE="$script_dir/.env.live_alpaca"
 ENV_EXAMPLE_FILE="$script_dir/.env.live_alpaca.example"
 
 if [[ ! -f "$ENV_FILE" ]]; then
