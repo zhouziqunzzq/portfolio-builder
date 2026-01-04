@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local env / secrets
+.env
+.env.*
+.env_.*
+
+# Data / caches / outputs
+data/
+data_prod_alpaca/
+logs/
+plots/
+backtests/
+prices/
+state/
+
+# VCS / editor
+.git/
+.vscode/
+.DS_Store
