@@ -6,6 +6,8 @@ from datetime import datetime
 import os
 import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from opentelemetry import metrics
+from opentelemetry.metrics import Observation
 
 import pandas as pd
 
@@ -139,6 +141,25 @@ class AlpacaPollingIMLService(BaseIMLService):
         # Internal market clock cache
         self._last_market_clock: Optional[MarketClockEvent] = None
 
+        # Metrics
+        self._market_is_open: Optional[bool] = None
+        self._init_metrics_instruments()
+
+    def _init_metrics_instruments(self) -> None:
+        meter = metrics.get_meter("portfolio_builder.v2.iml")
+
+        def observe_market_open(_: object) -> list[Observation]:
+            is_open = self._market_is_open
+            if is_open is None:
+                return [Observation(0, {"known": False})]
+            return [Observation(1 if is_open else 0, {"known": True})]
+
+        meter.create_observable_gauge(
+            name="iml.market_is_open",
+            description="Latest polled Alpaca market clock open status (1=open, 0=closed)",
+            callbacks=[observe_market_open],
+        )
+
     def _build_trading_client(self):
         if not self._api_key or not self._secret_key:
             raise RuntimeError(
@@ -178,6 +199,8 @@ class AlpacaPollingIMLService(BaseIMLService):
                 )
                 self._last_market_clock = clock_event
                 await self.emit_market_clock(clock_event)
+                # Update gauge source of truth.
+                self._market_is_open = clock_event.is_market_open
 
                 # Check for new bars
                 has_new_bars, bars_checked = await self.check_new_bars(now=now)

@@ -24,3 +24,7 @@ orb_*.csv
 !.env.*.example
 .env_*
 !.env_*.example
+
+# Production runtime data
+prom_data/
+grafana_data/

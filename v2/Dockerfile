@@ -17,5 +17,5 @@ RUN python -m pip install --upgrade pip \
 # Copy application code
 COPY . ./
 
-# Default: run the Alpaca prod config (override with `--config ...` at runtime)
-CMD ["python", "run_app.py", "--config", "config/app_prod_alpaca.yml"]
+# Default: run the app (override with `--config ...` at runtime)
+CMD ["python", "run_app.py", "--config", "config/app.yml"]

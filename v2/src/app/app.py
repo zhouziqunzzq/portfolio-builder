@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import signal
 import sys
@@ -25,6 +26,45 @@ from at.base_at import BaseATService
 from at.multi_sleeve_at import MultiSleeveATService
 
 
+def _must_init_otel_metrics() -> None:
+    """Initialize OpenTelemetry metrics export if configured.
+
+    This intentionally fails fast when OTLP export is configured but the
+    OpenTelemetry SDK/exporter dependencies are missing.
+
+    Environment variables:
+    - OTEL_EXPORTER_OTLP_ENDPOINT: e.g. http://otelcol:4317
+    - OTEL_SERVICE_NAME: optional; defaults to 'portfolio-builder-v2'
+    """
+
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+
+    try:
+        from opentelemetry import metrics
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+            OTLPMetricExporter,
+        )
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.sdk.resources import Resource
+    except Exception as e:
+        raise RuntimeError(
+            "OpenTelemetry metrics export is configured (OTEL_EXPORTER_OTLP_ENDPOINT is set) "
+            "but required OpenTelemetry packages are missing or broken. "
+            "Install: opentelemetry-api, opentelemetry-sdk, opentelemetry-exporter-otlp-proto-grpc"
+        ) from e
+
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "portfolio-builder-v2")
+    resource = Resource.create({"service.name": service_name})
+
+    exporter = OTLPMetricExporter(endpoint=endpoint)
+    reader = PeriodicExportingMetricReader(exporter)
+    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    metrics.set_meter_provider(provider)
+
+
 class App:
     def __init__(
         self,
@@ -34,6 +74,8 @@ class App:
     ):
         self.log = logging.getLogger(self.__class__.__name__)
         self.config = config
+
+        _must_init_otel_metrics()
 
         # Construct RuntimeManager which constructs common infrastructures
         self.rm = RuntimeManager.from_app_config(

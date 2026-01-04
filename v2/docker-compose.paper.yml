@@ -2,6 +2,7 @@ services:
   v2_app:
     env_file:
       - ./.env.paper_alpaca
-    command: ["python", "run_app.py", "--config", "config/app_paper_alpaca.yml"]
+    command: [ "python", "run_app.py", "--config", "config/app_paper_alpaca.yml" ]
     volumes:
       - ./data_paper_alpaca:/app/v2/data_paper_alpaca
+    restart: unless-stopped
