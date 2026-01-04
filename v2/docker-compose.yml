@@ -4,8 +4,5 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - ./.env_prod_alpaca
     volumes:
-      - ./data_prod_alpaca:/app/v2/data_prod_alpaca
       - ./config:/app/v2/config:ro

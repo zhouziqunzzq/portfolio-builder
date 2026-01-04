@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
-ENV_FILE="$script_dir/.env_prod_alpaca"
+ENV_FILE="$script_dir/.env_live_alpaca"
 ENV_EXAMPLE_FILE="$script_dir/.env.example"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -25,7 +25,7 @@ source "$ENV_FILE"
 set +a
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-CONFIG_FILE="$script_dir/config/app_prod_alpaca.yml"
+CONFIG_FILE="$script_dir/config/app_live_alpaca.yml"
 
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 	echo "Python not found: $PYTHON_BIN" >&2

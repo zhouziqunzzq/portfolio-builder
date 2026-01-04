@@ -3,13 +3,13 @@
 #
 # Notes:
 # - Paths are relative to the v2/ directory when running v2 runners.
-# - This is the LIVE production config for the Alpaca deployment.
+# - This is the PAPER trading config for the Alpaca deployment.
 
 runtime:
   log_level: DEBUG
   log_to_file: true
-  log_root: data_prod_alpaca/logs
-  state_file: data_prod_alpaca/state/runtime_state.json
+  log_root: data_paper_alpaca/logs
+  state_file: data_paper_alpaca/state/runtime_state.json
   state_persist_interval_secs: 30.0
   graceful_shutdown_timeout_secs: 5.0
 
@@ -36,11 +36,11 @@ at:
   bootstrap_lookback_weeks: 52 # 1 year
 
 universe_manager:
-  membership_csv: data_prod_alpaca/sp500_membership.csv
+  membership_csv: data_paper_alpaca/sp500_membership.csv
   sectors_yaml: config/sectors.yml # Shared with other configs
 
 market_data_store:
-  data_root: data_prod_alpaca/prices
+  data_root: data_paper_alpaca/prices
   source: yfinance
 
 regime_engine:
