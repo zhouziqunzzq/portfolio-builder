@@ -6,10 +6,11 @@ cd "$script_dir"
 
 usage() {
 	echo "Usage:" >&2
-	echo "  $0 {live|paper} {up|down|ps} [args...]" >&2
+	echo "  $0 {live|paper} {up|down|restart|ps} [args...]" >&2
 	echo "" >&2
 	echo "Examples:" >&2
 	echo "  $0 paper up -d --remove-orphans" >&2
+	echo "  $0 paper restart" >&2
 	echo "  $0 live down" >&2
 	echo "  $0 live ps" >&2
 }
@@ -76,6 +77,9 @@ case "$action" in
 		;;
 	ps)
 		exec docker compose "${compose_args[@]}" ps "$@"
+		;;
+	restart)
+		exec docker compose "${compose_args[@]}" restart "$@"
 		;;
 	*)
 		echo "Unknown action: $action" >&2

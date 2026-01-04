@@ -7,6 +7,9 @@ from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
 
+from opentelemetry import metrics
+from opentelemetry.metrics import Observation
+
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
@@ -134,6 +137,43 @@ class MultiSleeveATService(BaseATService):
         self._market_clock: Optional[MarketClockEvent] = None
         self._account_snapshot: Optional[AccountSnapshotEvent] = None
 
+        # Metrics
+        self._should_rebalance_last: Optional[bool] = None
+        self._init_metrics_instruments()
+
+    def _init_metrics_instruments(self) -> None:
+        meter = metrics.get_meter("portfolio_builder.v2.at")
+
+        def observe_has_pending_rebalance(_: object) -> list[Observation]:
+            has_pending = (
+                self.state.pending_rebalance_id is not None
+                and self.state.pending_rebalance_weights is not None
+            )
+            return [Observation(1 if has_pending else 0)]
+
+        meter.create_observable_gauge(
+            name="at.has_pending_rebalance",
+            description="1 if AT has a pending rebalance, else 0",
+            callbacks=[observe_has_pending_rebalance],
+        )
+
+        def observe_should_rebalance(_: object) -> list[Observation]:
+            v = self._should_rebalance_last
+            if v is None:
+                return [Observation(0, {"known": False})]
+            return [Observation(1 if v else 0, {"known": True})]
+
+        meter.create_observable_gauge(
+            name="at.should_rebalance",
+            description="Latest should_rebalance() evaluation (1=true, 0=false)",
+            callbacks=[observe_should_rebalance],
+        )
+
+        self._rebalance_plan_generated_counter = meter.create_counter(
+            name="at.rebalance_plan_generated",
+            description="Counts successful generation of new rebalance plans",
+        )
+
     async def _run_loop(self) -> None:
         """Background loop."""
 
@@ -179,6 +219,7 @@ class MultiSleeveATService(BaseATService):
 
                 # If a rebalance is due and no pending rebalance exists, generate and emit a RebalancePlanRequestEvent
                 should_rebalance = await self._check_should_rebalance(now=now)
+                self._should_rebalance_last = bool(should_rebalance)
                 self.log.debug("Rebalance check: should_rebalance=%s", should_rebalance)
                 if should_rebalance:
                     event = await self._generate_rebalance_plan_request(now=now)
@@ -194,6 +235,12 @@ class MultiSleeveATService(BaseATService):
                     )
                     # Then emit the event
                     await self.emit_rebalance_plan_request(event)
+                    self._rebalance_plan_generated_counter.add(
+                        1,
+                        {
+                            "service": self.name,
+                        },
+                    )
                     self.log.info(
                         "Emitted RebalancePlanRequestEvent: rebalance_id=%s target_weights=%s",
                         event.rebalance_id,

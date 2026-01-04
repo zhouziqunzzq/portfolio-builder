@@ -8,6 +8,9 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from decimal import Decimal, ROUND_DOWN
 
+from opentelemetry import metrics
+from opentelemetry.metrics import Observation
+
 
 from pathlib import Path
 import sys
@@ -111,6 +114,103 @@ class AlpacaEMLService(BaseEML):
         # This will be managed by StateManager externally.
         self.state = EMLState()
 
+        # Latest snapshots for metrics
+        self._last_account: Optional[BrokerAccount] = None
+        self._last_positions: List[BrokerPosition] = []
+
+        self._init_metrics_instruments()
+
+    def _init_metrics_instruments(self) -> None:
+        meter = metrics.get_meter("portfolio_builder.v2.eml")
+
+        def _obs_account_value(field: str) -> list[Observation]:
+            acct = self._last_account
+            if acct is None:
+                return [Observation(0.0, {"known": False})]
+            v = getattr(acct, field, None)
+            if v is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                return [Observation(float(v), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
+
+        meter.create_observable_gauge(
+            name="eml.account_equity",
+            description="Latest broker account equity",
+            callbacks=[lambda _: _obs_account_value("equity")],
+        )
+        meter.create_observable_gauge(
+            name="eml.account_portfolio_value",
+            description="Latest broker account portfolio value",
+            callbacks=[lambda _: _obs_account_value("portfolio_value")],
+        )
+        meter.create_observable_gauge(
+            name="eml.account_cash",
+            description="Latest broker account cash balance",
+            callbacks=[lambda _: _obs_account_value("cash")],
+        )
+
+        def _obs_positions(field: str) -> list[Observation]:
+            out: list[Observation] = []
+            for p in list(self._last_positions or []):
+                sym = str(getattr(p, "symbol", "") or "").strip().upper()
+                if not sym:
+                    continue
+                v = getattr(p, field, None)
+                if v is None:
+                    continue
+                try:
+                    out.append(Observation(float(v), {"symbol": sym}))
+                except Exception:
+                    continue
+            return out
+
+        meter.create_observable_gauge(
+            name="eml.position_qty",
+            description="Latest broker position quantity per symbol",
+            callbacks=[lambda _: _obs_positions("qty")],
+        )
+        meter.create_observable_gauge(
+            name="eml.position_market_value",
+            description="Latest broker position market value per symbol",
+            callbacks=[lambda _: _obs_positions("market_value")],
+        )
+        meter.create_observable_gauge(
+            name="eml.position_unrealized_pnl",
+            description="Latest broker position unrealized P&L per symbol",
+            callbacks=[lambda _: _obs_positions("unrealized_pl")],
+        )
+
+        def _obs_pending_rebalances(_: object) -> list[Observation]:
+            pending = getattr(self.state, "pending_rebalance_requests", None)
+            if isinstance(pending, Mapping):
+                return [Observation(float(len(pending)))]
+            return [Observation(0.0)]
+
+        meter.create_observable_gauge(
+            name="eml.pending_rebalance_plans",
+            description="Number of pending rebalance plans recorded in EML state",
+            callbacks=[_obs_pending_rebalances],
+        )
+
+        def _obs_failed_rebalances(_: object) -> list[Observation]:
+            failed = getattr(self.state, "failed_rebalance_requests", None)
+            if isinstance(failed, list):
+                return [Observation(float(len(failed)))]
+            return [Observation(0.0)]
+
+        meter.create_observable_gauge(
+            name="eml.failed_rebalance_requests",
+            description="Number of failed rebalance requests recorded in EML state",
+            callbacks=[_obs_failed_rebalances],
+        )
+
+        self._orders_submitted_counter = meter.create_counter(
+            name="eml.orders_submitted",
+            description="Count of broker orders submitted by EML",
+        )
+
     def _build_trading_client(self):
         if not self._api_key or not self._secret_key:
             raise RuntimeError(
@@ -171,6 +271,11 @@ class AlpacaEMLService(BaseEML):
                 positions: List[BrokerPosition] = []
                 if self.config.include_positions:
                     positions = await self._run_in_thread(self._list_positions)
+
+                # Update latest snapshots for metrics.
+                self._last_account = account
+                self._last_positions = list(positions or [])
+
                 event = AccountSnapshotEvent(
                     ts=time.time(),
                     source=self.name,
@@ -983,6 +1088,13 @@ class AlpacaEMLService(BaseEML):
 
         oid = getattr(submitted, "id", None)
         if oid:
+            self._orders_submitted_counter.add(
+                1,
+                {
+                    "symbol": self._normalize_symbol(symbol),
+                    "side": str(side).strip().lower(),
+                },
+            )
             return str(oid)
         raise RuntimeError("Alpaca submit_order returned no order id")
 
