@@ -15,16 +15,22 @@ route:
   repeat_interval: 4h
 
   routes:
-  # Page-able alerts: route these to oncall (Grafana OnCall or any webhook-compatible service).
+  # Page-able alerts: route these to pushover-critical.
   - matchers:
     - severity="page"
-    receiver: "oncall"
+    receiver: "pushover-critical"
     continue: false
 
 receivers:
 - name: "null"
 
-- name: "oncall"
-  webhook_configs:
-  - url: "https://REPLACE_ME_WITH_GRAFANA_ONCALL_WEBHOOK"
-    send_resolved: true
+- name: pushover-critical
+  pushover_configs:
+  - user_key: "<PUSHOVER_USER_KEY>"
+    token: "<PUSHOVER_APP_TOKEN>"
+    title: "{{ .CommonAnnotations.summary }}"
+    message: >-
+      {{ range .Alerts -}} {{ .Annotations.description }} {{ end }}
+    priority: 1 # high priority
+    retry: 60s # retry every 60s
+    expire: 1h # keep retrying for 1 hour
