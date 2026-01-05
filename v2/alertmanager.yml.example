@@ -1,0 +1,30 @@
+# Copy this file to `alertmanager.yml` and set your real oncall webhook URL.
+#
+# IMPORTANT:
+# - The prom/alertmanager image used in this repo does NOT expand env vars inside
+#   this YAML, so put the literal webhook URL here.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "null"
+  group_by: [ "alertname", "service" ]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+  # Page-able alerts: route these to oncall (Grafana OnCall or any webhook-compatible service).
+  - matchers:
+    - severity="page"
+    receiver: "oncall"
+    continue: false
+
+receivers:
+- name: "null"
+
+- name: "oncall"
+  webhook_configs:
+  - url: "https://REPLACE_ME_WITH_GRAFANA_ONCALL_WEBHOOK"
+    send_resolved: true

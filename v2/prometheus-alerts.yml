@@ -1,0 +1,24 @@
+groups:
+- name: portfolio_builder_eml
+  rules:
+  - alert: EMLFailedRebalanceRequests
+    expr: eml_failed_rebalance_requests{deployment_environment="live"} > 0
+    for: 5m
+    labels:
+      severity: page
+      service: eml
+      deployment_environment: live
+    annotations:
+      summary: "EML has failed rebalance request(s) (live)"
+      description: "There is at least one failed rebalance request recorded in EML state for LIVE (current value: {{ $value }}). Manual intervention may be required."
+
+  - alert: EMLFailedRebalanceRequests
+    expr: eml_failed_rebalance_requests{deployment_environment="paper"} > 0
+    for: 5m
+    labels:
+      severity: warning
+      service: eml
+      deployment_environment: paper
+    annotations:
+      summary: "EML has failed rebalance request(s) (paper)"
+      description: "There is at least one failed rebalance request recorded in EML state for PAPER (current value: {{ $value }})."

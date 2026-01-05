@@ -28,3 +28,6 @@ orb_*.csv
 # Production runtime data
 prom_data/
 grafana_data/
+
+# Local Alertmanager config (contains webhook endpoints)
+v2/alertmanager.yml

@@ -25,6 +25,14 @@ if [[ -z "$action" ]]; then
 fi
 shift 1 || true
 
+# Fail fast with actionable errors for required local configs.
+if [[ "$action" == "up" ]]; then
+	if [[ ! -f "alertmanager.yml" ]]; then
+		echo "Missing alertmanager.yml; create it from alertmanager.yml.example" >&2
+		exit 1
+	fi
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
 	echo "Docker not found (missing 'docker' command)." >&2
 	exit 1
