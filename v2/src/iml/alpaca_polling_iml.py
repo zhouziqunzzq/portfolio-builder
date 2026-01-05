@@ -143,10 +143,29 @@ class AlpacaPollingIMLService(BaseIMLService):
 
         # Metrics
         self._market_is_open: Optional[bool] = None
+        self._is_fetching_new_bars: bool = False
         self._init_metrics_instruments()
 
     def _init_metrics_instruments(self) -> None:
         meter = metrics.get_meter("portfolio_builder.v2.iml")
+
+        self._heartbeat_counter = meter.create_counter(
+            name="iml.loop_heartbeat",
+            description=(
+                "Heartbeat counter incremented once per IML background loop iteration"
+            ),
+        )
+
+        self._loop_duration_hist = meter.create_histogram(
+            name="iml.loop_duration_seconds",
+            description="Wall-clock duration of each IML background loop iteration",
+            unit="s",
+        )
+
+        self._bar_fetch_attempts_counter = meter.create_counter(
+            name="iml.bar_fetch_attempts",
+            description="Counts attempts to fetch new bars (only when a fetch is triggered)",
+        )
 
         def observe_market_open(_: object) -> list[Observation]:
             is_open = self._market_is_open
@@ -154,10 +173,54 @@ class AlpacaPollingIMLService(BaseIMLService):
                 return [Observation(0, {"known": False})]
             return [Observation(1 if is_open else 0, {"known": True})]
 
+        def observe_fetching_new_bars(_: object) -> list[Observation]:
+            return [Observation(1 if self._is_fetching_new_bars else 0)]
+
+        def observe_last_bar_refresh_age(_: object) -> list[Observation]:
+            last = getattr(self.state, "last_bar_refresh_time", None)
+            if last is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                now = to_canonical_eastern_naive(
+                    datetime.now().astimezone()
+                ).to_pydatetime()
+                age = (now - last).total_seconds()
+                return [Observation(max(0.0, float(age)), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
+
+        def observe_last_market_clock_age(_: object) -> list[Observation]:
+            clk = self._last_market_clock
+            if clk is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                age = time.time() - float(getattr(clk, "ts", 0.0) or 0.0)
+                return [Observation(max(0.0, float(age)), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
+
         meter.create_observable_gauge(
             name="iml.market_is_open",
             description="Latest polled Alpaca market clock open status (1=open, 0=closed)",
             callbacks=[observe_market_open],
+        )
+
+        meter.create_observable_gauge(
+            name="iml.fetching_new_bars",
+            description="1 while IML is actively fetching new bars, else 0",
+            callbacks=[observe_fetching_new_bars],
+        )
+
+        meter.create_observable_gauge(
+            name="iml.last_bar_refresh_age_seconds",
+            description="Age in seconds since the last successful bar refresh timestamp stored in state",
+            callbacks=[observe_last_bar_refresh_age],
+        )
+
+        meter.create_observable_gauge(
+            name="iml.last_market_clock_age_seconds",
+            description="Age in seconds since the last successful market clock poll",
+            callbacks=[observe_last_market_clock_age],
         )
 
     def _build_trading_client(self):
@@ -183,8 +246,10 @@ class AlpacaPollingIMLService(BaseIMLService):
     async def _run_loop(self) -> None:
         """Main IML event loop."""
 
-        # Emit one immediately on startup.
         while self._running:
+            iteration_start = time.monotonic()
+            iteration_success = True
+            iteration_cancelled = False
             try:
                 # Get current time in local timezone
                 now: datetime = datetime.now().astimezone()
@@ -222,11 +287,22 @@ class AlpacaPollingIMLService(BaseIMLService):
                 self.log.debug(f"Sleeping for {self._poll_interval_seconds} seconds")
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
+                iteration_cancelled = True
                 raise
             except Exception:
+                iteration_success = False
                 # Keep running; transient API/network issues are expected.
                 self.log.exception("Error in AlpacaPollingIMLService main loop")
                 await asyncio.sleep(min(30.0, max(1.0, self._poll_interval_seconds)))
+            finally:
+                # Count one heartbeat per finished iteration, labeled by success.
+                # Skip if shutting down; also avoid double-counting on cancellation.
+                if self._running and not iteration_cancelled:
+                    self._heartbeat_counter.add(1, {"success": iteration_success})
+                    self._loop_duration_hist.record(
+                        max(0.0, float(time.monotonic() - iteration_start)),
+                        {"success": iteration_success},
+                    )
 
     async def get_market_clock(self) -> MarketClockEvent:
         """Fetch clock from Alpaca (runs sync client in a worker thread)."""
@@ -289,14 +365,24 @@ class AlpacaPollingIMLService(BaseIMLService):
         start_ts = end_ts - pd.Timedelta(weeks=self.config.bar_fetch_lookback_weeks)
         start = start_ts.to_pydatetime()
         end = end_ts.to_pydatetime()
-        has_new_bars = await self._run_in_thread(
-            self._fetch_new_bars,
-            mds,
-            tickers,
-            start,
-            end,
-            now=now,
-        )
+
+        bar_fetch_success = True
+        self._is_fetching_new_bars = True
+        try:
+            has_new_bars = await self._run_in_thread(
+                self._fetch_new_bars,
+                mds,
+                tickers,
+                start,
+                end,
+                now=now,
+            )
+        except Exception:
+            bar_fetch_success = False
+            raise
+        finally:
+            self._is_fetching_new_bars = False
+            self._bar_fetch_attempts_counter.add(1, {"success": bar_fetch_success})
 
         return has_new_bars, True  # bars_checked=True
 

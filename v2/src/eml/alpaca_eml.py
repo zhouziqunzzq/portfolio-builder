@@ -123,6 +123,45 @@ class AlpacaEMLService(BaseEML):
     def _init_metrics_instruments(self) -> None:
         meter = metrics.get_meter("portfolio_builder.v2.eml")
 
+        self._heartbeat_counter = meter.create_counter(
+            name="eml.loop_heartbeat",
+            description=(
+                "Heartbeat counter incremented once per EML background loop iteration"
+            ),
+        )
+
+        self._loop_duration_hist = meter.create_histogram(
+            name="eml.loop_duration_seconds",
+            description="Wall-clock duration of each EML background loop iteration",
+            unit="s",
+        )
+
+        self._rebalance_executions_counter = meter.create_counter(
+            name="eml.rebalance_executions_total",
+            description="Counts rebalance execution outcomes",
+        )
+
+        self._rebalance_execution_errors_counter = meter.create_counter(
+            name="eml.rebalance_execution_errors",
+            description="Counts errors encountered while executing rebalance plans",
+        )
+
+        self._executed_rebalance_count_counter = meter.create_counter(
+            name="eml.executed_rebalance_count",
+            description="Counts rebalance plans marked executed in EML state",
+        )
+
+        self._order_fills_counter = meter.create_counter(
+            name="eml.order_fills_total",
+            description="Count of broker orders filled during EML execution",
+        )
+
+        self._order_fill_latency_hist = meter.create_histogram(
+            name="eml.order_fill_latency_seconds",
+            description="Latency waiting for broker orders to fill",
+            unit="s",
+        )
+
         def _obs_account_value(field: str) -> list[Observation]:
             acct = self._last_account
             if acct is None:
@@ -206,6 +245,28 @@ class AlpacaEMLService(BaseEML):
             callbacks=[_obs_failed_rebalances],
         )
 
+        def _obs_pending_execution_retries(_: object) -> list[Observation]:
+            pending = getattr(self.state, "pending_rebalance_requests", None)
+            if not isinstance(pending, Mapping) or not pending:
+                return [Observation(0.0)]
+
+            max_failures = 0
+            for payload in dict(pending).values():
+                if not isinstance(payload, Mapping):
+                    continue
+                v = payload.get("execution_failures", 0)
+                try:
+                    max_failures = max(max_failures, int(v))
+                except Exception:
+                    continue
+            return [Observation(float(max_failures))]
+
+        meter.create_observable_gauge(
+            name="eml.pending_execution_retries",
+            description="Maximum execution retry count among pending rebalance plans",
+            callbacks=[_obs_pending_execution_retries],
+        )
+
         self._orders_submitted_counter = meter.create_counter(
             name="eml.orders_submitted",
             description="Count of broker orders submitted by EML",
@@ -258,6 +319,9 @@ class AlpacaEMLService(BaseEML):
 
     async def _run_loop(self) -> None:
         while self._running:
+            iteration_start = time.monotonic()
+            iteration_success = True
+            iteration_cancelled = False
             try:
                 failed = getattr(self.state, "failed_rebalance_requests", None)
                 if isinstance(failed, list) and failed:
@@ -297,11 +361,21 @@ class AlpacaEMLService(BaseEML):
 
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
+                iteration_cancelled = True
                 raise
             except Exception:
+                iteration_success = False
                 # Keep running; transient API/network issues are expected.
                 self.log.exception("Error in AlpacaEMLService main loop")
                 await asyncio.sleep(min(30.0, max(1.0, self._poll_interval_seconds)))
+            finally:
+                # Count one heartbeat per finished iteration, labeled by success.
+                if self._running and not iteration_cancelled:
+                    self._heartbeat_counter.add(1, {"success": iteration_success})
+                    self._loop_duration_hist.record(
+                        max(0.0, float(time.monotonic() - iteration_start)),
+                        {"success": iteration_success},
+                    )
 
     def _cancel_all_open_orders(self) -> None:
         """Cancel all currently-open orders at the broker (best-effort)."""
@@ -450,6 +524,13 @@ class AlpacaEMLService(BaseEML):
                 "Skipping pending rebalance execution: market clock unknown (pending=%d)",
                 len(pending),
             )
+            try:
+                self._rebalance_executions_counter.add(
+                    len(pending),
+                    {"result": "skipped_clock_unknown", "service": self.name},
+                )
+            except Exception:
+                pass
             return
 
         is_open = getattr(clock, "is_market_open", None)
@@ -461,6 +542,13 @@ class AlpacaEMLService(BaseEML):
                 getattr(clock, "next_market_open", None),
                 len(pending),
             )
+            try:
+                self._rebalance_executions_counter.add(
+                    len(pending),
+                    {"result": "skipped_market_closed", "service": self.name},
+                )
+            except Exception:
+                pass
             return
 
         # Process oldest-first for determinism.
@@ -488,6 +576,15 @@ class AlpacaEMLService(BaseEML):
                 event = self._rebalance_request_from_state(payload)
                 self._execute_rebalance_plan(event)
                 self.state.mark_rebalance_executed(rebalance_id=rebalance_id)
+                try:
+                    self._rebalance_executions_counter.add(
+                        1, {"result": "success", "service": self.name}
+                    )
+                    self._executed_rebalance_count_counter.add(
+                        1, {"service": self.name}
+                    )
+                except Exception:
+                    pass
                 self.log.info(
                     "Rebalance executed successfully: rebalance_id=%s",
                     rebalance_id,
@@ -505,6 +602,15 @@ class AlpacaEMLService(BaseEML):
                     "Failed executing pending rebalance plan: rebalance_id=%s",
                     rebalance_id,
                 )
+                try:
+                    self._rebalance_executions_counter.add(
+                        1, {"result": "error", "service": self.name}
+                    )
+                    self._rebalance_execution_errors_counter.add(
+                        1, {"service": self.name}
+                    )
+                except Exception:
+                    pass
 
                 # Retry accounting + cap -> move to failed list and clear pending
                 try:
@@ -1141,6 +1247,14 @@ class AlpacaEMLService(BaseEML):
             if OrderStatus is not None:
                 try:
                     if status == OrderStatus.FILLED:
+                        try:
+                            latency = max(0.0, float(now_fn()) - start)
+                            self._order_fills_counter.add(1, {"service": self.name})
+                            self._order_fill_latency_hist.record(
+                                float(latency), {"service": self.name}
+                            )
+                        except Exception:
+                            pass
                         return
                     if status in {
                         OrderStatus.CANCELED,
@@ -1155,6 +1269,14 @@ class AlpacaEMLService(BaseEML):
                     pass
 
             if status_s == "filled":
+                try:
+                    latency = max(0.0, float(now_fn()) - start)
+                    self._order_fills_counter.add(1, {"service": self.name})
+                    self._order_fill_latency_hist.record(
+                        float(latency), {"service": self.name}
+                    )
+                except Exception:
+                    pass
                 return
             if status_s in {"canceled", "cancelled", "rejected", "expired"}:
                 raise RuntimeError(

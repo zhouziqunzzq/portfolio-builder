@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+import time
 import uuid
 from pathlib import Path
 import sys
@@ -139,10 +140,72 @@ class MultiSleeveATService(BaseATService):
 
         # Metrics
         self._should_rebalance_last: Optional[bool] = None
+        self._gate_account_snapshot_present: Optional[bool] = None
+        self._gate_market_clock_present: Optional[bool] = None
+        self._gate_market_data_fresh: Optional[bool] = None
+        self._gate_allocator_wants_rebalance: Optional[bool] = None
+        self._gate_market_open_now: Optional[bool] = None
+        self._gate_market_open_today: Optional[bool] = None
         self._init_metrics_instruments()
 
     def _init_metrics_instruments(self) -> None:
         meter = metrics.get_meter("portfolio_builder.v2.at")
+
+        self._heartbeat_counter = meter.create_counter(
+            name="at.loop_heartbeat",
+            description=(
+                "Heartbeat counter incremented once per AT background loop iteration"
+            ),
+        )
+
+        self._loop_duration_hist = meter.create_histogram(
+            name="at.loop_duration_seconds",
+            description="Wall-clock duration of each AT background loop iteration",
+            unit="s",
+        )
+
+        self._rebalance_plan_generation_duration_hist = meter.create_histogram(
+            name="at.rebalance_plan_generation_duration_seconds",
+            description="Wall-clock duration of AT rebalance plan generation",
+            unit="s",
+        )
+
+        self._rebalance_plan_generation_errors_counter = meter.create_counter(
+            name="at.rebalance_plan_generation_errors",
+            description="Counts errors encountered while generating rebalance plans",
+        )
+
+        self._target_weight_count_hist = meter.create_histogram(
+            name="at.target_weight_count",
+            description="Number of symbols in generated target weight maps",
+            unit="1",
+        )
+
+        def _obs_bool(v: Optional[bool]) -> list[Observation]:
+            if v is None:
+                return [Observation(0, {"known": False})]
+            return [Observation(1 if v else 0, {"known": True})]
+
+        def observe_time_since_last_rebalance(_: object) -> list[Observation]:
+            last = getattr(self.state, "last_rebalance_ts", None)
+            if last is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                # `last` is tz-naive; treat as local wall time consistently.
+                age = float(datetime.now().timestamp() - last.timestamp())
+                return [Observation(max(0.0, age), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
+
+        def observe_last_market_data_age(_: object) -> list[Observation]:
+            last = getattr(self.state, "last_market_data_ts", None)
+            if last is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                age = float(datetime.now().timestamp() - last.timestamp())
+                return [Observation(max(0.0, age), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
 
         def observe_has_pending_rebalance(_: object) -> list[Observation]:
             has_pending = (
@@ -169,6 +232,49 @@ class MultiSleeveATService(BaseATService):
             callbacks=[observe_should_rebalance],
         )
 
+        meter.create_observable_gauge(
+            name="at.time_since_last_rebalance_seconds",
+            description="Seconds since the last confirmed rebalance (AT state)",
+            callbacks=[observe_time_since_last_rebalance],
+        )
+
+        meter.create_observable_gauge(
+            name="at.last_market_data_age_seconds",
+            description="Seconds since AT last received BarsCheckedEvent (AT state)",
+            callbacks=[observe_last_market_data_age],
+        )
+
+        meter.create_observable_gauge(
+            name="at.gate_account_snapshot_present",
+            description="Gating: 1 if AT has a recent AccountSnapshotEvent, else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_account_snapshot_present)],
+        )
+        meter.create_observable_gauge(
+            name="at.gate_market_clock_present",
+            description="Gating: 1 if AT has a MarketClockEvent, else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_market_clock_present)],
+        )
+        meter.create_observable_gauge(
+            name="at.gate_market_data_fresh",
+            description="Gating: 1 if market data is fresh today (BarsCheckedEvent), else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_market_data_fresh)],
+        )
+        meter.create_observable_gauge(
+            name="at.gate_allocator_wants_rebalance",
+            description="Gating: 1 if allocator indicates a rebalance is needed, else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_allocator_wants_rebalance)],
+        )
+        meter.create_observable_gauge(
+            name="at.gate_market_open_now",
+            description="Gating: 1 if market is open now (per MarketClockEvent), else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_market_open_now)],
+        )
+        meter.create_observable_gauge(
+            name="at.gate_market_open_today",
+            description="Gating: 1 if market will be open later today (per MarketClockEvent), else 0",
+            callbacks=[lambda _: _obs_bool(self._gate_market_open_today)],
+        )
+
         self._rebalance_plan_generated_counter = meter.create_counter(
             name="at.rebalance_plan_generated",
             description="Counts successful generation of new rebalance plans",
@@ -178,6 +284,9 @@ class MultiSleeveATService(BaseATService):
         """Background loop."""
 
         while self._running:
+            iteration_start = time.monotonic()
+            iteration_success = True
+            iteration_cancelled = False
             try:
                 now_native = datetime.now().astimezone()
                 # Convert to tz-naive US/Eastern wall time
@@ -222,7 +331,31 @@ class MultiSleeveATService(BaseATService):
                 self._should_rebalance_last = bool(should_rebalance)
                 self.log.debug("Rebalance check: should_rebalance=%s", should_rebalance)
                 if should_rebalance:
-                    event = await self._generate_rebalance_plan_request(now=now)
+                    gen_start = time.monotonic()
+                    try:
+                        event = await self._generate_rebalance_plan_request(now=now)
+                    except Exception:
+                        self._rebalance_plan_generation_errors_counter.add(
+                            1, {"service": self.name}
+                        )
+                        self._rebalance_plan_generation_duration_hist.record(
+                            max(0.0, float(time.monotonic() - gen_start)),
+                            {"success": False, "service": self.name},
+                        )
+                        raise
+                    else:
+                        self._rebalance_plan_generation_duration_hist.record(
+                            max(0.0, float(time.monotonic() - gen_start)),
+                            {"success": True, "service": self.name},
+                        )
+                        try:
+                            n_weights = len(getattr(event, "weights", {}) or {})
+                            self._target_weight_count_hist.record(
+                                float(n_weights), {"service": self.name}
+                            )
+                        except Exception:
+                            # Never block live operation on metrics.
+                            pass
                     # Update state with pending rebalance info first
                     self.state.pending_rebalance_ts = now.to_pydatetime()
                     self.state.pending_rebalance_id = event.rebalance_id
@@ -249,10 +382,20 @@ class MultiSleeveATService(BaseATService):
 
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
+                iteration_cancelled = True
                 raise
             except Exception:
+                iteration_success = False
                 self.log.exception("Error in MultiSleeveATService main loop")
                 await asyncio.sleep(self._poll_interval_seconds)
+            finally:
+                # Count one heartbeat per finished iteration, labeled by success.
+                if self._running and not iteration_cancelled:
+                    self._heartbeat_counter.add(1, {"success": iteration_success})
+                    self._loop_duration_hist.record(
+                        max(0.0, float(time.monotonic() - iteration_start)),
+                        {"success": iteration_success},
+                    )
 
     async def _handle_event(self, event: BaseEvent) -> None:
         self.log.debug(
@@ -348,12 +491,22 @@ class MultiSleeveATService(BaseATService):
             now_native = datetime.now().astimezone()
             now = to_canonical_eastern_naive(pd.Timestamp(now_native))
 
+        # Reset gating state for this evaluation.
+        self._gate_account_snapshot_present = None
+        self._gate_market_clock_present = None
+        self._gate_market_data_fresh = None
+        self._gate_allocator_wants_rebalance = None
+        self._gate_market_open_now = None
+        self._gate_market_open_today = None
+
         # Ensure we have a valid account snapshot with adj_equity
         if self._account_snapshot is None:
+            self._gate_account_snapshot_present = False
             self.log.warning(
                 "Refusing to rebalance: no AccountSnapshotEvent received yet (need account.adj_equity for AUM)"
             )
             return False
+        self._gate_account_snapshot_present = True
         aum = getattr(self._account_snapshot.account, "adj_equity", None)
         if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
             self.log.warning(
@@ -368,14 +521,17 @@ class MultiSleeveATService(BaseATService):
             raise RuntimeError("MultiSleeveAllocator not found")
 
         allocator_wants_rebalance = allocator.should_rebalance(now=now)
+        self._gate_allocator_wants_rebalance = bool(allocator_wants_rebalance)
         self.log.debug(
             "Allocator rebalance check: allocator_wants_rebalance=%s",
             allocator_wants_rebalance,
         )
 
+        self._gate_market_clock_present = self._market_clock is not None
         is_market_open_now = (
             self._market_clock.is_market_open if self._market_clock else False
         )
+        self._gate_market_open_now = bool(is_market_open_now)
         self.log.debug("Market open now: %s", is_market_open_now)
 
         is_market_open_today = (
@@ -383,6 +539,7 @@ class MultiSleeveATService(BaseATService):
             if self._market_clock and self._market_clock.next_market_open
             else False
         )
+        self._gate_market_open_today = bool(is_market_open_today)
         self.log.debug(
             "Market open today: %s; next_market_open_date=%s; now_date=%s",
             is_market_open_today,
@@ -400,6 +557,7 @@ class MultiSleeveATService(BaseATService):
             self.state.last_market_data_ts is not None
             and self.state.last_market_data_ts.date() == now.date()
         )
+        self._gate_market_data_fresh = bool(is_market_data_fresh)
         self.log.debug(
             "Market data freshness check: is_market_data_fresh=%s last_market_data_ts=%s",
             is_market_data_fresh,
