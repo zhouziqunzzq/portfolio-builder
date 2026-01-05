@@ -31,6 +31,6 @@ receivers:
     title: "{{ .CommonAnnotations.summary }}"
     message: >-
       {{ range .Alerts -}} {{ .Annotations.description }} {{ end }}
-    priority: 1 # high priority
+    priority: "1" # high priority
     retry: 60s # retry every 60s
     expire: 1h # keep retrying for 1 hour
