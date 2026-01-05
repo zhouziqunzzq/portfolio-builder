@@ -6,3 +6,10 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./config:/app/v2/config:ro
+    networks:
+      - pb_obs_net
+
+networks:
+  pb_obs_net:
+    external: true
+    name: pb_obs_net

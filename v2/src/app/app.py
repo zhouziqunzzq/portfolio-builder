@@ -32,14 +32,36 @@ def _must_init_otel_metrics() -> None:
     This intentionally fails fast when OTLP export is configured but the
     OpenTelemetry SDK/exporter dependencies are missing.
 
-    Environment variables:
-    - OTEL_EXPORTER_OTLP_ENDPOINT: e.g. http://otelcol:4317
+    Environment variables (subset):
+    - OTEL_EXPORTER_OTLP_ENDPOINT: e.g. otelcol:4317 (grpc) or http://otelcol:4317 (will be normalized)
+    - OTEL_EXPORTER_OTLP_PROTOCOL: if set, must be 'grpc' (this code uses the gRPC exporter)
+    - OTEL_METRICS_EXPORTER: if set to 'none', metrics export is disabled
     - OTEL_SERVICE_NAME: optional; defaults to 'portfolio-builder-v2'
+    - OTEL_RESOURCE_ATTRIBUTES: optional comma-separated k=v pairs (e.g. deployment.environment=live)
     """
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
     if not endpoint:
         return
+
+    metrics_exporter_raw = os.environ.get("OTEL_METRICS_EXPORTER")
+    metrics_exporter = (
+        "otlp" if metrics_exporter_raw is None else metrics_exporter_raw.strip().lower()
+    )
+    if metrics_exporter in {"none"}:
+        return
+    if metrics_exporter in {""}:
+        metrics_exporter = "otlp"
+    if metrics_exporter not in {"otlp"}:
+        raise RuntimeError(
+            f"Unsupported OTEL_METRICS_EXPORTER={metrics_exporter!r}; this app only supports 'otlp' or 'none'."
+        )
+
+    protocol = (os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL") or "grpc").strip().lower()
+    if protocol not in {"grpc"}:
+        raise RuntimeError(
+            f"Unsupported OTEL_EXPORTER_OTLP_PROTOCOL={protocol!r}; this app only supports 'grpc'."
+        )
 
     try:
         from opentelemetry import metrics
@@ -56,10 +78,41 @@ def _must_init_otel_metrics() -> None:
             "Install: opentelemetry-api, opentelemetry-sdk, opentelemetry-exporter-otlp-proto-grpc"
         ) from e
 
-    service_name = os.environ.get("OTEL_SERVICE_NAME", "portfolio-builder-v2")
-    resource = Resource.create({"service.name": service_name})
+    def _parse_resource_attributes(raw: str) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for part in (raw or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if not k:
+                continue
+            out[k] = v
+        return out
 
-    exporter = OTLPMetricExporter(endpoint=endpoint)
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "portfolio-builder-v2")
+    attrs = _parse_resource_attributes(os.environ.get("OTEL_RESOURCE_ATTRIBUTES", ""))
+    # Ensure service.name is set deterministically.
+    attrs["service.name"] = service_name
+    resource = Resource.create(attrs)
+
+    endpoint_s = endpoint.strip()
+    insecure: bool
+    if endpoint_s.startswith("http://"):
+        endpoint_s = endpoint_s[len("http://") :]
+        insecure = True
+    elif endpoint_s.startswith("https://"):
+        endpoint_s = endpoint_s[len("https://") :]
+        insecure = False
+    else:
+        # Within Docker networks we typically use insecure gRPC.
+        insecure = True
+
+    exporter = OTLPMetricExporter(endpoint=endpoint_s, insecure=insecure)
     reader = PeriodicExportingMetricReader(exporter)
     provider = MeterProvider(resource=resource, metric_readers=[reader])
     metrics.set_meter_provider(provider)

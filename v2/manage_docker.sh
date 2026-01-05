@@ -9,6 +9,7 @@ usage() {
 	echo "  $0 {live|paper} {up|down|restart|ps} [args...]" >&2
 	echo "" >&2
 	echo "Examples:" >&2
+	echo "  ./manage_obs.sh up -d" >&2
 	echo "  $0 paper up -d --remove-orphans" >&2
 	echo "  $0 paper restart" >&2
 	echo "  $0 live down" >&2
@@ -34,14 +35,12 @@ case "$env_name" in
 		env_file="$script_dir/.env.live_alpaca"
 		env_example_file="$script_dir/.env.live_alpaca.example"
 		app_compose="docker-compose.live.yml"
-		obs_ports_compose="docker-compose.obs.live.yml"
 		;;
 	paper)
 		project="portfolio_builder_paper"
 		env_file="$script_dir/.env.paper_alpaca"
 		env_example_file="$script_dir/.env.paper_alpaca.example"
 		app_compose="docker-compose.paper.yml"
-		obs_ports_compose="docker-compose.obs.paper.yml"
 		;;
 	*)
 		echo "Unknown environment: $env_name" >&2
@@ -50,13 +49,11 @@ case "$env_name" in
 		;;
 esac
 
-# Compose file stack (base + env override + obs + env-specific ports override)
+# Compose file stack (base + env override)
 compose_args=(
 	-p "$project"
 	-f docker-compose.yml
 	-f "$app_compose"
-	-f docker-compose.obs.yml
-	-f "$obs_ports_compose"
 )
 
 case "$action" in
@@ -68,6 +65,12 @@ case "$action" in
 				echo "  cp '$env_example_file' '$env_file'" >&2
 			fi
 			echo "Then fill in the required Alpaca credentials and settings." >&2
+			exit 1
+		fi
+		if ! docker network inspect pb_obs_net >/dev/null 2>&1; then
+			echo "Missing Docker network 'pb_obs_net' (global observability network)." >&2
+			echo "Start the global observability stack first:" >&2
+			echo "  ./manage_obs.sh up -d" >&2
 			exit 1
 		fi
 		exec docker compose "${compose_args[@]}" up --build "$@"

@@ -4,11 +4,10 @@ services:
     command: [ "--config=/etc/otelcol-config.yml" ]
     volumes:
       - ./otelcol-config.yml:/etc/otelcol-config.yml:ro
-    # For internal use only (within Docker network), you don't need to publish ports.
-    # Publish to localhost only if you want to debug from the host.
-    # ports:
-    #   - "127.0.0.1:4317:4317"
-    #   - "127.0.0.1:4318:4318"
+    networks:
+      pb_obs_net:
+        aliases:
+          - otelcol
     restart: unless-stopped
 
   prometheus:
@@ -21,6 +20,10 @@ services:
       - prom_data:/prometheus
     depends_on:
       - otelcol
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - pb_obs_net
     restart: unless-stopped
 
   grafana:
@@ -31,8 +34,16 @@ services:
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - pb_obs_net
     restart: unless-stopped
 
 volumes:
   prom_data:
   grafana_data:
+
+networks:
+  pb_obs_net:
+    name: pb_obs_net
