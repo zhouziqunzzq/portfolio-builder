@@ -21,6 +21,7 @@ orb_*.csv
 # Production environment files
 .env
 .env.*
+!.env.example
 !.env.*.example
 .env_*
 !.env_*.example
@@ -31,3 +32,6 @@ grafana_data/
 
 # Local Alertmanager config (contains webhook endpoints)
 v2/alertmanager.yml
+
+# IBKR secrets
+*.pem
