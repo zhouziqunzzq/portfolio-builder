@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from datetime import datetime, timedelta
 import inspect
 
@@ -257,5 +258,5 @@ def test_generate_cleanup_builds_intents_for_residuals():
     assert event.intents["BBB"].reason == "below_min_market_value"
     assert event.intents["DDD"].reason == "below_min_market_value,below_min_qty"
 
-    assert event.intents["AAA"].observed_qty == pytest.approx(0.0005)
-    assert event.intents["AAA"].observed_market_value == pytest.approx(10.0)
+    assert event.intents["AAA"].observed_qty == pytest.approx(Decimal("0.0005"))
+    assert event.intents["AAA"].observed_market_value == pytest.approx(Decimal("10.0"))

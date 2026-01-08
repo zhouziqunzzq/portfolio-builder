@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Dict, List, Optional
 from .topic import Topic
 
@@ -99,10 +100,10 @@ class PositionCleanupIntent:
     reason: str  # e.g., "below_min_size", "delisted", etc.
 
     # Optional audit fields
-    observed_qty: Optional[float] = None
-    qty_threshold: Optional[float] = None
-    observed_market_value: Optional[float] = None
-    market_value_threshold: Optional[float] = None
+    observed_qty: Optional[Decimal] = None
+    qty_threshold: Optional[Decimal] = None
+    observed_market_value: Optional[Decimal] = None
+    market_value_threshold: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)

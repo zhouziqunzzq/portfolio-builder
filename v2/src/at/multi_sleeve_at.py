@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Mapping, Optional
 
+from decimal import Decimal
+
 import pandas as pd
 
 from opentelemetry import metrics
@@ -33,6 +35,7 @@ from events.events import (
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from market_data_store import MarketDataStore
+from utils.decimals import to_decimal
 from utils.tz import to_canonical_eastern_naive
 from states.base_state import BaseState
 from context.rebalance import RebalanceContext
@@ -591,8 +594,12 @@ class MultiSleeveATService(BaseATService):
             )
             return False
         self._gate_account_snapshot_present = True
-        aum = getattr(self._account_snapshot.account, "adj_equity", None)
-        if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
+        aum = self._account_snapshot.account.adj_equity
+        try:
+            aum_f = float(aum) if aum is not None else 0.0
+        except Exception:
+            aum_f = 0.0
+        if aum is None or aum_f <= 0.0:
             self.log.warning(
                 "Refusing to rebalance: invalid account.adj_equity=%s in latest AccountSnapshotEvent",
                 aum,
@@ -679,8 +686,12 @@ class MultiSleeveATService(BaseATService):
             raise RuntimeError(
                 "Cannot generate rebalance plan: no AccountSnapshotEvent received yet"
             )
-        aum = getattr(self._account_snapshot.account, "adj_equity", None)
-        if aum is None or not isinstance(aum, (int, float)) or float(aum) <= 0.0:
+        aum = self._account_snapshot.account.adj_equity
+        try:
+            aum_f = float(aum) if aum is not None else 0.0
+        except Exception:
+            aum_f = 0.0
+        if aum is None or aum_f <= 0.0:
             raise RuntimeError(
                 f"Cannot generate rebalance plan: invalid account.adj_equity={aum}"
             )
@@ -1014,6 +1025,9 @@ class MultiSleeveATService(BaseATService):
         # Identify residual positions
         market_value_threshold = self.config.position_cleanup_market_value_threshold
         qty_threshold = self.config.position_cleanup_qty_threshold
+
+        mv_thresh_d = to_decimal(market_value_threshold) or Decimal("0")
+        qty_thresh_d = to_decimal(qty_threshold) or Decimal("0")
         intents: Dict[str, PositionCleanupIntent] = {}
         tickers_in_last_rebalance_weights = set(last_weights.keys())
         for pos in positions:
@@ -1026,16 +1040,18 @@ class MultiSleeveATService(BaseATService):
                 continue
 
             ticker = pos.symbol
-            market_value = float(pos.market_value or 0.0)
-            qty = float(pos.qty or 0.0)
-            mv_below = abs(market_value) <= float(market_value_threshold)
-            qty_below = abs(qty) <= float(qty_threshold)
+            market_value_d = to_decimal(pos.market_value) or Decimal("0")
+            qty_d = to_decimal(pos.qty) or Decimal("0")
+            mv_below = abs(market_value_d) <= mv_thresh_d
+            qty_below = abs(qty_d) <= qty_thresh_d
             should_cleanup = mv_below or qty_below
             self.log.debug(
-                "Evaluating position %s for cleanup: market_value=%.4f qty=%.6f should_cleanup=%s",
+                "Evaluating position %s for cleanup: market_value=%s qty=%s mv_below=%s qty_below=%s should_cleanup=%s",
                 ticker,
-                market_value,
-                qty,
+                market_value_d,
+                qty_d,
+                mv_below,
+                qty_below,
                 should_cleanup,
             )
 
@@ -1049,10 +1065,10 @@ class MultiSleeveATService(BaseATService):
             intents[ticker] = PositionCleanupIntent(
                 ticker=ticker,
                 reason=",".join(reasons),
-                observed_qty=qty,
-                qty_threshold=qty_threshold,
-                observed_market_value=market_value,
-                market_value_threshold=market_value_threshold,
+                observed_qty=qty_d,
+                qty_threshold=qty_thresh_d,
+                observed_market_value=market_value_d,
+                market_value_threshold=mv_thresh_d,
             )
 
         self.log.debug(

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 
@@ -12,12 +13,12 @@ class BrokerAccount:
 
     id: Optional[str] = None
     status: Optional[str] = None
-    cash: Optional[float] = None
-    buying_power: Optional[float] = None
-    portfolio_value: Optional[float] = None
-    equity: Optional[float] = None
-    last_equity: Optional[float] = None
-    adj_equity: Optional[float] = None  # Adjusted equity after cash buffers, if any
+    cash: Optional[Decimal] = None
+    buying_power: Optional[Decimal] = None
+    portfolio_value: Optional[Decimal] = None
+    equity: Optional[Decimal] = None
+    last_equity: Optional[Decimal] = None
+    adj_equity: Optional[Decimal] = None  # Adjusted equity after cash buffers, if any
 
 
 @dataclass(frozen=True)
@@ -25,8 +26,8 @@ class BrokerPosition:
     """Normalized broker position snapshot."""
 
     symbol: str
-    qty: Optional[float] = None
-    market_value: Optional[float] = None
-    avg_entry_price: Optional[float] = None
+    qty: Optional[Decimal] = None
+    market_value: Optional[Decimal] = None
+    avg_entry_price: Optional[Decimal] = None
     side: Optional[str] = None
-    unrealized_pl: Optional[float] = None
+    unrealized_pl: Optional[Decimal] = None

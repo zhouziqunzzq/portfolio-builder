@@ -36,6 +36,7 @@ from runtime_manager import RuntimeManager
 from .base_eml import BaseEML
 from .config import EMLConfig
 from .state import EMLState
+from utils.decimals import to_decimal
 
 
 class EMLShutdownRequested(Exception):
@@ -931,12 +932,10 @@ class AlpacaEMLService(BaseEML):
             intents[str(sym)] = PositionCleanupIntent(
                 ticker=ticker,
                 reason=reason,
-                observed_qty=self._to_float(info.get("observed_qty")),
-                qty_threshold=self._to_float(info.get("qty_threshold")),
-                observed_market_value=self._to_float(info.get("observed_market_value")),
-                market_value_threshold=self._to_float(
-                    info.get("market_value_threshold")
-                ),
+                observed_qty=to_decimal(info.get("observed_qty")),
+                qty_threshold=to_decimal(info.get("qty_threshold")),
+                observed_market_value=to_decimal(info.get("observed_market_value")),
+                market_value_threshold=to_decimal(info.get("market_value_threshold")),
             )
 
         return PositionCleanupPlanRequestEvent(
@@ -1826,35 +1825,17 @@ class AlpacaEMLService(BaseEML):
             label="executed position cleanup",
         )
 
-    @staticmethod
-    def _to_float(v: Any) -> Optional[float]:
-        if v is None:
-            return None
-        if isinstance(v, (int, float)):
-            return float(v)
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return None
-            try:
-                return float(s)
-            except ValueError:
-                return None
-        return None
-
     def _get_account(self) -> BrokerAccount:
         acct = self._trading.get_account()
         return BrokerAccount(
             id=acct.id,
             status=acct.status,
-            cash=self._to_float(acct.cash),
-            buying_power=self._to_float(acct.buying_power),
-            portfolio_value=self._to_float(acct.portfolio_value),
-            equity=self._to_float(acct.equity),
-            last_equity=self._to_float(getattr(acct, "last_equity", None)),
-            adj_equity=self._get_equity_adj(
-                self._to_float(getattr(acct, "equity", None))
-            ),
+            cash=to_decimal(acct.cash),
+            buying_power=to_decimal(acct.buying_power),
+            portfolio_value=to_decimal(acct.portfolio_value),
+            equity=to_decimal(acct.equity),
+            last_equity=to_decimal(getattr(acct, "last_equity", None)),
+            adj_equity=self._get_equity_adj(to_decimal(getattr(acct, "equity", None))),
         )
 
     def _list_positions(self) -> List[BrokerPosition]:
@@ -1874,17 +1855,17 @@ class AlpacaEMLService(BaseEML):
             out.append(
                 BrokerPosition(
                     symbol=str(symbol),
-                    qty=self._to_float(p.qty),
-                    market_value=self._to_float(p.market_value),
-                    avg_entry_price=self._to_float(p.avg_entry_price),
+                    qty=to_decimal(p.qty),
+                    market_value=to_decimal(p.market_value),
+                    avg_entry_price=to_decimal(p.avg_entry_price),
                     side=p.side,
-                    unrealized_pl=self._to_float(p.unrealized_pl),
+                    unrealized_pl=to_decimal(p.unrealized_pl),
                 )
             )
 
         return out
 
-    def _get_equity_adj(self, equity_abs: Optional[float]) -> Optional[float]:
+    def _get_equity_adj(self, equity_abs: Optional[Decimal]) -> Optional[Decimal]:
         """Compute adjusted equity after applying cash buffer settings.
 
         Returns None if equity_abs is None.
@@ -1892,12 +1873,24 @@ class AlpacaEMLService(BaseEML):
         if equity_abs is None:
             return None
 
+        try:
+            equity_d = Decimal(str(equity_abs))
+        except Exception:
+            return None
+
         if self.config.cash_buffer_pct is not None:
-            buffer_amt = equity_abs * self.config.cash_buffer_pct
-            return max(0.0, equity_abs - buffer_amt)
+            try:
+                pct = Decimal(str(self.config.cash_buffer_pct))
+            except Exception:
+                pct = Decimal("0")
+            buffer_amt = equity_d * pct
+            return max(Decimal("0"), equity_d - buffer_amt)
 
         if self.config.cash_buffer_abs is not None:
-            buffer_amt = self.config.cash_buffer_abs
-            return max(0.0, equity_abs - buffer_amt)
+            try:
+                buffer_amt = Decimal(str(self.config.cash_buffer_abs))
+            except Exception:
+                buffer_amt = Decimal("0")
+            return max(Decimal("0"), equity_d - buffer_amt)
 
-        return equity_abs
+        return equity_d

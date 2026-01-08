@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Optional
 
 from events.events import (
@@ -253,6 +254,34 @@ class EMLState(BaseState):
     def remember_pending_position_cleanup_request(
         self, event: PositionCleanupPlanRequestEvent
     ) -> None:
+        def _json_decimal_str(v: Any) -> Optional[str]:
+            """Convert common numeric inputs into a JSON-safe decimal string.
+
+            Rationale: Python's stdlib JSON cannot serialize `Decimal`, and converting
+            to float would lose precision.
+            """
+
+            if v is None:
+                return None
+            if isinstance(v, Decimal):
+                return str(v)
+            if isinstance(v, int):
+                return str(v)
+            if isinstance(v, float):
+                # Best-effort: preserve the float's decimal string representation.
+                return str(Decimal(str(v)))
+            if isinstance(v, str):
+                s = v.strip()
+                if not s:
+                    return None
+                try:
+                    # Validate it is a decimal-like string.
+                    Decimal(s)
+                    return s
+                except Exception:
+                    return None
+            return None
+
         intents = getattr(event, "intents", None)
         intents_out: Dict[str, Dict[str, Any]] = {}
         if isinstance(intents, dict):
@@ -262,13 +291,17 @@ class EMLState(BaseState):
                 intents_out[str(sym)] = {
                     "ticker": ticker,
                     "reason": str(getattr(intent, "reason", "") or ""),
-                    "observed_qty": getattr(intent, "observed_qty", None),
-                    "qty_threshold": getattr(intent, "qty_threshold", None),
-                    "observed_market_value": getattr(
-                        intent, "observed_market_value", None
+                    "observed_qty": _json_decimal_str(
+                        getattr(intent, "observed_qty", None)
                     ),
-                    "market_value_threshold": getattr(
-                        intent, "market_value_threshold", None
+                    "qty_threshold": _json_decimal_str(
+                        getattr(intent, "qty_threshold", None)
+                    ),
+                    "observed_market_value": _json_decimal_str(
+                        getattr(intent, "observed_market_value", None)
+                    ),
+                    "market_value_threshold": _json_decimal_str(
+                        getattr(intent, "market_value_threshold", None)
                     ),
                 }
 
