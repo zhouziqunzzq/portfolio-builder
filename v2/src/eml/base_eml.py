@@ -11,7 +11,12 @@ if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from events.event_bus import EventBus
-from events.events import BaseEvent, RebalancePlanRequestEvent, MarketClockEvent
+from events.events import (
+    BaseEvent,
+    RebalancePlanRequestEvent,
+    MarketClockEvent,
+    PositionCleanupPlanRequestEvent,
+)
 
 from services.base_service import BaseService
 
@@ -76,6 +81,11 @@ class BaseEML(BaseService, ABC):
             await self.execute_rebalance_plan(event)
             return
 
+        # Handle PositionCleanupPlanRequestEvent
+        if isinstance(event, PositionCleanupPlanRequestEvent):
+            await self.execute_position_cleanup_plan(event)
+            return
+
         # Handle MarketClockEvent
         if isinstance(event, MarketClockEvent):
             self._market_clock = event
@@ -103,6 +113,21 @@ class BaseEML(BaseService, ABC):
 
         `MultiSleeveATService` emits `RebalancePlanRequestEvent(rebalance_id, weights)`.
         EML should translate target weights into broker orders and submit them.
+
+        Implementations should publish downstream execution/account events
+        (order updates, fill updates, updated positions, etc) via the bus.
+        """
+
+        raise NotImplementedError
+
+    @abstractmethod
+    async def execute_position_cleanup_plan(
+        self, event: PositionCleanupPlanRequestEvent
+    ) -> None:
+        """Execute a position cleanup plan request.
+
+        `MultiSleeveATService` emits `PositionCleanupPlanRequestEvent`.
+        EML should translate the cleanup plan into broker orders and submit them.
 
         Implementations should publish downstream execution/account events
         (order updates, fill updates, updated positions, etc) via the bus.

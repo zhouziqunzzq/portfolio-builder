@@ -4,7 +4,7 @@ import time
 import uuid
 from pathlib import Path
 import sys
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
@@ -26,6 +26,9 @@ from events.events import (
     RebalancePlanRequestEvent,
     RebalancePlanConfirmationEvent,
     BarsCheckedEvent,
+    PositionCleanupPlanRequestEvent,
+    PositionCleanupPlanConfirmationEvent,
+    PositionCleanupIntent,
 )
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -33,11 +36,12 @@ from market_data_store import MarketDataStore
 from utils.tz import to_canonical_eastern_naive
 from states.base_state import BaseState
 from context.rebalance import RebalanceContext
+from models import BrokerPosition
 
 
 class MultiSleeveATState(BaseState):
     STATE_KEY = "at.multi_sleeve"
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     # Pending rebalance info
     pending_rebalance_ts: Optional[datetime] = None
@@ -51,6 +55,9 @@ class MultiSleeveATState(BaseState):
 
     # Market data freshness info
     last_market_data_ts: Optional[datetime] = None
+
+    # Position cleanup info
+    last_position_cleanup_ts: Optional[datetime] = None
 
     def to_payload(self) -> Dict[str, Any]:
         return {
@@ -69,6 +76,11 @@ class MultiSleeveATState(BaseState):
             "last_market_data_ts": (
                 self.last_market_data_ts.isoformat()
                 if self.last_market_data_ts
+                else None
+            ),
+            "last_position_cleanup_ts": (
+                self.last_position_cleanup_ts.isoformat()
+                if self.last_position_cleanup_ts
                 else None
             ),
         }
@@ -91,6 +103,11 @@ class MultiSleeveATState(BaseState):
         market_data_ts = payload.get("last_market_data_ts")
         state.last_market_data_ts = (
             datetime.fromisoformat(market_data_ts) if market_data_ts else None
+        )
+
+        position_cleanup_ts = payload.get("last_position_cleanup_ts")
+        state.last_position_cleanup_ts = (
+            datetime.fromisoformat(position_cleanup_ts) if position_cleanup_ts else None
         )
         return state
 
@@ -119,6 +136,8 @@ class MultiSleeveATService(BaseATService):
         if config is None:
             self.log.warning("No ATConfig provided, using default configuration values")
             config = ATConfig()
+        # Validate config
+        config.validate()
         self.config = config
         self.rm = rm
 
@@ -280,6 +299,27 @@ class MultiSleeveATService(BaseATService):
             description="Counts successful generation of new rebalance plans",
         )
 
+        # --- Position cleanup metrics (planned/intent-level) ---
+        self._position_cleanup_triggered_counter = meter.create_counter(
+            name="at.position_cleanup_triggered",
+            description=(
+                "Counts times AT emitted a PositionCleanupPlanRequestEvent (cleanup triggered)"
+            ),
+        )
+        self._position_cleanup_positions_cleaned_counter = meter.create_counter(
+            name="at.position_cleanup_positions_cleaned",
+            description=(
+                "Counts positions (intents) included in emitted PositionCleanupPlanRequestEvent"
+            ),
+            unit="1",
+        )
+        self._position_cleanup_reasons_counter = meter.create_counter(
+            name="at.position_cleanup_reason",
+            description=(
+                "Counts cleanup intents by reason (label: reason) for emitted PositionCleanupPlanRequestEvent"
+            ),
+        )
+
     async def _run_loop(self) -> None:
         """Background loop."""
 
@@ -327,13 +367,13 @@ class MultiSleeveATService(BaseATService):
                     continue
 
                 # If a rebalance is due and no pending rebalance exists, generate and emit a RebalancePlanRequestEvent
-                should_rebalance = await self._check_should_rebalance(now=now)
+                should_rebalance = self._check_should_rebalance(now=now)
                 self._should_rebalance_last = bool(should_rebalance)
                 self.log.debug("Rebalance check: should_rebalance=%s", should_rebalance)
                 if should_rebalance:
                     gen_start = time.monotonic()
                     try:
-                        event = await self._generate_rebalance_plan_request(now=now)
+                        event = self._generate_rebalance_plan_request(now=now)
                     except Exception:
                         self._rebalance_plan_generation_errors_counter.add(
                             1, {"service": self.name}
@@ -379,6 +419,50 @@ class MultiSleeveATService(BaseATService):
                         event.rebalance_id,
                         event.weights,
                     )
+
+                # Run position cleanup if needed
+                should_cleanup = self._check_should_cleanup_positions(now=now)
+                self.log.debug(
+                    "Position cleanup check: should_cleanup=%s", should_cleanup
+                )
+                if should_cleanup:
+                    cleanup_event = self._generate_position_cleanup_plan_request(
+                        now=now
+                    )
+                    if cleanup_event is None:
+                        self.log.info(
+                            "Position cleanup gated on, but no residual positions detected; skipping cleanup emit"
+                        )
+                    else:
+                        await self.emit_position_cleanup_plan_request(cleanup_event)
+
+                        try:
+                            intents = getattr(cleanup_event, "intents", None) or {}
+                            intents_count = int(len(intents))
+                            self._position_cleanup_triggered_counter.add(
+                                1, {"service": self.name}
+                            )
+                            if intents_count > 0:
+                                self._position_cleanup_positions_cleaned_counter.add(
+                                    intents_count, {"service": self.name}
+                                )
+                                for intent in intents.values():
+                                    reason = (
+                                        getattr(intent, "reason", None) or "unknown"
+                                    )
+                                    self._position_cleanup_reasons_counter.add(
+                                        1, {"service": self.name, "reason": str(reason)}
+                                    )
+                        except Exception:
+                            # Never block live operation on metrics.
+                            pass
+
+                        self.log.info(
+                            "Emitted PositionCleanupPlanRequestEvent: intents=%s",
+                            list((cleanup_event.intents or {}).keys()),
+                        )
+                        # Update state with last cleanup timestamp
+                        self.state.last_position_cleanup_ts = now.to_pydatetime()
 
                 await asyncio.sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
@@ -474,7 +558,7 @@ class MultiSleeveATService(BaseATService):
             getattr(event, "ts", None),
         )
 
-    async def _check_should_rebalance(self, now: Optional[datetime] = None) -> bool:
+    def _check_should_rebalance(self, now: Optional[datetime] = None) -> bool:
         """Check if a rebalance should be triggered.
         A rebalance should be triggered if:
         - Market data is fresh for today (at least one BarsCheckedEvent received today), AND
@@ -571,7 +655,7 @@ class MultiSleeveATService(BaseATService):
         )
         # return allocator_wants_rebalance  # TEMPORARY OVERRIDE FOR TESTING
 
-    async def _generate_rebalance_plan_request(
+    def _generate_rebalance_plan_request(
         self, now: Optional[datetime] = None
     ) -> "RebalancePlanRequestEvent":
         """Generate a RebalancePlanRequestEvent by:
@@ -792,7 +876,208 @@ class MultiSleeveATService(BaseATService):
         )
         return last_weights
 
+    def _check_should_cleanup_positions(self, now: Optional[datetime] = None) -> bool:
+        """Check if a position cleanup should be triggered.
+        A position cleanup should be triggered if:
+        - Position cleanup is enabled in the ATConfig, AND
+        - The market is currently open, or will be open later today, AND
+        - Last position cleanup was more than the configured interval ago, AND
+        - Last rebalance weights are available in state, AND
+        - Account snapshot is available with positions.
+        Note that the actual identification of residual positions is done during
+        the generation of the PositionCleanupPlanRequestEvent.
+
+        Args:
+            now: Current time as tz-naive US/Eastern. If None, uses current system time.
+        Returns:
+            True if a position cleanup should be triggered, False otherwise.
+        """
+        if now is None:
+            now_native = datetime.now().astimezone()
+            now = to_canonical_eastern_naive(pd.Timestamp(now_native))
+
+        # Check if position cleanup is enabled
+        if not bool(getattr(self.config, "position_cleanup_enabled", False)):
+            self.log.debug("Position cleanup disabled by config")
+            return False
+        # Check configured interval
+        interval_days = int(
+            getattr(self.config, "position_cleanup_interval_days", 0) or 0
+        )
+        if interval_days <= 0:
+            self.log.warning(
+                "Refusing to run position cleanup: invalid position_cleanup_interval_days=%s",
+                interval_days,
+            )
+            return False
+
+        # Require market clock available
+        if self._market_clock is None:
+            self.log.warning(
+                "Refusing to run position cleanup: no MarketClockEvent received yet"
+            )
+            return False
+        # Require market open now or later today.
+        is_market_open_now = bool(getattr(self._market_clock, "is_market_open", False))
+        next_open = getattr(self._market_clock, "next_market_open", None)
+        is_market_open_today = False
+        if is_market_open_now:
+            is_market_open_today = True
+        elif next_open is not None:
+            is_market_open_today = next_open.date() == now.date()
+        if not (is_market_open_now or is_market_open_today):
+            self.log.debug(
+                "Skipping position cleanup: market not open now and not opening later today (now=%s next_open=%s)",
+                now,
+                next_open,
+            )
+            return False
+
+        # Require sufficient time since last position cleanup.
+        last_cleanup_ts = getattr(self.state, "last_position_cleanup_ts", None)
+        if last_cleanup_ts is not None:
+            age_seconds = float(now.timestamp() - last_cleanup_ts.timestamp())
+            min_age_seconds = float(interval_days) * 24 * 3600
+            if age_seconds < min_age_seconds:
+                self.log.debug(
+                    "Skipping position cleanup: last cleanup too recent (age=%.0fs < min=%.0fs)",
+                    max(0.0, age_seconds),
+                    max(0.0, min_age_seconds),
+                )
+                return False
+
+        # Require last rebalance weights (used to identify residuals vs. intended holdings).
+        last_weights = getattr(self.state, "last_rebalance_weights", None)
+        if not isinstance(last_weights, dict) or len(last_weights) == 0:
+            self.log.warning(
+                "Refusing to run position cleanup: missing last_rebalance_weights in state"
+            )
+            return False
+
+        # Require a recent account snapshot with positions.
+        if self._account_snapshot is None:
+            self.log.warning(
+                "Refusing to run position cleanup: no AccountSnapshotEvent received yet"
+            )
+            return False
+        positions = getattr(self._account_snapshot, "positions", None) or []
+        if len(positions) == 0:
+            self.log.debug("Skipping position cleanup: account has no positions")
+            return False
+
+        return True
+
+    def _generate_position_cleanup_plan_request(
+        self, now: Optional[datetime] = None
+    ) -> Optional[PositionCleanupPlanRequestEvent]:
+        """Generate a position cleanup plan request (if needed).
+
+        A position is considered a cleanup candidate when:
+        - Its symbol is NOT present in the last confirmed rebalance weights (AT state), AND
+        - Either |market_value| <= `config.position_cleanup_market_value_threshold`,
+            OR |qty| <= `config.position_cleanup_qty_threshold`.
+
+        This method only emits the *intent list*; actual order planning/execution happens
+        downstream.
+
+        Args:
+            now: Current time as tz-naive US/Eastern. If None, uses current system time.
+        Returns:
+            A PositionCleanupPlanRequestEvent when at least one cleanup intent exists,
+            otherwise None.
+        """
+        if now is None:
+            now_native = datetime.now().astimezone()
+            now = to_canonical_eastern_naive(pd.Timestamp(now_native))
+
+        if self._account_snapshot is None:
+            raise RuntimeError(
+                "Cannot generate position cleanup plan: no AccountSnapshotEvent received yet"
+            )
+        positions: List[BrokerPosition] | None = getattr(
+            self._account_snapshot, "positions", None
+        )
+        if positions is None:
+            raise RuntimeError(
+                "Cannot generate position cleanup plan: account snapshot positions is None"
+            )
+        if len(positions) == 0:
+            self.log.info("No positions in account snapshot; nothing to clean up")
+            return None
+
+        last_weights = getattr(self.state, "last_rebalance_weights", None)
+        if not isinstance(last_weights, dict) or len(last_weights) == 0:
+            raise RuntimeError(
+                "Cannot generate position cleanup plan: missing last_rebalance_weights in state"
+            )
+
+        # Identify residual positions
+        market_value_threshold = self.config.position_cleanup_market_value_threshold
+        qty_threshold = self.config.position_cleanup_qty_threshold
+        intents: Dict[str, PositionCleanupIntent] = {}
+        tickers_in_last_rebalance_weights = set(last_weights.keys())
+        for pos in positions:
+            # If symbol was in last rebalance weights, no cleanup
+            if pos.symbol in tickers_in_last_rebalance_weights:
+                self.log.debug(
+                    "Position %s has target weight in last rebalance; skipping cleanup",
+                    pos.symbol,
+                )
+                continue
+
+            ticker = pos.symbol
+            market_value = float(pos.market_value or 0.0)
+            qty = float(pos.qty or 0.0)
+            mv_below = abs(market_value) <= float(market_value_threshold)
+            qty_below = abs(qty) <= float(qty_threshold)
+            should_cleanup = mv_below or qty_below
+            self.log.debug(
+                "Evaluating position %s for cleanup: market_value=%.4f qty=%.6f should_cleanup=%s",
+                ticker,
+                market_value,
+                qty,
+                should_cleanup,
+            )
+
+            if not should_cleanup:
+                continue
+            reasons: List[str] = []
+            if mv_below:
+                reasons.append("below_min_market_value")
+            if qty_below:
+                reasons.append("below_min_qty")
+            intents[ticker] = PositionCleanupIntent(
+                ticker=ticker,
+                reason=",".join(reasons),
+                observed_qty=qty,
+                qty_threshold=qty_threshold,
+                observed_market_value=market_value,
+                market_value_threshold=market_value_threshold,
+            )
+
+        self.log.debug(
+            "Identified %d positions for cleanup: %s",
+            len(intents),
+            list(intents.keys()),
+        )
+        if len(intents) == 0:
+            self.log.info("No residual positions detected; skipping cleanup request")
+            return None
+
+        cleanup_id = self._generate_position_cleanup_id()
+        return PositionCleanupPlanRequestEvent(
+            ts=now.timestamp(),
+            request_id=cleanup_id,
+            intents=intents,
+            source=self.name,
+        )
+
     @staticmethod
     def _generate_rebalance_id() -> str:
         """Generate a unique rebalance ID."""
         return f"rebalance-{uuid.uuid4()}"
+
+    @staticmethod
+    def _generate_position_cleanup_id() -> str:
+        """Generate a unique position cleanup ID."""
+        return f"position_cleanup-{uuid.uuid4()}"

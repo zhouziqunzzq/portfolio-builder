@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from decimal import Decimal, ROUND_DOWN
 
@@ -24,6 +25,9 @@ from events.events import (
     AccountSnapshotEvent,
     BrokerAccount,
     BrokerPosition,
+    PositionCleanupIntent,
+    PositionCleanupPlanRequestEvent,
+    PositionCleanupPlanConfirmationEvent,
     RebalancePlanRequestEvent,
     RebalancePlanConfirmationEvent,
 )
@@ -70,7 +74,7 @@ class AlpacaEMLService(BaseEML):
         if config is None:
             self.log.warning("No EMLConfig provided; using default configuration")
             config = EMLConfig()
-        self._validate_config(config)
+        config.validate()
         self.config = config
 
         if self.config.polling_interval_secs <= 0:
@@ -267,6 +271,48 @@ class AlpacaEMLService(BaseEML):
             callbacks=[_obs_pending_execution_retries],
         )
 
+        # --- Position cleanup metrics ---
+        def _obs_pending_position_cleanup(_: object) -> list[Observation]:
+            pending = getattr(self.state, "pending_position_cleanup_requests", None)
+            if isinstance(pending, Mapping):
+                return [Observation(float(len(pending)))]
+            return [Observation(0.0)]
+
+        meter.create_observable_gauge(
+            name="eml.pending_position_cleanup_plans",
+            description="Number of pending position cleanup plans recorded in EML state",
+            callbacks=[_obs_pending_position_cleanup],
+        )
+
+        def _obs_failed_position_cleanup(_: object) -> list[Observation]:
+            failed = getattr(self.state, "failed_position_cleanup_requests", None)
+            if isinstance(failed, list):
+                return [Observation(float(len(failed)))]
+            return [Observation(0.0)]
+
+        meter.create_observable_gauge(
+            name="eml.failed_position_cleanup_requests",
+            description="Number of failed position cleanup requests recorded in EML state",
+            callbacks=[_obs_failed_position_cleanup],
+        )
+
+        self._position_cleanup_skips_counter = meter.create_counter(
+            name="eml.position_cleanup_skips_total",
+            description=(
+                "Counts position cleanup symbol-level skips (label: reason). "
+                "Reasons include: no_position, already_flat, short_detected."
+            ),
+            unit="1",
+        )
+
+        self._position_cleanup_safety_refusals_counter = meter.create_counter(
+            name="eml.position_cleanup_safety_refusals_total",
+            description=(
+                "Counts times position cleanup execution was refused due to safety checks (label: reason)"
+            ),
+            unit="1",
+        )
+
         self._orders_submitted_counter = meter.create_counter(
             name="eml.orders_submitted",
             description="Count of broker orders submitted by EML",
@@ -323,11 +369,18 @@ class AlpacaEMLService(BaseEML):
             iteration_success = True
             iteration_cancelled = False
             try:
-                failed = getattr(self.state, "failed_rebalance_requests", None)
-                if isinstance(failed, list) and failed:
+                failed_rebal = self.state.failed_rebalance_requests
+                if isinstance(failed_rebal, list) and failed_rebal:
                     self.log.warning(
                         "EML has %d failed rebalance request(s); manual intervention may be required",
-                        len(failed),
+                        len(failed_rebal),
+                    )
+
+                failed_pc = self.state.failed_position_cleanup_requests
+                if isinstance(failed_pc, list) and failed_pc:
+                    self.log.warning(
+                        "EML has %d failed position cleanup request(s); manual intervention may be required",
+                        len(failed_pc),
                     )
 
                 # Fetch account + positions
@@ -355,6 +408,9 @@ class AlpacaEMLService(BaseEML):
 
                 # Execute any pending rebalance plans (blocking per plan, off the event loop thread)
                 await self._run_in_thread(self._execute_pending_rebalance_plans)
+
+                # Execute any pending position cleanup plans (blocking per plan, off the event loop thread)
+                await self._run_in_thread(self._execute_pending_position_cleanup_plans)
 
                 # GC execution history (best-effort; keep state from growing unbounded)
                 self._gc_execution_history()
@@ -769,6 +825,387 @@ class AlpacaEMLService(BaseEML):
                 )
             raise
 
+    async def execute_position_cleanup_plan(
+        self, event: PositionCleanupPlanRequestEvent
+    ) -> None:
+        """Record a position cleanup plan request and confirm receipt.
+
+        This method does not place orders. It stores the request in persisted state and
+        emits a `PositionCleanupPlanConfirmationEvent`. Actual broker execution happens
+        asynchronously in the EML background loop via `_execute_pending_position_cleanup_plans()`.
+        """
+
+        now_ts = time.time()
+        request_id = getattr(event, "request_id", None)
+        if not request_id:
+            self.log.warning(
+                "PositionCleanupPlanRequestEvent missing request_id; ignoring: event=%s",
+                event,
+            )
+            return
+
+        try:
+            if self.state.has_pending_position_cleanup_request(request_id):
+                self.log.info(
+                    "PositionCleanupPlanRequestEvent already pending; ignoring duplicate: request_id=%s",
+                    request_id,
+                )
+            else:
+                self.state.remember_pending_position_cleanup_request(event)
+
+            confirmation_event = PositionCleanupPlanConfirmationEvent(
+                ts=now_ts,
+                request_id=str(request_id),
+                confirmed_ts=now_ts,
+                source=self.name,
+            )
+            await self.emit(confirmation_event)
+            self.log.info(
+                "Published PositionCleanupPlanConfirmationEvent: request_id=%s",
+                request_id,
+            )
+        except Exception:
+            self.log.exception(
+                "Failed to store pending position cleanup request in state: request_id=%s",
+                request_id,
+            )
+
+    # ------------------------------------------------------------------
+    # Pending position cleanup execution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _eastern_date_from_ts(ts: float):
+        tz = ZoneInfo("America/New_York")
+        return datetime.fromtimestamp(float(ts), tz=tz).date()
+
+    def _has_executed_rebalance_today(self, *, now_ts: Optional[float] = None) -> bool:
+        """Return True if EML state shows any executed rebalance on today's Eastern date."""
+
+        now = float(now_ts if now_ts is not None else time.time())
+        today = self._eastern_date_from_ts(now)
+        hist = getattr(self.state, "executed_rebalance_history", None) or []
+        for item in hist:
+            if not isinstance(item, dict):
+                continue
+            ets = item.get("executed_ts")
+            try:
+                ets_f = float(ets)
+            except Exception:
+                continue
+            try:
+                if self._eastern_date_from_ts(ets_f) == today:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _position_cleanup_request_from_state(
+        self, payload: Mapping[str, Any]
+    ) -> PositionCleanupPlanRequestEvent:
+        request_id = payload.get("request_id")
+        if not request_id:
+            raise ValueError(
+                "Invalid pending position cleanup payload: missing request_id"
+            )
+        request_id = str(request_id)
+
+        ts = payload.get("request_ts")
+        try:
+            ts_f = float(ts)
+        except Exception:
+            ts_f = time.time()
+
+        intents_payload = payload.get("intents")
+        if intents_payload is None:
+            intents_payload = {}
+        if not isinstance(intents_payload, Mapping):
+            intents_payload = {}
+
+        intents: Dict[str, PositionCleanupIntent] = {}
+        for sym, info in dict(intents_payload).items():
+            if not isinstance(info, Mapping):
+                info = {}
+            ticker = str(info.get("ticker") or sym)
+            reason = str(info.get("reason") or "")
+            intents[str(sym)] = PositionCleanupIntent(
+                ticker=ticker,
+                reason=reason,
+                observed_qty=self._to_float(info.get("observed_qty")),
+                qty_threshold=self._to_float(info.get("qty_threshold")),
+                observed_market_value=self._to_float(info.get("observed_market_value")),
+                market_value_threshold=self._to_float(
+                    info.get("market_value_threshold")
+                ),
+            )
+
+        return PositionCleanupPlanRequestEvent(
+            ts=ts_f,
+            request_id=request_id,
+            intents=intents,
+            source=str(payload.get("source") or ""),
+            correlation_id=str(payload.get("correlation_id") or ""),
+        )
+
+    def _execute_pending_position_cleanup_plans(self) -> None:
+        """Execute any pending position cleanup requests recorded in `self.state`.
+
+        Safety rule
+        -----------
+        If ANY rebalance was executed today (Eastern), all pending cleanup plans are
+        marked as "cancelled" (moved from pending to executed cleanup history).
+        """
+
+        pending = self.state.pending_position_cleanup_requests
+        if not pending:
+            self.log.debug("No pending position cleanup plans to execute")
+            return
+
+        # Only execute when we are sure the market is open.
+        clock = self._market_clock
+        if clock is None:
+            self.log.info(
+                "Skipping pending position cleanup execution: market clock unknown (pending=%d)",
+                len(pending),
+            )
+            return
+        is_open = clock.is_market_open
+        if is_open is not True:
+            self.log.debug(
+                "Skipping pending position cleanup execution: market not open (is_market_open=%s now=%s next_open=%s pending=%d)",
+                is_open,
+                clock.now,
+                clock.next_market_open,
+                len(pending),
+            )
+            return
+
+        cancel_all = self._has_executed_rebalance_today()
+        if cancel_all:
+            self.log.info(
+                "Cancelling %d pending position cleanup plan(s): rebalance already executed today",
+                len(pending),
+            )
+
+        # Process oldest-first for determinism.
+        items: List[Tuple[str, Dict[str, Any]]] = []
+        for request_id, payload in dict(pending).items():
+            if not isinstance(payload, dict):
+                continue
+            items.append((str(request_id), dict(payload)))
+
+        def _key(item: Tuple[str, Dict[str, Any]]) -> float:
+            v = item[1].get("request_ts")
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        items.sort(key=_key)
+
+        for request_id, payload in items:
+            if not self.state.has_pending_position_cleanup_request(request_id):
+                continue
+
+            try:
+                if cancel_all:
+                    self.state.mark_position_cleanup_executed(
+                        request_id=request_id,
+                        status="cancelled",
+                        note="rebalance executed today",
+                    )
+                    continue
+
+                event = self._position_cleanup_request_from_state(payload)
+                self._execute_position_cleanup_plan(event)
+                self.state.mark_position_cleanup_executed(request_id=request_id)
+                self.log.info(
+                    "Position cleanup executed successfully: request_id=%s",
+                    request_id,
+                )
+            except EMLShutdownRequested:
+                self.log.info(
+                    "Shutdown requested; aborting pending position cleanup execution: request_id=%s",
+                    request_id,
+                )
+                return
+            except Exception:
+                self.log.exception(
+                    "Failed executing pending position cleanup plan: request_id=%s",
+                    request_id,
+                )
+
+                try:
+                    failures = (
+                        self.state.increment_pending_position_cleanup_execution_failure(
+                            request_id
+                        )
+                    )
+                    max_retries = (
+                        self.config.max_pending_position_cleanup_execution_retries
+                    )
+                    if failures >= max_retries:
+                        self.state.mark_position_cleanup_failed(
+                            request_id=request_id,
+                            error="max retries exceeded",
+                        )
+                        self.log.warning(
+                            "Pending position cleanup marked failed after %d failed attempt(s): request_id=%s",
+                            failures,
+                            request_id,
+                        )
+                except Exception:
+                    self.log.exception(
+                        "Failed updating retry/failed state for pending position cleanup: request_id=%s",
+                        request_id,
+                    )
+
+    def _execute_position_cleanup_plan(
+        self, event: PositionCleanupPlanRequestEvent
+    ) -> None:
+        """Synchronously execute a single position cleanup plan.
+
+        Translates cleanup intents into market orders that attempt to close the entire
+        position for each intended symbol.
+        """
+
+        request_id = event.request_id
+        intents = event.intents
+        if request_id is None or intents is None:
+            raise TypeError(
+                "event must have attributes 'request_id' and 'intents' (PositionCleanupPlanRequestEvent-like)"
+            )
+        if not self.config.include_positions:
+            try:
+                self._position_cleanup_safety_refusals_counter.add(
+                    1,
+                    {
+                        "service": self.name,
+                        "reason": "include_positions_disabled",
+                    },
+                )
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Cannot execute position cleanup plan when EMLConfig.include_positions is False"
+            )
+
+        self.log.info(
+            "Executing position cleanup plan: request_id=%s intents=%s",
+            request_id,
+            list((intents or {}).keys()) if isinstance(intents, dict) else None,
+        )
+        # Fetch current positions; we rely on latest broker state.
+        positions = self._list_positions()
+        pos_by_symbol = self._positions_by_symbol(positions)
+        symbols: List[str] = []
+        if isinstance(intents, dict):
+            symbols = [self._normalize_symbol(s) for s in intents.keys()]
+        symbols = [s for s in symbols if s]
+
+        sells: List[Dict[str, Any]] = []
+        max_abs_qty = self.config.position_cleanup_max_abs_qty
+        if max_abs_qty is not None:
+            max_abs_qty = float(max_abs_qty)
+        for sym in symbols:
+            p = pos_by_symbol.get(sym)
+            if p is None:
+                try:
+                    self._position_cleanup_skips_counter.add(
+                        1,
+                        {
+                            "service": self.name,
+                            "reason": "no_position",
+                        },
+                    )
+                except Exception:
+                    pass
+                continue
+            qty = float(p.qty or 0.0)
+            if abs(qty) <= 0.0:
+                try:
+                    self._position_cleanup_skips_counter.add(
+                        1,
+                        {
+                            "service": self.name,
+                            "reason": "already_flat",
+                        },
+                    )
+                except Exception:
+                    pass
+                self.log.warning(
+                    "No position to clean up for symbol; skipping: request_id=%s symbol=%s qty=%s",
+                    request_id,
+                    sym,
+                    qty,
+                )
+                continue
+            if qty > 0:
+                if max_abs_qty is not None and abs(qty) > max_abs_qty:
+                    try:
+                        self._position_cleanup_safety_refusals_counter.add(
+                            1,
+                            {
+                                "service": self.name,
+                                "reason": "max_abs_qty_exceeded",
+                            },
+                        )
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        "Refusing to execute position cleanup sell exceeding qty safety threshold: "
+                        f"request_id={request_id} symbol={sym} qty={qty} max_abs_qty={max_abs_qty}"
+                    )
+                # _execute_orders_blocking expects sells to use qty_fallback (notional optional).
+                sells.append(
+                    {
+                        "symbol": sym,
+                        "side": "sell",
+                        "notional": None,
+                        "qty_fallback": abs(qty),
+                    }
+                )
+            else:
+                # No short-position cleanup for now; warn and skip.
+                try:
+                    self._position_cleanup_skips_counter.add(
+                        1,
+                        {
+                            "service": self.name,
+                            "reason": "short_detected",
+                        },
+                    )
+                except Exception:
+                    pass
+                self.log.warning(
+                    "Residual short position detected during cleanup; skipping buy-to-cover: request_id=%s symbol=%s qty=%s",
+                    request_id,
+                    sym,
+                    qty,
+                )
+
+        if not sells:
+            self.log.info(
+                "No executable cleanup orders (positions already flat); treating as executed: request_id=%s",
+                request_id,
+            )
+            return
+
+        # Sanity check tradability for all tickers in final plan.
+        self._assert_symbols_tradable([o["symbol"] for o in sells])
+
+        # Safety: cancel any outstanding orders before placing new ones.
+        try:
+            self._cancel_all_open_orders()
+        except Exception:
+            self.log.exception(
+                "Failed to cancel open orders before position cleanup execution (continuing): request_id=%s",
+                request_id,
+            )
+
+        # Execute sells only.
+        self._execute_orders_blocking(sells)
+
     # ----------------------------
     # Helpers (testable)
     # ----------------------------
@@ -1054,7 +1491,7 @@ class AlpacaEMLService(BaseEML):
                 order_id = self._submit_market_order(
                     symbol=symbol,
                     side=side,
-                    qty=None,
+                    qty=order.get("qty"),
                     notional=order.get("notional"),
                 )
             self.log.info(
@@ -1331,7 +1768,7 @@ class AlpacaEMLService(BaseEML):
         )
 
     def _gc_execution_history(self, *, now_ts: Optional[float] = None) -> None:
-        """Discard executed rebalance history entries older than max_execution_history_days."""
+        """Discard executed execution history entries older than max_execution_history_days."""
 
         max_days_int = self.config.max_execution_history_days
         if max_days_int <= 0:
@@ -1342,36 +1779,52 @@ class AlpacaEMLService(BaseEML):
 
         now = float(now_ts if now_ts is not None else time.time())
         cutoff = now - (max_days_int * 86400.0)
-        hist = self.state.executed_rebalance_history
 
-        before = len(hist)
-        kept: List[Dict[str, Any]] = []
-        for item in hist:
-            if not isinstance(item, dict):
-                continue
-            ts = item.get("executed_ts")
-            try:
-                ts_f = float(ts)
-            except Exception:
-                ts_f = 0.0
-            if ts_f >= cutoff:
-                kept.append(item)
-            else:
-                self.log.debug(
-                    "GC'ing executed rebalance history entry: rebalance_id=%s executed_ts=%s",
-                    item.get("rebalance_id"),
-                    item.get("executed_ts"),
+        def _gc_list(
+            hist: List[Dict[str, Any]], *, id_field: str, label: str
+        ) -> List[Dict[str, Any]]:
+            before = len(hist)
+            kept: List[Dict[str, Any]] = []
+            for item in hist:
+                if not isinstance(item, dict):
+                    continue
+                ts = item.get("executed_ts")
+                try:
+                    ts_f = float(ts)
+                except Exception:
+                    ts_f = 0.0
+                if ts_f >= cutoff:
+                    kept.append(item)
+                else:
+                    self.log.debug(
+                        "GC'ing %s history entry: %s=%s executed_ts=%s",
+                        label,
+                        id_field,
+                        item.get(id_field),
+                        item.get("executed_ts"),
+                    )
+
+            if len(kept) != before:
+                kept.sort(key=lambda x: float(x.get("executed_ts", 0.0) or 0.0))
+                self.log.info(
+                    "GC'd %s history: removed=%d kept=%d cutoff=%s",
+                    label,
+                    before - len(kept),
+                    len(kept),
+                    datetime.fromtimestamp(cutoff).isoformat(),
                 )
+            return kept
 
-        if len(kept) != before:
-            kept.sort(key=lambda x: float(x.get("executed_ts", 0.0) or 0.0))
-            self.state.executed_rebalance_history = kept
-            self.log.info(
-                "GC'd executed rebalance history: removed=%d kept=%d cutoff=%s",
-                before - len(kept),
-                len(kept),
-                datetime.fromtimestamp(cutoff).isoformat(),
-            )
+        self.state.executed_rebalance_history = _gc_list(
+            self.state.executed_rebalance_history,
+            id_field="rebalance_id",
+            label="executed rebalance",
+        )
+        self.state.executed_position_cleanup_history = _gc_list(
+            self.state.executed_position_cleanup_history,
+            id_field="request_id",
+            label="executed position cleanup",
+        )
 
     @staticmethod
     def _to_float(v: Any) -> Optional[float]:
@@ -1430,25 +1883,6 @@ class AlpacaEMLService(BaseEML):
             )
 
         return out
-
-    @staticmethod
-    def _validate_config(config: EMLConfig) -> None:
-        if config.cash_buffer_pct is not None and config.cash_buffer_abs is not None:
-            raise ValueError(
-                "EMLConfig: cash_buffer_pct and cash_buffer_abs are mutually exclusive; only one may be set."
-            )
-
-        max_retries = getattr(config, "max_pending_rebalance_execution_retries", 10)
-        try:
-            max_retries_i = int(max_retries)
-        except Exception as e:
-            raise ValueError(
-                "EMLConfig: max_pending_rebalance_execution_retries must be an integer"
-            ) from e
-        if max_retries_i <= 0:
-            raise ValueError(
-                "EMLConfig: max_pending_rebalance_execution_retries must be > 0"
-            )
 
     def _get_equity_adj(self, equity_abs: Optional[float]) -> Optional[float]:
         """Compute adjusted equity after applying cash buffer settings.

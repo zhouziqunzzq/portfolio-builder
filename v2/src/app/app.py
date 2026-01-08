@@ -259,6 +259,7 @@ class App:
                     Topic.STOP,
                     Topic.MARKET_CLOCK,
                     Topic.REBALANCE_PLAN,
+                    Topic.POSITION_CLEANUP_PLAN,
                 },
             ),
             "AT": self.event_bus.subscribe(
@@ -268,6 +269,7 @@ class App:
                     Topic.BAR,
                     Topic.ACCOUNT,
                     Topic.REBALANCE_PLAN,
+                    Topic.POSITION_CLEANUP_PLAN,
                 },
             ),
         }

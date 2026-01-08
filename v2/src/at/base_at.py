@@ -9,7 +9,11 @@ if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
 from events.event_bus import EventBus
-from events.events import BaseEvent, RebalancePlanRequestEvent
+from events.events import (
+    BaseEvent,
+    RebalancePlanRequestEvent,
+    PositionCleanupPlanRequestEvent,
+)
 
 from services.base_service import BaseService
 
@@ -44,5 +48,10 @@ class BaseATService(BaseService, ABC):
 
     async def emit_rebalance_plan_request(
         self, plan_request: "RebalancePlanRequestEvent"
+    ) -> None:
+        await self.bus.publish(plan_request)
+
+    async def emit_position_cleanup_plan_request(
+        self, plan_request: "PositionCleanupPlanRequestEvent"
     ) -> None:
         await self.bus.publish(plan_request)

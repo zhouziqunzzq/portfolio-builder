@@ -3,6 +3,15 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from .topic import Topic
 
+from pathlib import Path
+import sys
+
+_ROOT_SRC = Path(__file__).resolve().parents[1]
+if str(_ROOT_SRC) not in sys.path:
+    sys.path.insert(0, str(_ROOT_SRC))
+
+from models import BrokerAccount, BrokerPosition
+
 
 @dataclass(frozen=True)
 class BaseEvent:
@@ -70,36 +79,6 @@ class RebalancePlanConfirmationEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
-class BrokerAccount:
-    """Normalized broker account snapshot.
-
-    This is intentionally a small, stable set of fields needed by the app.
-    Execution adapters (EML) should map broker-specific payloads into this model.
-    """
-
-    id: Optional[str] = None
-    status: Optional[str] = None
-    cash: Optional[float] = None
-    buying_power: Optional[float] = None
-    portfolio_value: Optional[float] = None
-    equity: Optional[float] = None
-    last_equity: Optional[float] = None
-    adj_equity: Optional[float] = None  # Adjusted equity after cash buffers, if any
-
-
-@dataclass(frozen=True)
-class BrokerPosition:
-    """Normalized broker position snapshot."""
-
-    symbol: str
-    qty: Optional[float] = None
-    market_value: Optional[float] = None
-    avg_entry_price: Optional[float] = None
-    side: Optional[str] = None
-    unrealized_pl: Optional[float] = None
-
-
-@dataclass(frozen=True)
 class AccountSnapshotEvent(BaseEvent):
     """Event containing broker account + positions snapshot.
 
@@ -110,3 +89,39 @@ class AccountSnapshotEvent(BaseEvent):
 
     account: BrokerAccount
     positions: List[BrokerPosition] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PositionCleanupIntent:
+    """Intent to clean up a specific position."""
+
+    ticker: str
+    reason: str  # e.g., "below_min_size", "delisted", etc.
+
+    # Optional audit fields
+    observed_qty: Optional[float] = None
+    qty_threshold: Optional[float] = None
+    observed_market_value: Optional[float] = None
+    market_value_threshold: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PositionCleanupPlanRequestEvent(BaseEvent):
+    """Event indicating a position cleanup plan request."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.POSITION_CLEANUP_PLAN, init=False)
+
+    request_id: str
+    intents: Dict[str, PositionCleanupIntent]  # Mapping of ticker to intent
+
+
+@dataclass(frozen=True)
+class PositionCleanupPlanConfirmationEvent(BaseEvent):
+    """Event indicating a position cleanup plan has been confirmed."""
+
+    # Fixed topic for this event type (not part of __init__).
+    topic: Topic = field(default=Topic.POSITION_CLEANUP_PLAN, init=False)
+
+    request_id: str
+    confirmed_ts: float

@@ -30,10 +30,20 @@ eml:
   max_execution_history_days: 365
   max_pending_rebalance_execution_retries: 10
 
+  # Position cleanup settings
+  max_pending_position_cleanup_execution_retries: 5
+  position_cleanup_max_abs_qty: 1.0
+
 at:
   polling_interval_secs: 30.0
   precompute_lookback_weeks: 52 # 1 year
   bootstrap_lookback_weeks: 52 # 1 year
+
+  # Position cleanup settings
+  position_cleanup_enabled: true
+  position_cleanup_interval_days: 1
+  position_cleanup_market_value_threshold: 0.10
+  position_cleanup_qty_threshold: 0.001
 
 universe_manager:
   membership_csv: data_paper_alpaca/sp500_membership.csv
