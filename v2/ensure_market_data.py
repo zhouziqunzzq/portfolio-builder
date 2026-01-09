@@ -69,9 +69,19 @@ def parse_args() -> argparse.Namespace:
         help="Use all tickers from UniverseManager (overrides --tickers)",
     )
     p.add_argument(
+        "--use-current-constituents",
+        action="store_true",
+        help="When --use-universe is set, use only current constituents",
+    )
+    p.add_argument(
         "--universe-membership-csv",
         default="data/sp500_membership.csv",
         help="Path to universe membership CSV (used with --use-universe)",
+    )
+    p.add_argument(
+        "--universe-constituents-csv",
+        default="data/current_sp500_constituents.csv",
+        help="Path to universe current constituents CSV (used with --use-universe)",
     )
     p.add_argument("--interval", default="1d", help="Interval (default: 1d)")
     p.add_argument(
@@ -113,8 +123,11 @@ def main() -> int:
 
     tickers: list[str] = []
     if args.use_universe:
-        um = UniverseManager(membership_csv=Path(args.universe_membership_csv))
-        tickers.extend(um.tickers)
+        um = UniverseManager(
+            membership_csv=Path(args.universe_membership_csv),
+            current_constituents_csv=Path(args.universe_constituents_csv),
+        )
+        tickers.extend(um.get_tickers(current_only=bool(args.use_current_constituents)))
     if args.use_defensive_etfs:
         cfg = DefensiveConfig()
         # Use all ETF tickers defined in asset_class_for_etf
@@ -143,7 +156,11 @@ def main() -> int:
     auto_adjust = not args.no_auto_adjust
 
     rows = []
+    tot = len(tickers)
+    curr = 0
     for t in tickers:
+        curr += 1
+        print(f"[{curr}/{tot}] Processing ticker: {t}...")
         try:
             df = mds.get_ohlcv(
                 ticker=t,
@@ -219,15 +236,6 @@ def main() -> int:
             f"{t:6s}  {earliest!s:10s}  {latest!s:10s}  {rows_c:5d}  {exp:8d}  {cov_pct}"
         )
     print("====================================\n")
-
-    # Optionally write a CSV summary next to data-root
-    # try:
-    # 	out_dir = Path(args.data_root).resolve()
-    # 	out_path = out_dir / f"coverage_{start_dt.date()}_{end_dt.date()}.csv"
-    # 	summary.to_csv(out_path)
-    # 	print(f"Saved coverage summary to {out_path}")
-    # except Exception:
-    # 	pass
 
     return 0
 

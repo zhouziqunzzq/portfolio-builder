@@ -86,12 +86,14 @@ class SidewaysBaseSleeve(BaseSleeve):
         mds: MarketDataStore,
         signals: SignalEngine,
         config: Optional[SidewaysBaseConfig] = None,
+        **kwargs: Any,
     ):
         super().__init__(
             market_data_store=mds,
             universe_manager=None,
             signal_engine=signals,
             vectorized_signal_engine=None,
+            **kwargs,
         )
         # Aliases for convenience
         self.mds = self.market_data_store
@@ -102,6 +104,10 @@ class SidewaysBaseSleeve(BaseSleeve):
 
         # Logger (instance-level, mirror DefensiveSleeve pattern)
         self.log = logging.getLogger(self.__class__.__name__)
+        if self.is_live:
+            self.log.info("Running in LIVE mode.")
+        else:
+            self.log.info("Running in BACKTEST mode.")
 
     # ------------------------------------------------------------------
     # Universe

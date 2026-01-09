@@ -91,26 +91,36 @@ class DefensiveSleeve(BaseSleeve):
         mds: MarketDataStore,
         universe: UniverseManager,
         signals: SignalEngine,
+        vec_engine: Optional[VectorizedSignalEngine] = None,
         config: Optional[DefensiveConfig] = None,
+        **kwargs: Any,
     ):
+        is_live = bool(kwargs.get("is_live", False))
+
+        if vec_engine is None:
+            vec_engine = VectorizedSignalEngine(universe, mds, is_live=is_live)
+
         super().__init__(
             market_data_store=mds,
             universe_manager=universe,
             signal_engine=signals,
-            vectorized_signal_engine=VectorizedSignalEngine(universe, mds),
+            vectorized_signal_engine=vec_engine,
+            **kwargs,
         )
         # Aliases for convenience
         self.um = self.universe_manager
         self.mds = self.market_data_store
         self.signals = self.signal_engine
-        self.vec_engine = self.vectorized_signal_engine or VectorizedSignalEngine(
-            universe, mds
-        )
+        self.vec_engine = self.vectorized_signal_engine
 
         self.config = config or DefensiveConfig()
         self.state = DefensiveState()
         # Logger
         self.log = logging.getLogger(self.__class__.__name__)
+        if self.is_live:
+            self.log.info("Running in LIVE mode.")
+        else:
+            self.log.info("Running in BACKTEST mode.")
 
         # Cached precompute results
         self._cached_scores_mat: pd.DataFrame = pd.DataFrame()
@@ -143,9 +153,14 @@ class DefensiveSleeve(BaseSleeve):
         creeping into the defensive sleeve.
         """
         smap = self.um.sector_map or {}
-
         active_tickers: Optional[set[str]] = None
-        if as_of is not None:
+
+        if self.is_live:
+            # In live mode, always use the latest membership
+            smap = self.um.get_sector_map(current_only=True)
+            active_tickers = set(self.um.get_tickers(current_only=True))
+        elif as_of is not None:
+            # Otherwise, if as_of is provided, filter to active members on that date
             as_of_dt = pd.to_datetime(as_of).normalize()
             # membership_mask returns [date x ticker] bool DataFrame
             mask = self.um.membership_mask(
@@ -660,6 +675,7 @@ class DefensiveSleeve(BaseSleeve):
         warmup_start: pd.Timestamp,
         end_ts: pd.Timestamp,
         cfg: DefensiveConfig,
+        is_live: bool = False,
     ):
         # Liquidity filters
         min_price = float(getattr(cfg, "min_price", 0.0))
@@ -696,12 +712,16 @@ class DefensiveSleeve(BaseSleeve):
         vol_mat = vol_mat.where(liq_mask)
         beta_mat = beta_mat.where(liq_mask)
 
-        # --- Apply membership mask to raw signals BEFORE ranking/scores ---
-        try:
-            mem_mask = self.um.membership_mask(start=warmup_start, end=end_ts)
-        except Exception:
-            self.log.warning("failed to load membership mask, skipping")
+        # Apply membership mask to raw signals BEFORE ranking/scores
+        # Note: In live mode, do NOT apply membership mask
+        if is_live:
             mem_mask = None
+        else:
+            try:
+                mem_mask = self.um.membership_mask(start=warmup_start, end=end_ts)
+            except Exception:
+                self.log.warning("failed to load membership mask, skipping")
+                mem_mask = None
 
         if mem_mask is not None and not mem_mask.empty:
             mem_mask.index = pd.to_datetime(mem_mask.index)
@@ -824,6 +844,7 @@ class DefensiveSleeve(BaseSleeve):
                 warmup_start,
                 end_ts,
                 cfg,
+                is_live=self.is_live,
             )
         )
 

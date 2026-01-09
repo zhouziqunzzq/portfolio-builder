@@ -37,16 +37,19 @@ class UniverseManager:
     def __init__(
         self,
         membership_csv: Path,
+        current_constituents_csv: Optional[Path] = None,
         sectors_yaml: Optional[Path] = None,
         local_only: bool = False,
     ):
         self.log = logging.getLogger(self.__class__.__name__)
         self.membership_csv = membership_csv
+        self.current_constituents_csv = current_constituents_csv
         self.sectors_yaml = sectors_yaml
         # When True, avoid all network calls and only use local artifacts/caches
         self.local_only = bool(local_only)
 
         self.cached_membership_df: Optional[pd.DataFrame] = None
+        self.cached_current_constituents_df: Optional[pd.DataFrame] = None
 
     # ---- Build methods (to be implemented incrementally) ----
     def build_current_constituents(self) -> pd.DataFrame:
@@ -596,10 +599,71 @@ class UniverseManager:
         self.cached_membership_df = df
         return df
 
+    def save_current_constituents_csv(self, df: pd.DataFrame) -> None:
+        if self.current_constituents_csv is None:
+            raise ValueError("current_constituents_csv path not provided")
+        self.current_constituents_csv.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(self.current_constituents_csv, index=False)
+        self.log.info(
+            "Saved current constituents CSV",
+            extra={"path": str(self.current_constituents_csv)},
+        )
+
+    def load_from_current_constituents_csv(self) -> pd.DataFrame:
+        if self.cached_current_constituents_df is not None:
+            return self.cached_current_constituents_df
+        if self.current_constituents_csv is None:
+            raise ValueError("current_constituents_csv path not provided")
+        if not self.current_constituents_csv.exists():
+            raise FileNotFoundError(
+                f"Current constituents CSV not found: {self.current_constituents_csv}"
+            )
+        df = pd.read_csv(self.current_constituents_csv)
+        self.log.info(
+            "Loaded current constituents CSV",
+            extra={"path": str(self.current_constituents_csv), "rows": len(df)},
+        )
+        self.cached_current_constituents_df = df
+        return df
+
+    def refresh_current_constituents(self) -> None:
+        """Fetch current constituents from Wikipedia and save to CSV."""
+        if self.current_constituents_csv is None:
+            raise ValueError("current_constituents_csv path not provided")
+        df = self.build_current_constituents()
+        self.save_current_constituents_csv(df)
+        self.cached_current_constituents_df = df
+
     # ---- Interfaces for consumers ----
-    @property
-    def tickers(self) -> List[str]:
-        """Return the list of unique tickers in the membership CSV."""
+    def get_tickers(self, current_only: bool = False) -> List[str]:
+        """Return the list of unique tickers.
+
+        If `current_only` is True and `current_constituents_csv` is provided,
+        use the current constituents CSV; otherwise fall back to the
+        membership CSV.
+        """
+        if current_only:
+            if self.current_constituents_csv is None:
+                raise ValueError(
+                    "current_only=True but current_constituents_csv path not provided"
+                )
+            # Load current constituents and require a `ticker` column
+            cur = self.load_from_current_constituents_csv()
+            if "ticker" not in cur.columns:
+                raise ValueError(
+                    "current constituents CSV must contain 'ticker' column"
+                )
+            tickers = sorted(
+                cur["ticker"]
+                .dropna()
+                .astype(str)
+                .str.upper()
+                .str.replace(".", "-", regex=False)
+                .unique()
+                .tolist()
+            )
+            return tickers
+
         df = self.load_from_membership_csv()
         if "ticker" not in df.columns:
             raise ValueError("membership CSV must contain 'ticker' column")
@@ -615,8 +679,35 @@ class UniverseManager:
         return tickers
 
     @property
-    def sector_map(self) -> Optional[Dict[str, str]]:
-        # Build sector map from membership CSV (last known per ticker)
+    def tickers(self) -> List[str]:
+        """Backward-compatible property access for tickers (current_only=False)."""
+        return self.get_tickers(current_only=False)
+
+    def get_sector_map(self, current_only: bool = False) -> Optional[Dict[str, str]]:
+        """Build sector map from constituents.
+
+        If `current_only` is True and `current_constituents_csv` is provided,
+        use that CSV; otherwise use the membership CSV. Returns None if no
+        sector information is available.
+        """
+        # If current_only requested, require current constituents CSV and fail fast
+        if current_only:
+            if self.current_constituents_csv is None:
+                raise ValueError(
+                    "current_only=True but current_constituents_csv path not provided"
+                )
+            cur = self.load_from_current_constituents_csv()
+            if not {"ticker", "sector"}.issubset(cur.columns):
+                raise ValueError(
+                    "current constituents CSV must contain both 'ticker' and 'sector' columns"
+                )
+            cur = cur[["ticker", "sector"]].drop_duplicates("ticker", keep="last")
+            sector_map = {
+                row["ticker"].upper(): row["sector"] for _, row in cur.iterrows()
+            }
+            return sector_map
+
+        # Fallback: membership CSV
         try:
             mem_df = self.load_from_membership_csv()
             if {"ticker", "sector"}.issubset(mem_df.columns):
@@ -639,6 +730,11 @@ class UniverseManager:
         except Exception:
             sector_map = None
         return sector_map
+
+    @property
+    def sector_map(self) -> Optional[Dict[str, str]]:
+        """Backward-compatible property access for sector_map (current_only=False)."""
+        return self.get_sector_map(current_only=False)
 
     def membership_mask(
         self, start: datetime | str, end: datetime | str

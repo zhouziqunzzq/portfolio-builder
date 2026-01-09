@@ -38,11 +38,13 @@ class BaseSleeve(ABC):
         universe_manager: Optional[UniverseManager] = None,
         signal_engine: Optional[SignalEngine] = None,
         vectorized_signal_engine: Optional[VectorizedSignalEngine] = None,
+        is_live: bool = False, # True if in live mode, False if backtest
     ):
         self.universe_manager = universe_manager
         self.market_data_store = market_data_store
         self.signal_engine = signal_engine
         self.vectorized_signal_engine = vectorized_signal_engine
+        self.is_live = is_live
 
     # ------------------------------------------------------------------
     # Universe

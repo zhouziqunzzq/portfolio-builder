@@ -36,6 +36,8 @@ class VectorizedSignalEngine:
 
     universe: UniverseManager
     mds: MarketDataStore
+    # True in live mode: always use current constituents and never apply membership masks.
+    is_live: bool = False
     # Class logger (not a dataclass field)
     log: ClassVar[logging.Logger] = logging.getLogger("VectorizedSignalEngine")
 
@@ -91,51 +93,31 @@ class VectorizedSignalEngine:
         # Resolve tickers
         # -----------------------------
         if tickers is None:
-            # Prefer explicit universe.tickers if available
-            universe_tickers = getattr(self.universe, "tickers", None)
-            if universe_tickers is not None:
-                tickers = list(universe_tickers)
+            # Prefer explicit universe tickers if available.
+            # In live mode, always use current constituents.
+            if self.is_live and hasattr(self.universe, "get_tickers"):
+                tickers = list(self.universe.get_tickers(current_only=True))
             else:
-                # Fallback to sector_map keys
-                smap = getattr(self.universe, "sector_map", {}) or {}
-                tickers = list(smap.keys())
+                universe_tickers = getattr(self.universe, "tickers", None)
+                if universe_tickers is not None:
+                    tickers = list(universe_tickers)
+                else:
+                    # Fallback to sector_map keys
+                    if self.is_live and hasattr(self.universe, "get_sector_map"):
+                        smap = self.universe.get_sector_map(current_only=True) or {}
+                    else:
+                        smap = getattr(self.universe, "sector_map", {}) or {}
+                    tickers = list(smap.keys())
 
         tickers = [t.upper() for t in tickers]
         if not tickers:
             return pd.DataFrame()
 
-        # -----------------------------
-        # Build membership mask (optional)
-        # -----------------------------
-        mem_mask: Optional[pd.DataFrame] = None
-        # known_index_tickers: Sequence[str] = []
-        # unknown_tickers: Sequence[str] = []
-
-        if membership_aware:
-            try:
-                mem_mask = self.universe.membership_mask(
-                    start=start_dt.strftime("%Y-%m-%d"),
-                    end=end_dt.strftime("%Y-%m-%d"),
-                )
-            except Exception:
-                mem_mask = None
-
-            if mem_mask is not None and not mem_mask.empty:
-                mem_mask.index = pd.to_datetime(mem_mask.index)
-                mem_mask = mem_mask.sort_index()
-
-                # Restrict membership matrix to the requested tickers
-                mem_mask = mem_mask.reindex(columns=tickers)
-
-                # known_index_tickers = [t for t in tickers if t in mem_mask.columns]
-                # unknown_tickers = [t for t in tickers if t not in mem_mask.columns]
-            else:
-                # If membership fails, fall back to non-membership-aware behavior
-                mem_mask = None
-                # known_index_tickers = []
-                # unknown_tickers = tickers
-        # else:
-        #     unknown_tickers = tickers
+        # Note: In live mode we never apply historical membership masking.
+        if self.is_live and membership_aware:
+            VectorizedSignalEngine.log.debug(
+                "membership_aware requested, but skipping membership mask in LIVE mode"
+            )
 
         # -----------------------------
         # Fetch per-ticker series
@@ -197,9 +179,16 @@ class VectorizedSignalEngine:
         # -----------------------------
         # Apply membership mask if requested
         # -----------------------------
-        if membership_aware:
+        if membership_aware and (not self.is_live):
             # membership_mask: [Date x Ticker] of bools (True = in index)
-            mem_mask = self.universe.membership_mask(start=start_dt, end=end_dt)
+            try:
+                mem_mask = self.universe.membership_mask(start=start_dt, end=end_dt)
+            except Exception:
+                mem_mask = None
+
+            if mem_mask is None or mem_mask.empty:
+                return field_mat
+
             # Align dates to price matrix
             mem_mask = mem_mask.reindex(index=field_mat.index)
             # Align columns to price matrix, keep unknown tickers as NaN for now

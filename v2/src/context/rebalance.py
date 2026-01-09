@@ -7,6 +7,7 @@ class RebalanceContext:
     """
     Context information for a rebalance operation.
     """
+
     # rebalance timestamp for which this context applies (e.g. for which a sleeve generates weights)
     rebalance_ts: datetime | str
 
@@ -17,3 +18,6 @@ class RebalanceContext:
 
     # Current AUM at the time of rebalance (for friction control, etc.)
     aum: float = 0.0
+
+    # Running mode
+    is_live: bool = False  # True if in live mode, False if backtest

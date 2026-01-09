@@ -11,6 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
+
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
@@ -159,6 +160,7 @@ class MultiSleeveAllocator:
         regime_engine: RegimeEngine,
         sleeves: Mapping[str, BaseSleeve],
         config: Optional[MultiSleeveConfig] = None,
+        is_live: bool = False,  # True if in live mode, False if backtest
     ):
         """
         Parameters
@@ -198,6 +200,12 @@ class MultiSleeveAllocator:
         # Logger
         self.log = logging.getLogger(self.__class__.__name__)
         self.log.info("Enabled sleeves: %s", self.enabled_sleeves)
+
+        self.is_live = is_live
+        if is_live:
+            self.log.info("Running in LIVE mode.")
+        else:
+            self.log.info("Running in BACKTEST mode.")
 
         # Friction Control
         self.friction_controller: Optional[FrictionController] = None

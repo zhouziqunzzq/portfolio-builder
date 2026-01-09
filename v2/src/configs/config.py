@@ -25,7 +25,10 @@ from at.config import ATConfig
 
 @dataclass
 class UniverseManagerConfig:
+    # membership_csv is only useful in backtests to define historical membership.
     membership_csv: str
+    # current_constituents_csv is used in live mode to define current membership.
+    current_constituents_csv: str
     sectors_yaml: str
 
 
@@ -37,6 +40,8 @@ class MarketDataStoreConfig:
 
 @dataclass
 class RuntimeConfig:
+    is_live: bool = True  # True if in live mode, False if backtest
+
     log_level: str = "INFO"
     log_to_file: bool = True
     log_root: Optional[str] = None

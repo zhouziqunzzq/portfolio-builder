@@ -20,6 +20,7 @@ from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
 from src.regime_engine import RegimeEngine
 from src.universe_manager import UniverseManager
+from src.vec_signal_engine import VectorizedSignalEngine
 
 from src.sleeves.trend.trend_sleeve import TrendSleeve
 from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
@@ -52,6 +53,7 @@ def build_runtime():
 
     # ==== Signals ====
     signals = SignalEngine(mds)
+    vec_engine = VectorizedSignalEngine(um, mds)
 
     # ==== Regime Engine ====
     regime_engine = RegimeEngine(
@@ -64,6 +66,7 @@ def build_runtime():
         universe=um,
         mds=mds,
         signals=signals,
+        vec_engine=vec_engine,
         config=None,
     )
 
@@ -71,6 +74,7 @@ def build_runtime():
         universe=um,
         mds=mds,
         signals=signals,
+        vec_engine=vec_engine,
         config=None,
     )
 

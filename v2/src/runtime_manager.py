@@ -93,6 +93,9 @@ class RuntimeManager:
         # Universe
         um = UniverseManager(
             membership_csv=Path(app_cfg.universe_manager.membership_csv),
+            current_constituents_csv=Path(
+                app_cfg.universe_manager.current_constituents_csv
+            ),
             sectors_yaml=Path(app_cfg.universe_manager.sectors_yaml),
             local_only=bool(opt.local_only),
         )
@@ -111,7 +114,7 @@ class RuntimeManager:
             disable_cache_margin=bool(opt.disable_signal_cache_margin),
             disable_cache_extension=bool(opt.disable_signal_cache_extension),
         )
-        vec_engine = VectorizedSignalEngine(um, mds)
+        vec_engine = VectorizedSignalEngine(um, mds, is_live=app_cfg.runtime.is_live)
 
         # Regime engine
         regime_engine = RegimeEngine(
@@ -126,17 +129,21 @@ class RuntimeManager:
             signals=signals,
             vec_engine=vec_engine,
             config=app_cfg.trend_sleeve,
+            is_live=app_cfg.runtime.is_live,
         )
         defensive = DefensiveSleeve(
             universe=um,
             mds=mds,
             signals=signals,
+            vec_engine=vec_engine,
             config=app_cfg.defensive_sleeve,
+            is_live=app_cfg.runtime.is_live,
         )
         sideways_base = SidewaysBaseSleeve(
             mds=mds,
             signals=signals,
             config=app_cfg.sideways_base_sleeve,
+            is_live=app_cfg.runtime.is_live,
         )
 
         allocator = MultiSleeveAllocator(
@@ -147,6 +154,7 @@ class RuntimeManager:
                 "sideways_base": sideways_base,
             },
             config=app_cfg.multi_sleeve_allocator,
+            is_live=app_cfg.runtime.is_live,
         )
 
         objects: Dict[str, object] = {

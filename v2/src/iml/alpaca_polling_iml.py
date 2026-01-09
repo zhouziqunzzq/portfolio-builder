@@ -22,6 +22,7 @@ from runtime_manager import RuntimeManager
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
 from market_data_store import MarketDataStore
 from states.base_state import BaseState
+from universe_manager import UniverseManager
 
 
 @dataclass
@@ -31,15 +32,27 @@ class PollingIMLState(BaseState):
 
     # Timestamp of last bar refresh
     last_bar_refresh_time: Optional[datetime] = None
+    # Timestamp of last universe refresh
+    last_universe_refresh_time: Optional[datetime] = None
 
     def to_payload(self) -> Dict[str, Any]:
-        last = (
+        last_bar = (
             to_canonical_eastern_naive(self.last_bar_refresh_time).to_pydatetime()
             if self.last_bar_refresh_time is not None
             else None
         )
+        last_universe = (
+            to_canonical_eastern_naive(self.last_universe_refresh_time).to_pydatetime()
+            if self.last_universe_refresh_time is not None
+            else None
+        )
         return {
-            "last_bar_refresh_time": (last.isoformat() if last is not None else None),
+            "last_bar_refresh_time": (
+                last_bar.isoformat() if last_bar is not None else None
+            ),
+            "last_universe_refresh_time": (
+                last_universe.isoformat() if last_universe is not None else None
+            ),
         }
 
     @classmethod
@@ -50,13 +63,24 @@ class PollingIMLState(BaseState):
             if last_bar_refresh_time_str is not None
             else None
         )
-
         if last_bar_refresh_time is not None:
             last_bar_refresh_time = to_canonical_eastern_naive(
                 last_bar_refresh_time
             ).to_pydatetime()
+
+        last_universe_refresh_time_str = payload.get("last_universe_refresh_time")
+        last_universe_refresh_time = (
+            datetime.fromisoformat(last_universe_refresh_time_str)
+            if last_universe_refresh_time_str is not None
+            else None
+        )
+        if last_universe_refresh_time is not None:
+            last_universe_refresh_time = to_canonical_eastern_naive(
+                last_universe_refresh_time
+            ).to_pydatetime()
         return cls(
             last_bar_refresh_time=last_bar_refresh_time,
+            last_universe_refresh_time=last_universe_refresh_time,
         )
 
     @classmethod
@@ -97,12 +121,20 @@ class AlpacaPollingIMLService(BaseIMLService):
             )
             config = IMLConfig()
         self.config = config
+        self.config.validate()
+
         self.bar_polling_enabled = config.bar_polling_enabled
         if not self.bar_polling_enabled:
             self.log.warning("Bar polling is disabled in AlpacaPollingIMLService")
         self.bar_interval = config.bar_interval
         if self.bar_interval != "1d":
             raise ValueError("AlpacaPollingIMLService only supports '1d' bar interval")
+
+        self.universe_polling_enabled = config.universe_polling_enabled
+        if not self.universe_polling_enabled:
+            self.log.warning("Universe polling is disabled in AlpacaPollingIMLService")
+        self.universe_polling_interval_secs = config.universe_polling_interval_secs
+
         self.rm = rm
 
         if config.polling_interval_secs <= 0:
@@ -189,6 +221,19 @@ class AlpacaPollingIMLService(BaseIMLService):
             except Exception:
                 return [Observation(0.0, {"known": False})]
 
+        def observe_last_universe_refresh_age(_: object) -> list[Observation]:
+            last = getattr(self.state, "last_universe_refresh_time", None)
+            if last is None:
+                return [Observation(0.0, {"known": False})]
+            try:
+                now = to_canonical_eastern_naive(
+                    datetime.now().astimezone()
+                ).to_pydatetime()
+                age = (now - last).total_seconds()
+                return [Observation(max(0.0, float(age)), {"known": True})]
+            except Exception:
+                return [Observation(0.0, {"known": False})]
+
         def observe_last_market_clock_age(_: object) -> list[Observation]:
             clk = self._last_market_clock
             if clk is None:
@@ -215,6 +260,12 @@ class AlpacaPollingIMLService(BaseIMLService):
             name="iml.last_bar_refresh_age_seconds",
             description="Age in seconds since the last successful bar refresh timestamp stored in state",
             callbacks=[observe_last_bar_refresh_age],
+        )
+
+        meter.create_observable_gauge(
+            name="iml.last_universe_refresh_age_seconds",
+            description="Age in seconds since the last successful universe refresh timestamp stored in state",
+            callbacks=[observe_last_universe_refresh_age],
         )
 
         meter.create_observable_gauge(
@@ -282,6 +333,11 @@ class AlpacaPollingIMLService(BaseIMLService):
                         source=self.name,
                     )
                     await self.emit_bars_checked(bars_checked_event)
+
+                # Refresh universe
+                universe_refreshed = await self.refresh_universe(now=now)
+                if universe_refreshed:
+                    self.log.debug("Universe refreshed successfully")
 
                 # Sleep until next poll
                 self.log.debug(f"Sleeping for {self._poll_interval_seconds} seconds")
@@ -478,3 +534,92 @@ class AlpacaPollingIMLService(BaseIMLService):
             ).to_pydatetime()
 
         return has_new_bars
+
+    async def refresh_universe(self, now: Optional[datetime] = None) -> bool:
+        """Refresh universe if enough time has passed since last refresh attempt.
+        Returns True if universe is refreshed.
+        """
+        if now is None:
+            now = datetime.now().astimezone()
+        now = to_canonical_eastern_naive(now).to_pydatetime()
+
+        if not self._should_refresh_universe(now):
+            return False
+
+        return await self._run_in_thread(self._refresh_universe)
+
+    def _should_refresh_universe(
+        self,
+        now: datetime,
+    ) -> bool:
+        """Check if enough time has passed since last universe refresh attempt."""
+        if not self.universe_polling_enabled:
+            self.log.debug("Universe polling is disabled; skipping universe refresh")
+            return False
+
+        # Check last universe refresh attempt time
+        if self.state.last_universe_refresh_time is not None:
+            delta_secs = (now - self.state.last_universe_refresh_time).total_seconds()
+            if delta_secs < self.universe_polling_interval_secs:
+                self.log.debug(
+                    f"Only {delta_secs} seconds since last universe refresh; "
+                    f"waiting for {self.universe_polling_interval_secs} seconds"
+                )
+                return False
+
+        # Enough time has passed
+        return True
+
+    def _refresh_universe(self) -> bool:
+        """Refresh universe from data source.
+        Update last universe refresh time in state.
+        Naively return True if universe is updated.
+        """
+        # Allow graceful shutdown: if we are stopping, abort without mutating state.
+        if self._shutdown_requested():
+            self.log.info("Shutdown requested; aborting universe refresh")
+            return False
+
+        # Grab the UniverseManager
+        um: UniverseManager = self.rm.get("universe_manager")
+        if not um:
+            self.log.error(
+                "UniverseManager not found in RuntimeManager; cannot refresh universe"
+            )
+            raise RuntimeError("UniverseManager not found")
+
+        # Force online fetch to get latest universe
+        local_only = um.local_only
+        um.local_only = False
+        try:
+            um.refresh_current_constituents()
+        except Exception:
+            raise
+        finally:
+            um.local_only = local_only
+
+        # Update last universe refresh time (only if not shutting down)
+        if not self._shutdown_requested():
+            self.state.last_universe_refresh_time = to_canonical_eastern_naive(
+                datetime.now().astimezone()
+            ).to_pydatetime()
+
+        # Log debug info
+        tickers = um.get_tickers(current_only=True)
+        smap = um.get_sector_map(current_only=True)
+        self.log.debug(
+            f"Refreshed universe with {len(tickers)} tickers across "
+            f"{len(set(smap.values()))} sectors"
+        )
+
+        return True
+
+    async def _on_startup(self) -> None:
+        await super()._on_startup()
+
+        # Ensure universe is refreshed on startup
+        try:
+            self._refresh_universe()
+        except Exception:
+            self.log.exception("Error refreshing universe on startup")
+            raise  # App cannot proceed without universe

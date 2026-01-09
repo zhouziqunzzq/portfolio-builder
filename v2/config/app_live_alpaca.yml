@@ -6,6 +6,7 @@
 # - This is the LIVE trading config for the Alpaca deployment.
 
 runtime:
+  is_live: true
   log_level: DEBUG
   log_to_file: true
   log_root: data_live_alpaca/logs
@@ -47,6 +48,7 @@ at:
 
 universe_manager:
   membership_csv: data_live_alpaca/sp500_membership.csv
+  current_constituents_csv: data_live_alpaca/current_sp500_constituents.csv
   sectors_yaml: config/sectors.yml # Shared with other configs
 
 market_data_store:

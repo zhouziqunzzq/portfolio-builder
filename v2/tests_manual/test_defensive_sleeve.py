@@ -13,6 +13,7 @@ from pathlib import Path
 from src.universe_manager import UniverseManager
 from src.market_data_store import MarketDataStore
 from src.signal_engine import SignalEngine
+from src.vec_signal_engine import VectorizedSignalEngine
 from src.sleeves.defensive.defensive_sleeve import DefensiveSleeve
 from src.sleeves.defensive.defensive_config import DefensiveConfig
 
@@ -42,6 +43,7 @@ def test_defensive_sleeve():
     )
 
     signals = SignalEngine(mds)
+    vec_engine = VectorizedSignalEngine(um, mds)
 
     # -------------------------
     # 3) Defensive Sleeve
@@ -51,6 +53,7 @@ def test_defensive_sleeve():
         universe=um,
         mds=mds,
         signals=signals,
+        vec_engine=vec_engine,
         config=cfg,
     )
 

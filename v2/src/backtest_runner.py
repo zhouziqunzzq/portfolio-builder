@@ -139,6 +139,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip sleeves precomputing before backtest",
     )
+    p.add_argument(
+        "--force-live-mode",
+        action="store_true",
+        default=False,
+        help="Force sleeves to run in live mode during backtest (i.e., use current universe membership). This WILL INTRODUCE LOOKAHEAD BIAS if the current universe differs from historical universe!",
+    )
 
     # Cost & risk-free knobs
     p.add_argument(
@@ -219,6 +225,19 @@ def build_runtime(args: argparse.Namespace) -> Dict[str, object]:
     # Global application config
     # Note: use the same AppConfig between backtest and live runs for consistency.
     app_cfg = AppConfig.load_from_yaml(Path(args.app_config))
+
+    force_live = args.force_live_mode
+    if force_live:
+        # Explicitly warn about lookahead bias and require manual confirmation to proceed
+        print(
+            "WARNING: Forcing live mode during backtest. This WILL INTRODUCE LOOKAHEAD BIAS if the current universe differs from historical universe!"
+        )
+        confirm = input("Type 'CONFIRM' to proceed: ")
+        if confirm != "CONFIRM":
+            print("Aborting backtest")
+            sys.exit(1)
+    # Override runtime.is_live to False for backtest unless forced live
+    app_cfg.runtime.is_live = True if force_live else False
 
     # Configure global logging
     root_logger = configure_logging(
@@ -551,9 +570,24 @@ def main() -> int:
 
     # Build runtime stack
     rt = build_runtime(args)
+    um: UniverseManager = rt["um"]
     logger = rt["logger"]  # type: ignore
-    mds: MarketDataStore = rt["mds"]  # type: ignore
-    allocator: MultiSleeveAllocator = rt["allocator"]  # type: ignore
+    mds: MarketDataStore = rt["mds"]
+    allocator: MultiSleeveAllocator = rt["allocator"]
+
+    # Refresh current universe constituents only when explicitly running in live mode.
+    # (For normal backtests, this would introduce unnecessary network calls and
+    # potential lookahead if current membership differs from historical membership.)
+    if getattr(allocator, "is_live", False):
+        if args.local_only:
+            logging.getLogger("backtest_v2").warning(
+                "Live-mode forced, but --local-only set; skipping current-universe refresh"
+            )
+        else:
+            um_local_only = bool(getattr(um, "local_only", False))
+            um.local_only = False  # temporarily allow network calls
+            um.refresh_current_constituents()
+            um.local_only = um_local_only
 
     # Backtest window
     if args.backtest_start:

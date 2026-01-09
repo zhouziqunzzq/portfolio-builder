@@ -128,6 +128,7 @@ class TrendSleeve(BaseSleeve):
         signals: SignalEngine,
         vec_engine: Optional[VectorizedSignalEngine] = None,
         config: Optional[TrendConfig] = None,
+        **kwargs: Any,
     ) -> None:
 
         super().__init__(
@@ -135,6 +136,7 @@ class TrendSleeve(BaseSleeve):
             universe_manager=universe,
             signal_engine=signals,
             vectorized_signal_engine=vec_engine,
+            **kwargs,
         )
         # Aliases for convenience
         self.um = self.universe_manager
@@ -149,6 +151,10 @@ class TrendSleeve(BaseSleeve):
 
         # Logger (instance-level, consistent with other sleeves)
         self.log = logging.getLogger(self.__class__.__name__)
+        if self.is_live:
+            self.log.info("Running in LIVE mode.")
+        else:
+            self.log.info("Running in BACKTEST mode.")
 
         self._approx_rebalance_days = infer_approx_rebalance_days(
             self.config.rebalance_freq
@@ -402,7 +408,12 @@ class TrendSleeve(BaseSleeve):
         smap = self.um.sector_map or {}
         active_tickers: Optional[set[str]] = None
 
-        if as_of is not None:
+        if self.is_live:
+            # In live mode, always use the latest membership
+            smap = self.um.get_sector_map(current_only=True)
+            active_tickers = set(self.um.get_tickers(current_only=True))
+        elif as_of is not None:
+            # Otherwise, if as_of is provided, filter to active members on that date
             as_of_dt = pd.to_datetime(as_of).normalize()
             # membership_mask returns [date x ticker] bool DataFrame
             mask = self.um.membership_mask(
@@ -689,7 +700,11 @@ class TrendSleeve(BaseSleeve):
 
         scored: DataFrame indexed by ticker, must contain 'stock_score'.
         """
-        smap = self.um.sector_map or {}
+        if self.is_live:
+            smap = self.um.get_sector_map(current_only=True)
+        else:
+            smap = self.um.sector_map or {}
+
         if "stock_score" not in scored.columns or scored.empty:
             return pd.Series(dtype=float)
 
@@ -940,7 +955,10 @@ class TrendSleeve(BaseSleeve):
     # ------------------------------------------------------------------
 
     def _tickers_in_sector(self, sector: str, candidates: List[str]) -> List[str]:
-        smap = self.um.sector_map or {}
+        if self.is_live:
+            smap = self.um.get_sector_map(current_only=True)
+        else:
+            smap = self.um.sector_map or {}
         return [t for t in candidates if t in smap and smap[t] == sector]
 
     def _select_top_k_for_sector(self, sector: str, scored: pd.DataFrame) -> List[str]:
@@ -1023,6 +1041,10 @@ class TrendSleeve(BaseSleeve):
             Boolean mask (Date x Ticker) indicating universe membership.
             If provided, raw signals will be masked before z-scoring.
         """
+        if self.is_live:
+            assert (
+                membership_mask is None
+            ), "membership_mask should be None in live mode"
 
         cfg = self.config
         VSE = self.vec_engine
@@ -1275,7 +1297,10 @@ class TrendSleeve(BaseSleeve):
         DataFrame
             Date x Sector matrix of blended CS + TS sector scores.
         """
-        smap = sector_map or self.um.sector_map or {}
+        if self.is_live:
+            smap = self.um.get_sector_map(current_only=True)
+        else:
+            smap = sector_map or self.um.sector_map or {}
         if stock_score_mat is None or stock_score_mat.empty:
             return pd.DataFrame(index=getattr(stock_score_mat, "index", None))
         cfg = self.config
@@ -1383,7 +1408,13 @@ class TrendSleeve(BaseSleeve):
           - runs across all dates in a single pass
         """
         cfg = self.config
-        smap = sector_map or self.um.sector_map or {}
+        if sector_map is not None:
+            smap = sector_map
+        else:
+            if self.is_live:
+                smap = self.um.get_sector_map(current_only=True)
+            else:
+                smap = self.um.sector_map or {}
         VSE = self.vec_engine  # VectorizedSignalEngine
 
         # Align dates on sector_weights_mat
@@ -1560,7 +1591,7 @@ class TrendSleeve(BaseSleeve):
             price_loader=self.mds,
             start=warmup_start,
             end=end_ts,
-            tickers=self.um.tickers,
+            tickers=self.um.get_tickers(current_only=self.is_live),
             field="Close",  # Use Close prices for trend calculations
             interval=self.config.signals_interval,
             auto_adjust=True,  # Use adjusted prices
@@ -1663,22 +1694,25 @@ class TrendSleeve(BaseSleeve):
         )
         # Normalize tickers to uppercase and align sector_map to columns
         price_mat.columns = [c.upper() for c in price_mat.columns]
-        sector_map = self.um.sector_map
+        sector_map = self.um.get_sector_map(current_only=self.is_live)
         if sector_map is not None:
             sector_map = {t.upper(): s for t, s in sector_map.items()}
             # Keep sector_map only for tickers present in prices
             sector_map = {t: s for t, s in sector_map.items() if t in price_mat.columns}
 
         # Get membership mask to apply after signal calculation
-        membership_mask = self.um.membership_mask(
-            start=warmup_start.strftime("%Y-%m-%d"),
-            end=end_ts.strftime("%Y-%m-%d"),
-        )
-        # Ensure mask columns match price_mat columns
-        if not membership_mask.empty:
-            membership_mask = membership_mask.reindex(
-                columns=price_mat.columns, fill_value=False
+        membership_mask: Optional[pd.DataFrame] = None
+        # Note: Only apply membership mask if NOT in live mode
+        if not self.is_live:
+            membership_mask = self.um.membership_mask(
+                start=warmup_start.strftime("%Y-%m-%d"),
+                end=end_ts.strftime("%Y-%m-%d"),
             )
+            # Ensure mask columns match price_mat columns
+            if not membership_mask.empty:
+                membership_mask = membership_mask.reindex(
+                    columns=price_mat.columns, fill_value=False
+                )
 
         # --------------------------------------------------
         # 2) Vectorized stock scores (Date x Ticker)

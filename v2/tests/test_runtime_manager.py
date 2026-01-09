@@ -22,9 +22,13 @@ def test_runtime_manager_builds_singletons(tmp_path):
         "runtime": {"log_root": str(tmp_path / "logs"), "log_level": "INFO"},
         "universe_manager": {
             "membership_csv": str(membership_csv),
+            "current_constituents_csv": str(tmp_path / "current_constituents.csv"),
             "sectors_yaml": str(sectors_yaml),
         },
-        "market_data_store": {"data_root": str(tmp_path / "prices"), "source": "yfinance"},
+        "market_data_store": {
+            "data_root": str(tmp_path / "prices"),
+            "source": "yfinance",
+        },
         "regime_engine": {},
         "trend_sleeve": {},
         "defensive_sleeve": {},
@@ -37,7 +41,9 @@ def test_runtime_manager_builds_singletons(tmp_path):
     app_yml.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     app_cfg = AppConfig.load_from_yaml(app_yml)
-    rm = RuntimeManager.from_app_config(app_cfg, options=RuntimeManagerOptions(local_only=True))
+    rm = RuntimeManager.from_app_config(
+        app_cfg, options=RuntimeManagerOptions(local_only=True)
+    )
 
     # `get` and `[]` should return the same singleton object.
     assert rm.get("mds") is rm["market_data_store"]
@@ -49,8 +55,15 @@ def test_runtime_manager_unknown_key_raises(tmp_path):
     app_yml = tmp_path / "app.yml"
     raw = {
         "runtime": {"log_root": str(tmp_path / "logs"), "log_level": "INFO"},
-        "universe_manager": {"membership_csv": str(tmp_path / "m.csv"), "sectors_yaml": str(tmp_path / "s.yml")},
-        "market_data_store": {"data_root": str(tmp_path / "prices"), "source": "yfinance"},
+        "universe_manager": {
+            "membership_csv": str(tmp_path / "m.csv"),
+            "current_constituents_csv": str(tmp_path / "cc.csv"),
+            "sectors_yaml": str(tmp_path / "s.yml"),
+        },
+        "market_data_store": {
+            "data_root": str(tmp_path / "prices"),
+            "source": "yfinance",
+        },
         "regime_engine": {},
         "trend_sleeve": {},
         "defensive_sleeve": {},

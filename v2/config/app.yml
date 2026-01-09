@@ -5,6 +5,7 @@
 # - Paths are relative to the v2/ directory when running v2 runners.
 
 runtime:
+  is_live: true
   log_level: DEBUG
   log_to_file: true
   log_root: data/logs
@@ -46,6 +47,7 @@ at:
 
 universe_manager:
   membership_csv: data/sp500_membership.csv
+  current_constituents_csv: data/current_sp500_constituents.csv
   sectors_yaml: config/sectors.yml
 
 market_data_store:

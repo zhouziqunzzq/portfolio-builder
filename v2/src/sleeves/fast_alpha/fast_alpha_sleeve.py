@@ -51,12 +51,15 @@ class FastAlphaSleeve:
         signals: SignalEngine,
         vec_engine: Optional[VectorizedSignalEngine] = None,
         config: Optional[FastAlphaConfig] = None,
+        *,
+        is_live: bool = False,
     ) -> None:
         self.um = universe
         self.mds = mds
         self.signals = signals
         self.vec_engine = vec_engine
         self.config = config or FastAlphaConfig()
+        self.is_live = bool(is_live)
         self.state = FastAlphaState()
 
         # Cached precomputed weights (Date x Ticker)
@@ -145,16 +148,23 @@ class FastAlphaSleeve:
           - Use membership mask as-of date
           - Filter out tickers without valid sectors (optional; mostly to remove Unknown)
         """
-        smap = self.um.sector_map or {}
+        if self.is_live:
+            smap = self.um.get_sector_map(current_only=True) or {}
+        else:
+            smap = self.um.sector_map or {}
         active_tickers: Optional[set[str]] = None
 
-        mask = self.um.membership_mask(
-            start=as_of.strftime("%Y-%m-%d"),
-            end=as_of.strftime("%Y-%m-%d"),
-        )
-        if not mask.empty:
-            row = mask.iloc[0]
-            active_tickers = set(row.index[row.astype(bool)])
+        # In live mode, do not apply historical membership masks.
+        if self.is_live:
+            active_tickers = set(self.um.get_tickers(current_only=True))
+        else:
+            mask = self.um.membership_mask(
+                start=as_of.strftime("%Y-%m-%d"),
+                end=as_of.strftime("%Y-%m-%d"),
+            )
+            if not mask.empty:
+                row = mask.iloc[0]
+                active_tickers = set(row.index[row.astype(bool)])
 
         out: List[str] = []
         for t, sec in smap.items():
