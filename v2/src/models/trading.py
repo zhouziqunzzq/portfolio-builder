@@ -6,6 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
 
+
 class InstrumentType(Enum):
     EQUITY = "equity"
 
@@ -17,6 +18,11 @@ class OrderSide(Enum):
 
 class TimeInForce(Enum):
     DAY = "day"
+
+
+class OrderType(Enum):
+    MARKET = "market"
+    LIMIT = "limit"
 
 
 class OrderStatus(Enum):
@@ -75,14 +81,27 @@ class OrderIntent:
     client_order_id: str
     instrument: InstrumentRef
     side: OrderSide
+    order_type: OrderType = OrderType.MARKET
     time_in_force: TimeInForce = TimeInForce.DAY
 
     qty: Optional[Decimal] = None
     notional: Optional[Decimal] = None
+    limit_price: Optional[Decimal] = None
 
     def __post_init__(self) -> None:
         if bool(self.qty is None) == bool(self.notional is None):
             raise ValueError("OrderIntent must specify exactly one of qty or notional")
+
+        if self.order_type == OrderType.MARKET:
+            if self.limit_price is not None:
+                raise ValueError("Market orders cannot specify limit_price")
+        elif self.order_type == OrderType.LIMIT:
+            if self.limit_price is None:
+                raise ValueError("Limit orders must specify limit_price")
+            if self.limit_price <= 0:
+                raise ValueError("limit_price must be > 0")
+        else:
+            raise ValueError(f"Unknown order_type: {self.order_type}")
 
 
 @dataclass(frozen=True)
