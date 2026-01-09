@@ -12,7 +12,10 @@ __pycache__/
 
 # Data / caches / outputs
 data/
-data_.*/
+data_prod_alpaca/
+data_live_alpaca/
+data_paper_alpaca/
+data_*/
 logs/
 plots/
 backtests/
