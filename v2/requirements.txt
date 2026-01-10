@@ -21,6 +21,9 @@ pyyaml>=6.0
 # Alpaca SDK (IML/EML playgrounds)
 alpaca-py>=0.42
 
+# Env file loader for manual scripts
+python-dotenv>=1.0
+
 # Observability (OpenTelemetry metrics -> OTLP)
 opentelemetry-api>=1.25
 opentelemetry-sdk>=1.25

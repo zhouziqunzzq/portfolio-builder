@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -9,8 +10,10 @@ from models.trading import (
     InstrumentRef,
     OrderIntent,
     OrderState,
+    OrderFilter,
+    PreflightOrderResult,
     PlacedOrder,
-    Tradability,
+    Instrument,
 )
 
 
@@ -22,6 +25,7 @@ class BaseTradingAPI(ABC):
     """
 
     name: str
+    log = logging.getLogger(__name__)
 
     @abstractmethod
     def capabilities(self) -> BrokerCapabilities:
@@ -36,7 +40,11 @@ class BaseTradingAPI(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def check_tradable(self, instrument: InstrumentRef) -> Tradability:
+    def get_instrument(self, instrument: InstrumentRef) -> Instrument:
+        raise NotImplementedError
+
+    @abstractmethod
+    def preflight_order(self, intent: OrderIntent) -> PreflightOrderResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -48,13 +56,11 @@ class BaseTradingAPI(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def cancel_order(self, broker_order_id: str) -> None:
+    def list_orders(self, order_filter: OrderFilter) -> List[OrderState]:
         raise NotImplementedError
 
     @abstractmethod
-    def cancel_all_open_orders(self) -> None:
-        """Best-effort cancel of open orders."""
-
+    def cancel_order(self, broker_order_id: str) -> None:
         raise NotImplementedError
 
 

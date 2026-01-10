@@ -1859,7 +1859,9 @@ class AlpacaEMLService(BaseEML):
                     market_value=to_decimal(p.market_value),
                     avg_entry_price=to_decimal(p.avg_entry_price),
                     side=p.side,
-                    unrealized_pl=to_decimal(p.unrealized_pl),
+                    unrealized_pnl=to_decimal(
+                        getattr(p, "unrealized_pl", getattr(p, "unrealized_pnl", None))
+                    ),
                 )
             )
 

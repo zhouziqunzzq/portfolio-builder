@@ -50,6 +50,19 @@ class InstrumentRef:
 
 
 @dataclass(frozen=True)
+class Instrument:
+    """Broker-agnostic instrument details."""
+
+    instrument: InstrumentRef
+    tradable: Optional[bool] = None
+    fractionable: Optional[bool] = None
+
+    @property
+    def symbol(self) -> str:
+        return self.instrument.symbol
+
+
+@dataclass(frozen=True)
 class BrokerCapabilities:
     """Feature flags that guide execution decisions.
 
@@ -60,15 +73,7 @@ class BrokerCapabilities:
     supports_qty_market_orders: bool = False
     supports_fractional_qty: bool = False
     supports_notional_sells: bool = False
-    supports_cancel_all_open_orders: bool = False
-    has_preflight: bool = False
-    eventual_consistency_after_submit: bool = False
-
-
-@dataclass(frozen=True)
-class Tradability:
-    tradable: bool
-    reason: Optional[str] = None
+    supports_preflight: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,18 @@ class OrderIntent:
 
 
 @dataclass(frozen=True)
+class PreflightOrderResult:
+    """Normalized preflight order calculation result."""
+
+    instrument: InstrumentRef
+    estimated_commission: Optional[Decimal] = None
+    estimated_fees: Optional[Decimal] = None
+    estimated_cost: Optional[Decimal] = None
+    estimated_proceeds: Optional[Decimal] = None
+    raw: Any = None
+
+
+@dataclass(frozen=True)
 class PlacedOrder:
     broker_order_id: str
     client_order_id: str
@@ -123,3 +140,11 @@ class OrderState:
 
     last_update_ts: Optional[float] = None
     raw: Any = None
+
+
+@dataclass(frozen=True)
+class OrderFilter:
+    """Filter for listing orders."""
+
+    status: Optional[OrderStatus] = None
+    # TODO: add date range, instrument, etc.

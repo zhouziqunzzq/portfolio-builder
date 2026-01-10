@@ -18,7 +18,9 @@ class BrokerAccount:
     portfolio_value: Optional[Decimal] = None
     equity: Optional[Decimal] = None
     last_equity: Optional[Decimal] = None
-    adj_equity: Optional[Decimal] = None  # Adjusted equity after cash buffers, if any
+    # Adjusted equity after cash buffers, if any.
+    # Note: This is typically calculated by EML, not provided by brokers.
+    adj_equity: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -30,4 +32,4 @@ class BrokerPosition:
     market_value: Optional[Decimal] = None
     avg_entry_price: Optional[Decimal] = None
     side: Optional[str] = None
-    unrealized_pl: Optional[Decimal] = None
+    unrealized_pnl: Optional[Decimal] = None
