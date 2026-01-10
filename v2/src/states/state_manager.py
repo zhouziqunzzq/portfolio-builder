@@ -158,7 +158,7 @@ class FileStateManager(BaseStateManager):
             "sideways_base_sleeve": "sideways_base",
             "multi_sleeve_allocator": "allocator",
             "alpaca_polling_iml": "iml",
-            "alpaca_eml": "eml",
+            "portfolio_eml": "eml",
             "multi_sleeve_at": "at",
         }
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, FrozenSet, Optional
 
 
 class InstrumentType(Enum):
@@ -146,5 +146,5 @@ class OrderState:
 class OrderFilter:
     """Filter for listing orders."""
 
-    status: Optional[OrderStatus] = None
+    statuses: Optional[FrozenSet[OrderStatus]] = None
     # TODO: add date range, instrument, etc.

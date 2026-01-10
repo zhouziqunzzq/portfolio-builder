@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-import os
 import time
+import uuid
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 
 from opentelemetry import metrics
 from opentelemetry.metrics import Observation
@@ -38,6 +38,16 @@ from .config import EMLConfig
 from .state import EMLState
 from utils.decimals import to_decimal
 
+from models.trading import (
+    InstrumentRef,
+    OrderFilter,
+    OrderIntent,
+    OrderSide,
+    OrderStatus,
+)
+from trading_api.base import BaseTradingAPI
+from trading_api.alpaca import AlpacaTradingAPI
+
 
 class EMLShutdownRequested(Exception):
     """Raised internally to abort blocking execution during shutdown."""
@@ -45,15 +55,14 @@ class EMLShutdownRequested(Exception):
     pass
 
 
-class AlpacaEMLService(BaseEML):
-    """Alpaca Execution Market Link (EML).
+class PortfolioEMLService(BaseEML):
+    """Portfolio Execution Market Link (EML).
 
     Current scope:
-    - Periodically fetch account + (optionally) positions from Alpaca
+    - Periodically fetch account + (optionally) positions from the configured broker
     - Publish an `AccountSnapshotEvent` to the event bus
-
-    Future scope:
     - Translate `RebalancePlanRequestEvent` into broker orders
+    - Translate `PositionCleanupPlanRequestEvent` into broker orders
     - Publish order/fill updates to the bus
     """
 
@@ -63,12 +72,8 @@ class AlpacaEMLService(BaseEML):
         rm: Optional["RuntimeManager"] = None,
         *,
         config: Optional[EMLConfig] = None,
-        api_key: Optional[str] = None,
-        secret_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        paper: Optional[bool] = None,
-        trading_client: Optional[Any] = None,
-        name: str = "AlpacaEML",
+        trading_api: Optional[BaseTradingAPI] = None,
+        name: str = "PortfolioEML",
     ):
         super().__init__(bus=bus, name=name)
 
@@ -86,33 +91,22 @@ class AlpacaEMLService(BaseEML):
         if self.rm is not None:
             # Register self to RuntimeManager for lifecycle management.
             self.rm.set("eml", self)
-            self.rm.set("alpaca_eml", self)  # alias
+            self.rm.set("portfolio_eml", self)
 
-        self._api_key = api_key or os.environ.get("ALPACA_API_KEY")
-        self._secret_key = secret_key or os.environ.get("ALPACA_SECRET_KEY")
-        self._base_url = base_url or os.environ.get(
-            "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
-        )
-
-        if paper is None:
-            env_paper = os.environ.get("ALPACA_PAPER")
-            if env_paper is None:
-                self._paper = True
-            else:
-                self._paper = env_paper.strip().lower() in {"1", "true", "yes", "y"}
+        if trading_api is not None:
+            self._trading_api = trading_api
         else:
-            self._paper = bool(paper)
+            broker = str(self.config.broker or "alpaca").strip().lower()
+            if broker != "alpaca":
+                raise ValueError(
+                    f"Unsupported EMLConfig.broker={self.config.broker!r}; only 'alpaca' is supported"
+                )
+            # Broker adapter resolves env vars/defaults.
+            self._trading_api = AlpacaTradingAPI(name="AlpacaTradingAPI")
 
-        self._injected_trading_client = trading_client is not None
-
-        if trading_client is not None:
-            self._trading = trading_client
-        else:
-            self._trading = self._build_trading_client()
         self.log.info(
-            "Initialized AlpacaEMLService (paper=%s, base_url=%s)",
-            self._paper,
-            self._base_url,
+            "Initialized EML (broker=%s)",
+            str(self.config.broker).strip().lower(),
         )
 
         # State
@@ -223,7 +217,7 @@ class AlpacaEMLService(BaseEML):
         meter.create_observable_gauge(
             name="eml.position_unrealized_pnl",
             description="Latest broker position unrealized P&L per symbol",
-            callbacks=[lambda _: _obs_positions("unrealized_pl")],
+            callbacks=[lambda _: _obs_positions("unrealized_pnl")],
         )
 
         def _obs_pending_rebalances(_: object) -> list[Observation]:
@@ -319,26 +313,6 @@ class AlpacaEMLService(BaseEML):
             description="Count of broker orders submitted by EML",
         )
 
-    def _build_trading_client(self):
-        if not self._api_key or not self._secret_key:
-            raise RuntimeError(
-                "Alpaca credentials missing. Set ALPACA_API_KEY and ALPACA_SECRET_KEY (or pass api_key/secret_key)."
-            )
-
-        try:
-            from alpaca.trading.client import TradingClient
-        except Exception as e:
-            raise RuntimeError(
-                "Missing dependency 'alpaca-py'. Install with `pip install alpaca-py`."
-            ) from e
-
-        return TradingClient(
-            api_key=self._api_key,
-            secret_key=self._secret_key,
-            paper=self._paper,
-            url_override=self._base_url,
-        )
-
     async def _on_startup(self) -> None:
         await super()._on_startup()
 
@@ -423,7 +397,7 @@ class AlpacaEMLService(BaseEML):
             except Exception:
                 iteration_success = False
                 # Keep running; transient API/network issues are expected.
-                self.log.exception("Error in AlpacaEMLService main loop")
+                self.log.exception("Error in PortfolioEMLService main loop")
                 await asyncio.sleep(min(30.0, max(1.0, self._poll_interval_seconds)))
             finally:
                 # Count one heartbeat per finished iteration, labeled by success.
@@ -436,73 +410,54 @@ class AlpacaEMLService(BaseEML):
 
     def _cancel_all_open_orders(self) -> None:
         """Cancel all currently-open orders at the broker (best-effort)."""
+        openish = {
+            OrderStatus.NEW,
+            OrderStatus.ACCEPTED,
+            OrderStatus.OPEN,
+            OrderStatus.PARTIALLY_FILLED,
+        }
 
-        # Preferred: Alpaca endpoint cancels all open orders.
-        if hasattr(self._trading, "cancel_orders"):
-            self.log.info("Canceling all open orders...")
-            res = self._trading.cancel_orders()
-            self.log.info("Cancel-all-open request completed: result=%s", res)
+        # Broker-agnostic: ask adapter for open-ish orders, then cancel each.
+        try:
+            orders = self._trading_api.list_orders(
+                OrderFilter(statuses=frozenset(openish))
+            )
+        except Exception:
+            self.log.exception("Failed listing orders for cancel-all")
             return
 
-        # Fallback: list open orders then cancel individually.
-        open_ids: List[str] = []
-        try:
-            open_orders = self._list_open_orders_best_effort(limit=500)
-            for o in open_orders:
-                oid = self._extract_order_id(o)
-                if oid:
-                    open_ids.append(oid)
-        except Exception:
-            self.log.exception("Failed listing open orders")
-            open_ids = []
+        open_ids = [o.broker_order_id for o in orders if o.broker_order_id]
 
         if not open_ids:
             self.log.info("No open orders found to cancel")
             return
 
-        if not hasattr(self._trading, "cancel_order_by_id"):
-            raise RuntimeError(
-                "Trading client does not support cancel_orders or cancel_order_by_id"
-            )
-
-        self.log.info("Canceling %d open orders...", len(open_ids))
+        self.log.info("Canceling %d open order(s)...", len(open_ids))
         for oid in open_ids:
             try:
-                self._trading.cancel_order_by_id(oid)
+                self._trading_api.cancel_order(oid)
             except Exception:
                 self.log.exception("Failed canceling open order: order_id=%s", oid)
 
     def _list_open_orders_best_effort(self, *, limit: int = 100) -> List[Any]:
-        """Best-effort retrieval of open orders.
-
-        Uses alpaca-py filters when available; otherwise returns an empty list.
-        """
+        """Best-effort retrieval of open orders."""
+        # Deprecated: EML now uses trading_api.list_orders().
         try:
-            from alpaca.trading.enums import QueryOrderStatus
-            from alpaca.trading.requests import GetOrdersRequest
+            orders = self._trading_api.list_orders(
+                OrderFilter(
+                    statuses=frozenset(
+                        {
+                            OrderStatus.NEW,
+                            OrderStatus.ACCEPTED,
+                            OrderStatus.OPEN,
+                            OrderStatus.PARTIALLY_FILLED,
+                        }
+                    )
+                )
+            )
         except Exception:
             return []
-
-        if not hasattr(self._trading, "get_orders"):
-            return []
-
-        orders = self._trading.get_orders(
-            filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=int(limit))
-        )
-        try:
-            return list(orders)
-        except Exception:
-            return []
-
-    @staticmethod
-    def _extract_order_id(order_obj: Any) -> Optional[str]:
-        raw = getattr(order_obj, "_raw", None)
-        if isinstance(raw, dict) and raw.get("id"):
-            return str(raw.get("id"))
-        oid = getattr(order_obj, "id", None)
-        if oid:
-            return str(oid)
-        return None
+        return orders[: int(limit)]
 
     async def execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
         """Execute a rebalance plan request.
@@ -1321,20 +1276,14 @@ class AlpacaEMLService(BaseEML):
                 if p is None:
                     continue
 
-                desired_notional = cls._round_usd(abs(dv))
-                if desired_notional is None:
-                    continue
-
                 # Cap notional sells to current position market value (best-effort).
+                desired_notional = float(abs(dv))
                 try:
                     mv = float(p.market_value or 0.0)
                 except Exception:
                     mv = 0.0
                 if mv > 0:
-                    mv_cap = cls._round_usd(mv)
-                    if mv_cap is not None:
-                        desired_notional = min(desired_notional, mv_cap)
-
+                    desired_notional = min(desired_notional, float(mv))
                 if desired_notional < min_abs:
                     continue
 
@@ -1356,9 +1305,7 @@ class AlpacaEMLService(BaseEML):
                 )
             else:
                 # BUY: use notional market orders for simplicity
-                notional = cls._round_usd(dv)
-                if notional is None:
-                    continue
+                notional = float(dv)
                 if notional < min_abs:
                     continue
                 buys.append(
@@ -1403,12 +1350,6 @@ class AlpacaEMLService(BaseEML):
         return qty
 
     def _assert_symbols_tradable(self, symbols: Iterable[str]) -> None:
-        # Prefer alpaca enums when available, but allow injected clients in tests.
-        try:
-            from alpaca.trading.enums import AssetStatus
-        except Exception:
-            AssetStatus = None
-
         unique = []
         seen = set()
         for s in symbols:
@@ -1421,46 +1362,18 @@ class AlpacaEMLService(BaseEML):
         not_tradable: List[str] = []
         for sym in unique:
             try:
-                asset = self._trading.get_asset(sym)
+                inst = self._trading_api.get_instrument(InstrumentRef(symbol=sym))
             except Exception:
                 self.log.debug(
-                    "Failed to fetch asset info for symbol=%s; assumes not tradable",
+                    "Failed to fetch instrument info for symbol=%s; assumes not tradable",
                     sym,
                 )
                 not_tradable.append(sym)
                 continue
-            self.log.debug("Fetched asset info for symbol=%s: %s", sym, asset)
+            self.log.debug("Fetched instrument info for symbol=%s: %s", sym, inst)
 
-            raw = getattr(asset, "_raw", None)
-            if isinstance(raw, dict):
-                tradable = raw.get("tradable")
-                status = raw.get("status")
-            else:
-                tradable = getattr(asset, "tradable", None)
-                status = getattr(asset, "status", None)
-
-            if tradable is False:
-                self.log.debug("Symbol not tradable: %s", sym)
+            if inst.tradable is False:
                 not_tradable.append(sym)
-                continue
-
-            if status is not None:
-                if AssetStatus is not None:
-                    try:
-                        if status != AssetStatus.ACTIVE:
-                            self.log.debug(
-                                "Symbol not active: %s; status=%s", sym, status
-                            )
-                            not_tradable.append(sym)
-                            continue
-                    except Exception:
-                        pass
-                else:
-                    # Best-effort string check
-                    if str(status).lower() != "active":
-                        self.log.debug("Symbol not active: %s; status=%s", sym, status)
-                        not_tradable.append(sym)
-                        continue
 
         if not_tradable:
             raise RuntimeError(
@@ -1572,64 +1485,31 @@ class AlpacaEMLService(BaseEML):
             )
 
         if notional is not None:
-            notional = self._round_usd(notional)
-            if notional is None or notional <= 0:
+            try:
+                notional_f = float(notional)
+            except Exception:
+                raise ValueError(f"Invalid notional: {notional}")
+            if notional_f <= 0:
                 raise ValueError(f"Invalid notional: {notional}")
 
-        try:
-            from alpaca.trading.enums import OrderSide, TimeInForce
-            from alpaca.trading.requests import MarketOrderRequest
-
-            side_enum = OrderSide.BUY if side == "buy" else OrderSide.SELL
-            order_req = MarketOrderRequest(
-                symbol=symbol,
-                side=side_enum,
-                time_in_force=TimeInForce.DAY,
-                qty=qty,
-                notional=notional,
-            )
-        except Exception as e:
-            # Unit tests may inject a fake trading client without installing alpaca-py.
-            if not getattr(self, "_injected_trading_client", False):
-                raise RuntimeError(
-                    "Missing dependency 'alpaca-py'. Install with `pip install alpaca-py`."
-                ) from e
-
-            class _FallbackMarketOrderRequest:
-                def __init__(self, *, symbol: str, side: str, qty: Any, notional: Any):
-                    self.symbol = symbol
-                    self.side = side
-                    self.qty = qty
-                    self.notional = notional
-                    self._raw = {
-                        "symbol": symbol,
-                        "side": side,
-                        "qty": qty,
-                        "notional": notional,
-                    }
-
-            order_req = _FallbackMarketOrderRequest(
-                symbol=symbol,
-                side=side,
-                qty=qty,
-                notional=notional,
-            )
-
         self.log.debug(
-            "Submitting market order: symbol=%s side=%s qty=%s notional=%s order_req=%s",
+            "Submitting market order: symbol=%s side=%s qty=%s notional=%s",
             symbol,
             side,
             qty,
             notional,
-            order_req,
         )
-        submitted = self._trading.submit_order(order_req)
-        raw = getattr(submitted, "_raw", None)
-        if isinstance(raw, dict) and raw.get("id"):
-            return str(raw.get("id"))
 
-        oid = getattr(submitted, "id", None)
-        if oid:
+        side_enum = OrderSide.BUY if side == "buy" else OrderSide.SELL
+        intent = OrderIntent(
+            client_order_id=str(uuid.uuid4()),
+            instrument=InstrumentRef(symbol=symbol),
+            side=side_enum,
+            qty=to_decimal(qty),
+            notional=to_decimal(notional),
+        )
+        placed = self._trading_api.submit_order(intent)
+        try:
             self._orders_submitted_counter.add(
                 1,
                 {
@@ -1637,8 +1517,9 @@ class AlpacaEMLService(BaseEML):
                     "side": str(side).strip().lower(),
                 },
             )
-            return str(oid)
-        raise RuntimeError("Alpaca submit_order returned no order id")
+        except Exception:
+            pass
+        return placed.broker_order_id
 
     def _wait_for_order_fill(
         self,
@@ -1649,12 +1530,6 @@ class AlpacaEMLService(BaseEML):
         sleep_fn: Callable[[float], None] = time.sleep,
         now_fn: Callable[[], float] = time.time,
     ) -> None:
-        # Prefer alpaca enums when available, but allow injected clients in tests.
-        try:
-            from alpaca.trading.enums import OrderStatus
-        except Exception:
-            OrderStatus = None
-
         start = float(now_fn())
 
         while True:
@@ -1666,12 +1541,8 @@ class AlpacaEMLService(BaseEML):
                     f"Timed out waiting for order fill: order_id={order_id}"
                 )
 
-            o = self._trading.get_order_by_id(order_id)
-            raw = getattr(o, "_raw", None)
-            if isinstance(raw, dict) and raw.get("status") is not None:
-                status = raw.get("status")
-            else:
-                status = getattr(o, "status", None)
+            o = self._trading_api.get_order(order_id)
+            status = o.status
 
             self.log.debug(
                 "Polled order status: order_id=%s status=%s",
@@ -1679,32 +1550,7 @@ class AlpacaEMLService(BaseEML):
                 status,
             )
 
-            status_s = str(status).strip().lower()
-            if OrderStatus is not None:
-                try:
-                    if status == OrderStatus.FILLED:
-                        try:
-                            latency = max(0.0, float(now_fn()) - start)
-                            self._order_fills_counter.add(1, {"service": self.name})
-                            self._order_fill_latency_hist.record(
-                                float(latency), {"service": self.name}
-                            )
-                        except Exception:
-                            pass
-                        return
-                    if status in {
-                        OrderStatus.CANCELED,
-                        OrderStatus.REJECTED,
-                        OrderStatus.EXPIRED,
-                    }:
-                        raise RuntimeError(
-                            f"Order did not fill (status={status}): order_id={order_id}"
-                        )
-                except Exception:
-                    # fall back to string checks
-                    pass
-
-            if status_s == "filled":
+            if status == OrderStatus.FILLED:
                 try:
                     latency = max(0.0, float(now_fn()) - start)
                     self._order_fills_counter.add(1, {"service": self.name})
@@ -1714,29 +1560,16 @@ class AlpacaEMLService(BaseEML):
                 except Exception:
                     pass
                 return
-            if status_s in {"canceled", "cancelled", "rejected", "expired"}:
+            if status in {
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+                OrderStatus.EXPIRED,
+            }:
                 raise RuntimeError(
-                    f"Order did not fill (status={status_s}): order_id={order_id}"
+                    f"Order did not fill (status={status}): order_id={order_id}"
                 )
 
             sleep_fn(float(poll_interval_seconds))
-
-    @staticmethod
-    def _round_usd(v: Any) -> Optional[float]:
-        """Round a USD notional to 2 decimals (down), as required by Alpaca."""
-        try:
-            d = Decimal(str(v))
-        except Exception:
-            return None
-        if d.is_nan():
-            return None
-        if d <= 0:
-            return None
-        out = d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-        try:
-            return float(out)
-        except Exception:
-            return None
 
     @staticmethod
     def _rebalance_request_from_state(
@@ -1826,46 +1659,20 @@ class AlpacaEMLService(BaseEML):
         )
 
     def _get_account(self) -> BrokerAccount:
-        acct = self._trading.get_account()
+        acct = self._trading_api.get_account()
         return BrokerAccount(
             id=acct.id,
             status=acct.status,
-            cash=to_decimal(acct.cash),
-            buying_power=to_decimal(acct.buying_power),
-            portfolio_value=to_decimal(acct.portfolio_value),
-            equity=to_decimal(acct.equity),
-            last_equity=to_decimal(getattr(acct, "last_equity", None)),
-            adj_equity=self._get_equity_adj(to_decimal(getattr(acct, "equity", None))),
+            cash=acct.cash,
+            buying_power=acct.buying_power,
+            portfolio_value=acct.portfolio_value,
+            equity=acct.equity,
+            last_equity=acct.last_equity,
+            adj_equity=self._get_equity_adj(acct.equity),
         )
 
     def _list_positions(self) -> List[BrokerPosition]:
-        try:
-            pos_list = self._trading.get_all_positions()
-        except Exception:
-            try:
-                pos_list = self._trading.get_positions()
-            except Exception:
-                pos_list = []
-
-        out: List[BrokerPosition] = []
-        for p in pos_list:
-            symbol = p.symbol
-            if not symbol:
-                continue
-            out.append(
-                BrokerPosition(
-                    symbol=str(symbol),
-                    qty=to_decimal(p.qty),
-                    market_value=to_decimal(p.market_value),
-                    avg_entry_price=to_decimal(p.avg_entry_price),
-                    side=p.side,
-                    unrealized_pnl=to_decimal(
-                        getattr(p, "unrealized_pl", getattr(p, "unrealized_pnl", None))
-                    ),
-                )
-            )
-
-        return out
+        return list(self._trading_api.list_positions())
 
     def _get_equity_adj(self, equity_abs: Optional[Decimal]) -> Optional[Decimal]:
         """Compute adjusted equity after applying cash buffer settings.

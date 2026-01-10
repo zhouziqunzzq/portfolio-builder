@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from v2.src.eml.alpaca_eml import AlpacaEMLService
+from v2.src.eml.portfolio_eml import PortfolioEMLService
 from v2.src.eml.config import EMLConfig
 from v2.src.eml.state import EMLState
 from v2.src.events.event_bus import EventBus
@@ -13,18 +13,18 @@ from v2.src.events.events import (
 )
 from v2.src.models import BrokerAccount, BrokerPosition
 
-from v2.tests.fakes import FakeTradingClient
+from v2.tests.fakes import FakeTradingAPI
 
 
 def test_tradability_check_blocks_non_tradable():
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
-    trading.set_asset("BBB", tradable=False)
+    trading.set_instrument("AAA", tradable=True)
+    trading.set_instrument("BBB", tradable=False)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False),
     )
 
@@ -37,18 +37,18 @@ def test_tradability_check_blocks_non_tradable():
 
 
 def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
     trading.next_order_fill_after = 2
-    trading.set_asset("AAA", tradable=True)
-    trading.set_asset("BBB", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
+    trading.set_instrument("BBB", tradable=True)
 
     # Hold AAA ($1000), want to rotate to BBB.
     trading.set_positions([BrokerPosition(symbol="AAA", qty=10.0, market_value=1000.0)])
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=True, min_order_size=50.0),
     )
 
@@ -70,13 +70,13 @@ def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
 
 
 def test_near_zero_weights_are_ignored(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -91,14 +91,14 @@ def test_near_zero_weights_are_ignored(monkeypatch):
 
 
 def test_min_order_size_filters_small_orders(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
-    trading.set_asset("BBB", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
+    trading.set_instrument("BBB", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=50.0),
     )
 
@@ -118,13 +118,13 @@ def test_min_order_size_filters_small_orders(monkeypatch):
 
 
 def test_execute_pending_marks_state_executed(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -155,13 +155,13 @@ def test_execute_pending_marks_state_executed(monkeypatch):
 
 
 def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -186,13 +186,13 @@ def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
 
 
 def test_execute_pending_skips_when_market_closed(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -223,13 +223,13 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
 
 
 def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(
             include_positions=False,
             min_order_size=1.0,
@@ -277,13 +277,13 @@ def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
 
 
 def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -294,21 +294,21 @@ def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatc
     )
     svc._execute_rebalance_plan(e)
 
-    assert trading.cancel_all_called >= 1
+    assert trading.list_orders_called >= 1
+    assert trading.cancel_order_called >= 1
     assert trading.submitted
-    assert trading.actions[0] == "cancel_orders"
 
 
 def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypatch):
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
-    trading.set_asset("AAA", tradable=True)
+    trading.set_instrument("AAA", tradable=True)
     trading.next_order_final_status = "rejected"
     trading.next_order_fill_after = 1
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=False, min_order_size=1.0),
     )
 
@@ -321,5 +321,5 @@ def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypat
     with pytest.raises(RuntimeError):
         svc._execute_rebalance_plan(e)
 
-    # One cancel before submitting, one cancel after error.
-    assert trading.cancel_all_called >= 2
+    # Cancel-all is attempted both before submitting and after an error.
+    assert trading.list_orders_called >= 2

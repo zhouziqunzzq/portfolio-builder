@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from v2.src.eml.alpaca_eml import AlpacaEMLService
+from v2.src.eml.portfolio_eml import PortfolioEMLService
 from v2.src.eml.config import EMLConfig
 from v2.src.eml.state import EMLState
 
-from v2.tests.fakes import FakeTradingClient
+from v2.tests.fakes import FakeTradingAPI
 
 # NOTE: `v2/src` code imports these modules as top-level packages (it mutates sys.path).
 # Use the same import paths in tests to avoid duplicate module instances.
@@ -34,13 +34,13 @@ def _open_market_clock(now: datetime) -> MarketClockEvent:
 
 
 def test_execute_position_cleanup_plan_stores_pending_and_confirms():
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     bus = EventBus()
     sub = bus.subscribe(topics={Topic.POSITION_CLEANUP_PLAN})
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=bus,
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=True),
     )
     svc.state = EMLState.empty()
@@ -65,12 +65,12 @@ def test_execute_position_cleanup_plan_stores_pending_and_confirms():
 
 
 def test_pending_cleanup_cancelled_if_rebalance_executed_today():
-    trading = FakeTradingClient()
+    trading = FakeTradingAPI()
     bus = EventBus()
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=bus,
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=True),
     )
     svc.state = EMLState.empty()
@@ -104,9 +104,9 @@ def test_pending_cleanup_cancelled_if_rebalance_executed_today():
 
 
 def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, caplog):
-    trading = FakeTradingClient()
-    trading.set_asset("AAA", tradable=True)
-    trading.set_asset("BBB", tradable=True)
+    trading = FakeTradingAPI()
+    trading.set_instrument("AAA", tradable=True)
+    trading.set_instrument("BBB", tradable=True)
 
     # AAA long -> SELL qty; BBB short -> warn + skip buy-to-cover
     trading.set_positions(
@@ -116,9 +116,9 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
         ]
     )
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(include_positions=True, min_order_size=0.0),
     )
     svc.state = EMLState.empty()
@@ -151,7 +151,7 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
     )
 
     # cancel_orders pre-flight, then 1 order (sell only)
-    assert trading.cancel_all_called >= 1
+    assert trading.list_orders_called >= 1
     assert len(trading.submitted) == 1
 
     assert trading.submitted[0]["symbol"] == "AAA"
@@ -166,8 +166,8 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
 
 
 def test_pending_cleanup_qty_safety_threshold_blocks_large_sells(monkeypatch):
-    trading = FakeTradingClient()
-    trading.set_asset("AAA", tradable=True)
+    trading = FakeTradingAPI()
+    trading.set_instrument("AAA", tradable=True)
 
     trading.set_positions(
         [
@@ -176,9 +176,9 @@ def test_pending_cleanup_qty_safety_threshold_blocks_large_sells(monkeypatch):
         ]
     )
 
-    svc = AlpacaEMLService(
+    svc = PortfolioEMLService(
         bus=EventBus(),
-        trading_client=trading,
+        trading_api=trading,
         config=EMLConfig(
             include_positions=True,
             min_order_size=0.0,

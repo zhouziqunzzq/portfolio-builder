@@ -4,6 +4,10 @@ from typing import Optional
 
 @dataclass
 class EMLConfig:
+    # Broker adapter to use for execution.
+    # Currently supported: "alpaca".
+    broker: str = "alpaca"
+
     # Polling interval for EML background loop.
     polling_interval_secs: float = 30.0
 
@@ -55,6 +59,9 @@ class EMLConfig:
 
     def validate(self) -> None:
         """Validate configuration values."""
+        if not isinstance(self.broker, str) or not self.broker.strip():
+            raise ValueError("EMLConfig: broker must be a non-empty string")
+
         if self.cash_buffer_pct is not None and self.cash_buffer_abs is not None:
             raise ValueError(
                 "EMLConfig: cash_buffer_pct and cash_buffer_abs are mutually exclusive; only one may be set."

@@ -20,6 +20,7 @@ iml:
   bar_fetch_lookback_weeks: 260 # 5 years
 
 eml:
+  broker: alpaca
   polling_interval_secs: 30.0
   include_positions: true
   cancel_open_orders_on_startup: true

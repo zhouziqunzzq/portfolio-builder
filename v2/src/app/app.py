@@ -21,7 +21,7 @@ from events.topic import Topic
 from iml.base_iml import BaseIMLService
 from iml.alpaca_polling_iml import AlpacaPollingIMLService
 from eml.base_eml import BaseEML
-from eml.alpaca_eml import AlpacaEMLService
+from eml.portfolio_eml import PortfolioEMLService
 from at.base_at import BaseATService
 from at.multi_sleeve_at import MultiSleeveATService
 
@@ -150,11 +150,11 @@ class App:
             # Alpaca API credentials loaded from env by default
         )
         # EML
-        self.eml: BaseEML = AlpacaEMLService(
+        self.eml: BaseEML = PortfolioEMLService(
             bus=self.event_bus,
             rm=self.rm,
             config=self.config.eml,
-            # Alpaca API credentials loaded from env by default
+            # Broker credentials loaded from env by default
         )
         # AutoTrader (AT)
         self.at: BaseATService = MultiSleeveATService(

@@ -64,7 +64,6 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
         secret_key: Optional[str] = None,
         base_url: Optional[str] = None,
         paper: Optional[bool] = None,
-        trading_client: Optional[Any] = None,
         name: str = "AlpacaTradingAPI",
         list_orders_limit: int = 500,
     ):
@@ -86,21 +85,17 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
         else:
             self._paper = bool(paper)
 
-        self._injected_trading_client = trading_client is not None
-        if trading_client is not None:
-            self._trading = trading_client
-        else:
-            if not self._api_key or not self._secret_key:
-                raise AuthError(
-                    "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY."
-                )
-
-            self._trading = TradingClient(
-                api_key=self._api_key,
-                secret_key=self._secret_key,
-                paper=self._paper,
-                url_override=self._base_url,
+        if not self._api_key or not self._secret_key:
+            raise AuthError(
+                "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY."
             )
+
+        self._trading = TradingClient(
+            api_key=self._api_key,
+            secret_key=self._secret_key,
+            paper=self._paper,
+            url_override=self._base_url,
+        )
 
     # ------------------------------------------------------------------
     # Capabilities
@@ -206,6 +201,9 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
             broker_order_id = submitted.id
             if not broker_order_id:
                 raise BrokerApiError("Alpaca submit_order returned no order id")
+            self.log.debug(
+                f"Submitted Alpaca order {broker_order_id} for intent {intent}"
+            )
             return PlacedOrder(
                 broker_order_id=str(broker_order_id),
                 client_order_id=intent.client_order_id,
@@ -229,31 +227,29 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
         return self._to_order_state(o)
 
     def list_orders(self, order_filter: OrderFilter) -> List[OrderState]:
-        # If alpaca request filters are unavailable (tests with injected client),
-        # attempt a best-effort empty response.
-        if not hasattr(self._trading, "get_orders"):
-            self.log.warning(
-                "list_orders: trading client does not support get_orders; returning empty list"
-            )
-            return []
-
         try:
+            requested_statuses = set(order_filter.statuses or [])
+
+            openish = {
+                OrderStatus.NEW,
+                OrderStatus.ACCEPTED,
+                OrderStatus.OPEN,
+                OrderStatus.PARTIALLY_FILLED,
+            }
+            closedish = {
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+                OrderStatus.EXPIRED,
+            }
+
             query_status = QueryOrderStatus.ALL
-            if order_filter.status is not None:
-                if order_filter.status in {
-                    OrderStatus.OPEN,
-                    OrderStatus.NEW,
-                    OrderStatus.ACCEPTED,
-                    OrderStatus.PARTIALLY_FILLED,
-                }:
+            if requested_statuses:
+                if requested_statuses.issubset(openish):
                     query_status = QueryOrderStatus.OPEN
-                elif order_filter.status in {
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.REJECTED,
-                    OrderStatus.EXPIRED,
-                }:
+                elif requested_statuses.issubset(closedish):
                     query_status = QueryOrderStatus.CLOSED
+
             orders = self._trading.get_orders(
                 filter=GetOrdersRequest(
                     status=query_status, limit=self._list_orders_limit
@@ -263,10 +259,10 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
             out: List[OrderState] = []
             for o in orders or []:
                 st = self._to_order_state(o)
-                if order_filter.status is not None and st.status != order_filter.status:
-                    self.log.debug(
-                        f"list_orders: skipping order {st.broker_order_id} with status {st.status}"
-                    )
+                if (
+                    requested_statuses is not None
+                    and st.status not in requested_statuses
+                ):
                     continue
                 out.append(st)
             return out
