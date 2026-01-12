@@ -11,8 +11,8 @@ from events.events import (
 from states.base_state import BaseState
 
 
-class EMLState(BaseState):
-    STATE_KEY = "eml.alpaca"
+class PortfolioEMLState(BaseState):
+    STATE_KEY = "eml.portfolio"
     SCHEMA_VERSION = 2
 
     # Pending rebalance requests (rebalance_id -> request payload)
@@ -66,7 +66,7 @@ class EMLState(BaseState):
         }
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, Any]) -> "EMLState":
+    def from_payload(cls, payload: Mapping[str, Any]) -> "PortfolioEMLState":
         pending = payload.get("pending_rebalance_requests")
         if pending is None:
             pending = {}
@@ -154,7 +154,7 @@ class EMLState(BaseState):
         )
 
     @classmethod
-    def empty(cls) -> "EMLState":
+    def empty(cls) -> "PortfolioEMLState":
         return cls(
             pending_rebalance_requests={},
             pending_position_cleanup_requests={},

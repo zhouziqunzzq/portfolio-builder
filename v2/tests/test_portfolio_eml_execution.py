@@ -5,7 +5,7 @@ import pytest
 
 from v2.src.eml.portfolio_eml import PortfolioEMLService
 from v2.src.eml.config import EMLConfig
-from v2.src.eml.state import EMLState
+from v2.src.eml.state import PortfolioEMLState
 from v2.src.events.event_bus import EventBus
 from v2.src.events.events import (
     MarketClockEvent,
@@ -130,7 +130,7 @@ def test_execute_pending_marks_state_executed(monkeypatch):
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    svc.state = EMLState()
+    svc.state = PortfolioEMLState()
     svc.state.pending_rebalance_requests["r1"] = {
         "rebalance_id": "r1",
         "request_ts": time.time(),
@@ -167,7 +167,7 @@ def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    svc.state = EMLState()
+    svc.state = PortfolioEMLState()
     svc.state.pending_rebalance_requests["r1"] = {
         "rebalance_id": "r1",
         "request_ts": time.time(),
@@ -198,7 +198,7 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    svc.state = EMLState()
+    svc.state = PortfolioEMLState()
     svc.state.pending_rebalance_requests["r1"] = {
         "rebalance_id": "r1",
         "request_ts": time.time(),
@@ -237,7 +237,7 @@ def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
         ),
     )
 
-    svc.state = EMLState()
+    svc.state = PortfolioEMLState()
     svc.state.pending_rebalance_requests["r1"] = {
         "rebalance_id": "r1",
         "request_ts": time.time(),

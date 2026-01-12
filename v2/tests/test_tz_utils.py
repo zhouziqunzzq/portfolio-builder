@@ -30,3 +30,24 @@ def test_as_eastern_from_utc():
     ts = pd.Timestamp("2025-12-29 12:00:00", tz="UTC")
     converted = as_eastern(ts)
     assert "US/Eastern" in str(converted.tz)
+
+
+def test_as_eastern_handles_nonexistent_dst_time():
+    # 2022-03-13 is the US/Eastern DST spring-forward day; 02:xx does not exist.
+    ts = pd.Timestamp("2022-03-13 02:20:01.235228")
+    converted = as_eastern(ts)
+    assert converted.tz is not None
+    assert "US/Eastern" in str(converted.tz)
+    # With nonexistent='shift_forward', the time is shifted into the first valid hour.
+    assert converted.hour == 3
+    assert converted.minute == 20
+
+
+def test_as_eastern_handles_ambiguous_dst_time():
+    # 2022-11-06 is the US/Eastern DST fall-back day; 01:xx is ambiguous.
+    ts = pd.Timestamp("2022-11-06 01:20:00")
+    converted = as_eastern(ts)
+    assert converted.tz is not None
+    assert "US/Eastern" in str(converted.tz)
+    # ambiguous=False chooses standard time (EST, UTC-5).
+    assert int(converted.utcoffset().total_seconds()) == -5 * 60 * 60

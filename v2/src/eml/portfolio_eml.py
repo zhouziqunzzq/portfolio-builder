@@ -35,7 +35,7 @@ from runtime_manager import RuntimeManager
 
 from .base_eml import BaseEML
 from .config import EMLConfig
-from .state import EMLState
+from .state import PortfolioEMLState
 from utils.decimals import to_decimal
 
 from models.trading import (
@@ -116,7 +116,7 @@ class PortfolioEMLService(BaseEML):
 
         # State
         # This will be managed by StateManager externally.
-        self.state = EMLState()
+        self.state = PortfolioEMLState()
 
         # Latest snapshots for metrics
         self._last_account: Optional[BrokerAccount] = None

@@ -25,5 +25,16 @@ def as_utc(ts: pd.Timestamp) -> pd.Timestamp:
 def as_eastern(ts: pd.Timestamp) -> pd.Timestamp:
     """Converts a pandas Timestamp to US/Eastern timezone."""
     if ts.tzinfo is None:
-        return ts.tz_localize("US/Eastern")
+        # Localizing a tz-naive timestamp can fail on DST transitions:
+        # - spring-forward: non-existent local times (e.g. 02:20)
+        # - fall-back: ambiguous local times (e.g. 01:20)
+        # For v2's daily-oriented timestamp convention, we prefer a deterministic,
+        # non-throwing mapping.
+        return ts.tz_localize(
+            "US/Eastern",
+            # For US/Eastern DST spring-forward, the gap is 1 hour.
+            # Using a timedelta preserves the wall-clock minutes/seconds.
+            nonexistent=pd.Timedelta(hours=1),
+            ambiguous=False,
+        )
     return ts.tz_convert("US/Eastern")

@@ -6,7 +6,7 @@ import pytest
 
 from v2.src.eml.portfolio_eml import PortfolioEMLService
 from v2.src.eml.config import EMLConfig
-from v2.src.eml.state import EMLState
+from v2.src.eml.state import PortfolioEMLState
 
 from v2.tests.fakes import FakeTradingAPI
 
@@ -43,7 +43,7 @@ def test_execute_position_cleanup_plan_stores_pending_and_confirms():
         trading_api=trading,
         config=EMLConfig(include_positions=True),
     )
-    svc.state = EMLState.empty()
+    svc.state = PortfolioEMLState.empty()
 
     req = PositionCleanupPlanRequestEvent(
         ts=time.time(),
@@ -73,7 +73,7 @@ def test_pending_cleanup_cancelled_if_rebalance_executed_today():
         trading_api=trading,
         config=EMLConfig(include_positions=True),
     )
-    svc.state = EMLState.empty()
+    svc.state = PortfolioEMLState.empty()
 
     now = datetime.now()
     svc._market_clock = _open_market_clock(now)
@@ -121,7 +121,7 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
         trading_api=trading,
         config=EMLConfig(include_positions=True, min_order_size_notional=0.0),
     )
-    svc.state = EMLState.empty()
+    svc.state = PortfolioEMLState.empty()
 
     now = datetime.now()
     svc._market_clock = _open_market_clock(now)
@@ -186,7 +186,7 @@ def test_pending_cleanup_qty_safety_threshold_blocks_large_sells(monkeypatch):
             max_pending_position_cleanup_execution_retries=5,
         ),
     )
-    svc.state = EMLState.empty()
+    svc.state = PortfolioEMLState.empty()
 
     now = datetime.now()
     svc._market_clock = _open_market_clock(now)
