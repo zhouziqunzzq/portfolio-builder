@@ -4,8 +4,8 @@ services:
       - ./.env.live_alpaca
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol:4317
-      OTEL_SERVICE_NAME: portfolio-builder-v2-live
-      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=live
+      OTEL_SERVICE_NAME: portfolio-builder-v2-live_alpaca
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=live_alpaca
     command: [ "python", "run_app.py", "--config", "config/app_live_alpaca.yml" ]
     volumes:
       - ./data_live_alpaca:/app/v2/data_live_alpaca

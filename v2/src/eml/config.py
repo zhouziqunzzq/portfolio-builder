@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class EMLConfig:
     # Broker adapter to use for execution.
-    # Currently supported: "alpaca".
+    # Currently supported: "alpaca", "publicdotcom".
     broker: str = "alpaca"
 
     # Polling interval for EML background loop.

@@ -26,6 +26,7 @@ eml:
   cancel_open_orders_on_startup: true
   cancel_open_orders_on_shutdown: true
   wait_for_order_fill_timeout_secs: 30.0
+  min_order_size_notional: 1.0
   cash_buffer_pct: 0.01
   # cash_buffer_abs: 1000.0 # Mutually exclusive with `cash_buffer_pct`
   max_execution_history_days: 365

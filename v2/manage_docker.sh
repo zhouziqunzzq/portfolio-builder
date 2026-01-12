@@ -6,14 +6,16 @@ cd "$script_dir"
 
 usage() {
 	echo "Usage:" >&2
-	echo "  $0 {live|paper} {up|down|restart|ps} [args...]" >&2
+	echo "  $0 {live_alpaca|live_publicdotcom|paper} {up|down|restart|ps} [args...]" >&2
 	echo "" >&2
 	echo "Examples:" >&2
 	echo "  ./manage_obs.sh up -d" >&2
+	echo "  $0 live_alpaca up -d --remove-orphans" >&2
+	echo "  $0 live_publicdotcom up -d" >&2
 	echo "  $0 paper up -d --remove-orphans" >&2
 	echo "  $0 paper restart" >&2
-	echo "  $0 live down" >&2
-	echo "  $0 live ps" >&2
+	echo "  $0 live_alpaca down" >&2
+	echo "  $0 live_publicdotcom ps" >&2
 }
 
 env_name="${1:-}"
@@ -30,11 +32,17 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 case "$env_name" in
-	live)
-		project="portfolio_builder_live"
+	live_alpaca|live)
+		project="portfolio_builder_live_alpaca"
 		env_file="$script_dir/.env.live_alpaca"
 		env_example_file="$script_dir/.env.live_alpaca.example"
-		app_compose="docker-compose.live.yml"
+		app_compose="docker-compose.live_alpaca.yml"
+		;;
+	live_publicdotcom)
+		project="portfolio_builder_live_publicdotcom"
+		env_file="$script_dir/.env.live_publicdotcom"
+		env_example_file="$script_dir/.env.live_publicdotcom.example"
+		app_compose="docker-compose.live_publicdotcom.yml"
 		;;
 	paper)
 		project="portfolio_builder_paper"
@@ -64,7 +72,7 @@ case "$action" in
 				echo "Create it by copying the template:" >&2
 				echo "  cp '$env_example_file' '$env_file'" >&2
 			fi
-			echo "Then fill in the required Alpaca credentials and settings." >&2
+			echo "Then fill in the required broker credentials and settings." >&2
 			exit 1
 		fi
 		if ! docker network inspect pb_obs_net >/dev/null 2>&1; then

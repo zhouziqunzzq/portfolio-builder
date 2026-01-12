@@ -3,14 +3,14 @@
 #
 # Notes:
 # - Paths are relative to the v2/ directory when running v2 runners.
-# - This is the PAPER trading config for the Alpaca deployment.
+# - This is the LIVE trading config for the public.com deployment.
 
 runtime:
   is_live: true
   log_level: DEBUG
   log_to_file: true
-  log_root: data_paper_alpaca/logs
-  state_file: data_paper_alpaca/state/runtime_state.json
+  log_root: data_live_publicdotcom/logs
+  state_file: data_live_publicdotcom/state/runtime_state.json
   state_persist_interval_secs: 30.0
   graceful_shutdown_timeout_secs: 5.0
 
@@ -21,13 +21,13 @@ iml:
   bar_fetch_lookback_weeks: 260 # 5 years
 
 eml:
-  broker: alpaca
+  broker: publicdotcom
   polling_interval_secs: 30.0
   include_positions: true
   cancel_open_orders_on_startup: true
   cancel_open_orders_on_shutdown: true
   wait_for_order_fill_timeout_secs: 30.0
-  min_order_size_notional: 1.0
+  min_order_size_notional: 5.0 # public.com only allows minimum $5 orders
   cash_buffer_pct: 0.01
   # cash_buffer_abs: 1000.0 # Mutually exclusive with `cash_buffer_pct`
   max_execution_history_days: 365
@@ -49,12 +49,12 @@ at:
   position_cleanup_qty_threshold: 0.001
 
 universe_manager:
-  membership_csv: data_paper_alpaca/sp500_membership.csv
-  current_constituents_csv: data_paper_alpaca/current_sp500_constituents.csv
+  membership_csv: data_live_publicdotcom/sp500_membership.csv
+  current_constituents_csv: data_live_publicdotcom/current_sp500_constituents.csv
   sectors_yaml: config/sectors.yml # Shared with other configs
 
 market_data_store:
-  data_root: data_paper_alpaca/prices
+  data_root: data_live_publicdotcom/prices
   source: yfinance
 
 regime_engine:

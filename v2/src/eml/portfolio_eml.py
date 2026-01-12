@@ -47,6 +47,7 @@ from models.trading import (
 )
 from trading_api.base import BaseTradingAPI
 from trading_api.alpaca import AlpacaTradingAPI
+from trading_api.publicdotcom import PublicDotComTradingAPI
 from trading_api.exceptions import OrderNotFoundYet
 
 
@@ -98,12 +99,15 @@ class PortfolioEMLService(BaseEML):
             self._trading_api = trading_api
         else:
             broker = str(self.config.broker or "alpaca").strip().lower()
-            if broker != "alpaca":
-                raise ValueError(
-                    f"Unsupported EMLConfig.broker={self.config.broker!r}; only 'alpaca' is supported"
-                )
             # Broker adapter resolves env vars/defaults.
-            self._trading_api = AlpacaTradingAPI(name="AlpacaTradingAPI")
+            if broker == "alpaca":
+                self._trading_api = AlpacaTradingAPI(name="AlpacaTradingAPI")
+            elif broker in {"publicdotcom", "public", "public.com"}:
+                self._trading_api = PublicDotComTradingAPI(name="PublicDotComTradingAPI")
+            else:
+                raise ValueError(
+                    f"Unsupported EMLConfig.broker={self.config.broker!r}; supported: 'alpaca', 'publicdotcom'"
+                )
 
         self.log.info(
             "Initialized EML (broker=%s)",
