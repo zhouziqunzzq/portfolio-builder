@@ -119,7 +119,7 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=True, min_order_size=0.0),
+        config=EMLConfig(include_positions=True, min_order_size_notional=0.0),
     )
     svc.state = EMLState.empty()
 
@@ -181,7 +181,7 @@ def test_pending_cleanup_qty_safety_threshold_blocks_large_sells(monkeypatch):
         trading_api=trading,
         config=EMLConfig(
             include_positions=True,
-            min_order_size=0.0,
+            min_order_size_notional=0.0,
             position_cleanup_max_abs_qty=1.0,
             max_pending_position_cleanup_execution_retries=5,
         ),

@@ -25,7 +25,7 @@ class EMLConfig:
     wait_for_order_fill_timeout_secs: float = 30.0
 
     # Rebalance execution knobs
-    min_order_size: float = 1.0  # Minimum order size to place in USD
+    min_order_size_notional: float = 1.0  # Minimum order size to place in USD
     cash_buffer_pct: Optional[float] = (
         0.01  # Keep this % of account value in cash; mutually exclusive with cash_buffer_abs
     )
@@ -71,8 +71,8 @@ class EMLConfig:
                 raise ValueError(
                     "EMLConfig: cash_buffer_pct must be in the range [0.0, 1.0)."
                 )
-        if self.min_order_size < 0.0:
-            raise ValueError("EMLConfig: min_order_size must be non-negative.")
+        if self.min_order_size_notional < 0.0:
+            raise ValueError("EMLConfig: min_order_size_notional must be non-negative.")
         if self.polling_interval_secs <= 0.0:
             raise ValueError("EMLConfig: polling_interval_secs must be positive.")
         if self.wait_for_order_fill_timeout_secs <= 0.0:

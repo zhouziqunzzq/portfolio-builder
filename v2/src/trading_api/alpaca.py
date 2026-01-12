@@ -263,6 +263,12 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
                     requested_statuses is not None
                     and st.status not in requested_statuses
                 ):
+                    self.log.debug(
+                        "Skipping order %s with status %s not in filter %s",
+                        st.broker_order_id,
+                        st.status,
+                        requested_statuses,
+                    )
                     continue
                 out.append(st)
             return out
@@ -327,6 +333,9 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
             if intent.limit_price is None:
                 raise InvalidOrder("Limit orders require limit_price")
             limit_price = self._round_usd(intent.limit_price)
+            self.log.debug(
+                f"Rounded limit_price from {intent.limit_price} to {limit_price}"
+            )
             return LimitOrderRequest(
                 symbol=symbol,
                 side=side,

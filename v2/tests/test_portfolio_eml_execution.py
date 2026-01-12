@@ -49,7 +49,7 @@ def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=True, min_order_size=50.0),
+        config=EMLConfig(include_positions=True, min_order_size_notional=50.0),
     )
 
     # Avoid real sleeping in wait loop
@@ -77,7 +77,7 @@ def test_near_zero_weights_are_ignored(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -99,7 +99,7 @@ def test_min_order_size_filters_small_orders(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=50.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=50.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -125,7 +125,7 @@ def test_execute_pending_marks_state_executed(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -162,7 +162,7 @@ def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -193,7 +193,7 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -232,7 +232,7 @@ def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
         trading_api=trading,
         config=EMLConfig(
             include_positions=False,
-            min_order_size=1.0,
+            min_order_size_notional=1.0,
             max_pending_rebalance_execution_retries=2,
         ),
     )
@@ -284,7 +284,7 @@ def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatc
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
@@ -309,7 +309,7 @@ def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypat
     svc = PortfolioEMLService(
         bus=EventBus(),
         trading_api=trading,
-        config=EMLConfig(include_positions=False, min_order_size=1.0),
+        config=EMLConfig(include_positions=False, min_order_size_notional=1.0),
     )
 
     monkeypatch.setattr(time, "sleep", lambda _: None)

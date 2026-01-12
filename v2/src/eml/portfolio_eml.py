@@ -47,6 +47,7 @@ from models.trading import (
 )
 from trading_api.base import BaseTradingAPI
 from trading_api.alpaca import AlpacaTradingAPI
+from trading_api.exceptions import OrderNotFoundYet
 
 
 class EMLShutdownRequested(Exception):
@@ -658,7 +659,7 @@ class PortfolioEMLService(BaseEML):
         2) Normalize/clean target weights (drop near-zero weights, normalize symbols).
         3) Fetch current account/positions and compute desired notional deltas.
         4) Build market orders subject to:
-            - min order size (`self.config.min_order_size`)
+            - min order size (`self.config.min_order_size_notional`)
             - float-noise thresholds
             - deterministic symbol sorting
         5) Sanity check all symbols are tradable.
@@ -728,11 +729,33 @@ class PortfolioEMLService(BaseEML):
             )
 
             # 4) Build sell/buy orders subject to min-order size and float-noise thresholds
-            sells, buys = self._build_market_orders(
+            sells, buys, dropped_by_min_size = self._build_market_orders(
                 deltas=deltas,
                 positions_by_symbol=pos_by_symbol,
-                min_order_size=float(self.config.min_order_size),
+                min_order_size_notional=float(self.config.min_order_size_notional),
             )
+
+            if dropped_by_min_size:
+                min_abs = float(self.config.min_order_size_notional)
+                preview_n = 12
+                preview = ", ".join(
+                    [
+                        (
+                            f"{d.get('symbol')}:{d.get('side')}:{d.get('reason')}:"
+                            f"{float(d.get('delta_value', 0.0) or 0.0):.2f}"
+                        )
+                        for d in dropped_by_min_size[:preview_n]
+                    ]
+                )
+                extra = "" if len(dropped_by_min_size) <= preview_n else " ..."
+                self.log.warning(
+                    "Dropped %d delta(s) due to min_order_size_notional=%.2f (no orders created for these): rebalance_id=%s dropped=%s%s",
+                    len(dropped_by_min_size),
+                    min_abs,
+                    rebalance_id,
+                    preview,
+                    extra,
+                )
 
             if not sells and not buys:
                 self.log.info(
@@ -1252,13 +1275,21 @@ class PortfolioEMLService(BaseEML):
         *,
         deltas: Mapping[str, Mapping[str, float]],
         positions_by_symbol: Mapping[str, BrokerPosition],
-        min_order_size: float,
+        min_order_size_notional: float,
         dollar_epsilon: float = 1e-6,
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Build deterministic sell/buy market orders from per-symbol notional deltas.
+
+        Returns a 3-tuple: (sells, buys, dropped_by_min_size). The third element contains
+        delta entries that were dropped specifically due to the `min_order_size_notional`
+        threshold (including sell deltas that become too small after capping to current
+        position market value).
+        """
         sells: List[Dict[str, Any]] = []
         buys: List[Dict[str, Any]] = []
+        dropped_by_min_size: List[Dict[str, Any]] = []
 
-        min_abs = max(0.0, float(min_order_size))
+        min_abs = max(0.0, float(min_order_size_notional))
 
         for sym, info in dict(deltas).items():
             try:
@@ -1271,6 +1302,15 @@ class PortfolioEMLService(BaseEML):
             if dv < 0:
                 # SELL: prefer notional if broker supports it, with qty fallback.
                 if abs(dv) < min_abs:
+                    dropped_by_min_size.append(
+                        {
+                            "symbol": sym,
+                            "side": "sell",
+                            "delta_value": dv,
+                            "min_order_size_notional": min_abs,
+                            "reason": "below_min_order_size_notional",
+                        }
+                    )
                     continue
                 p = positions_by_symbol.get(sym)
                 if p is None:
@@ -1285,6 +1325,16 @@ class PortfolioEMLService(BaseEML):
                 if mv > 0:
                     desired_notional = min(desired_notional, float(mv))
                 if desired_notional < min_abs:
+                    dropped_by_min_size.append(
+                        {
+                            "symbol": sym,
+                            "side": "sell",
+                            "delta_value": dv,
+                            "desired_notional": desired_notional,
+                            "min_order_size_notional": min_abs,
+                            "reason": "below_min_order_size_notional_after_cap",
+                        }
+                    )
                     continue
 
                 qty_fallback = cls._estimate_qty_for_notional_sell(
@@ -1307,6 +1357,15 @@ class PortfolioEMLService(BaseEML):
                 # BUY: use notional market orders for simplicity
                 notional = float(dv)
                 if notional < min_abs:
+                    dropped_by_min_size.append(
+                        {
+                            "symbol": sym,
+                            "side": "buy",
+                            "delta_value": dv,
+                            "min_order_size_notional": min_abs,
+                            "reason": "below_min_order_size_notional",
+                        }
+                    )
                     continue
                 buys.append(
                     {
@@ -1320,7 +1379,8 @@ class PortfolioEMLService(BaseEML):
         # Deterministic order
         sells.sort(key=lambda x: x["symbol"])
         buys.sort(key=lambda x: x["symbol"])
-        return sells, buys
+        dropped_by_min_size.sort(key=lambda x: str(x.get("symbol") or ""))
+        return sells, buys, dropped_by_min_size
 
     @staticmethod
     def _estimate_qty_for_notional_sell(
@@ -1541,7 +1601,14 @@ class PortfolioEMLService(BaseEML):
                     f"Timed out waiting for order fill: order_id={order_id}"
                 )
 
-            o = self._trading_api.get_order(order_id)
+            try:
+                o = self._trading_api.get_order(order_id)
+            except OrderNotFoundYet:
+                # Some brokers (e.g. Public.com) are eventually consistent: immediately after
+                # order placement, the order may not yet be queryable.
+                self.log.info("Order not found yet; will retry: order_id=%s", order_id)
+                sleep_fn(float(poll_interval_seconds))
+                continue
             status = o.status
 
             self.log.debug(

@@ -16,6 +16,7 @@ from models.trading import (
     PreflightOrderResult,
 )
 from trading_api.base import BaseSyncTradingAPI
+from trading_api.exceptions import OrderNotFoundYet
 
 
 @dataclass
@@ -59,6 +60,8 @@ class FakeTradingAPI(BaseSyncTradingAPI):
 
         self.next_order_final_status: str = "filled"
         self.next_order_fill_after: int = 1
+        # If > 0, get_order will raise OrderNotFoundYet for the first N polls per order.
+        self.get_order_not_found_for_polls: int = 0
 
         self.open_orders: List[OrderState] = [
             OrderState(broker_order_id="OPEN1", status=OrderStatus.OPEN)
@@ -159,6 +162,12 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         self.actions.append("get_order")
         st = self._orders[str(broker_order_id)]
         st["polls"] += 1
+
+        if int(self.get_order_not_found_for_polls) > 0 and st["polls"] <= int(
+            self.get_order_not_found_for_polls
+        ):
+            raise OrderNotFoundYet("order not visible yet")
+
         if st["polls"] >= st["fill_after"]:
             final = str(st["final"]).strip().lower()
             if final == "filled":
