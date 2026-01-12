@@ -6,9 +6,9 @@ __pycache__
 test_data/
 data/
 production/data/
-data_prod_alpaca/
-data_live_alpaca/
-data_paper_alpaca/
+data_prod_*/
+data_live_*/
+data_paper_*/
 
 plots/
 
