@@ -91,7 +91,7 @@ protobuf==6.33.4
     #   googleapis-common-protos
     #   opentelemetry-proto
     #   yfinance
-publicdotcom-py==0.1.6
+publicdotcom-py==0.1.8
     # via -r requirements.in
 pyarrow==22.0.0
     # via -r requirements.in
