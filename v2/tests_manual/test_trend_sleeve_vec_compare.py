@@ -363,7 +363,7 @@ def test_trend_sleeve_comparison():
     print("\n[1] Setting up runtime environment...")
     
     membership_csv = Path("./data/sp500_membership.csv")
-    sectors_yaml = Path("./config/sectors.yml")
+    sectors_yaml = Path("./configs/sectors.yml")
     
     um = UniverseManager(
         membership_csv=membership_csv,

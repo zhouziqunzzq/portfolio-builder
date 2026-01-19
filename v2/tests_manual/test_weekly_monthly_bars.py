@@ -221,7 +221,7 @@ def test_vec_sig_engine():
 
     um = UniverseManager(
         membership_csv=Path("data/sp500_membership.csv"),
-        sectors_yaml=Path("config/sectors.yml"),
+        sectors_yaml=Path("configs/sectors.yml"),
     )
     mds = MarketDataStore(
         str(data_root), source="yfinance", local_only=False, use_memory_cache=True

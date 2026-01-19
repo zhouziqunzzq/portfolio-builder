@@ -11,7 +11,7 @@ def test_app_config_hydrates_friction_control_config(tmp_path):
         "universe_manager": {
             "membership_csv": "data/sp500_membership.csv",
             "current_constituents_csv": "data/current_sp500_constituents.csv",
-            "sectors_yaml": "config/sectors.yml",
+            "sectors_yaml": "configs/sectors.yml",
         },
         "market_data_store": {"data_root": "data/prices", "source": "yfinance"},
         "regime_engine": {},

@@ -21,7 +21,7 @@ def build_runtime(local_only: bool = True) -> Dict[str, Any]:
     # Universe
     um = UniverseManager(
         membership_csv=Path("data/sp500_membership.csv"),
-        sectors_yaml=Path("config/sectors.yaml"),
+        sectors_yaml=Path("configs/sectors.yaml"),
         local_only=local_only,
     )
 

@@ -35,7 +35,7 @@ from src.allocator.multi_sleeve_config import MultiSleeveConfig
 def build_runtime():
     # ==== Universe ====
     membership_csv = Path("data/sp500_membership.csv")
-    sectors_yaml = Path("config/sectors.yml")
+    sectors_yaml = Path("configs/sectors.yml")
 
     um = UniverseManager(
         membership_csv=membership_csv,

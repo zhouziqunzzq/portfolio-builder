@@ -27,7 +27,7 @@ def test_trend_sleeve():
     # 1) Universe setup
     # -------------------------
     membership_csv = Path("./data/sp500_membership.csv")
-    sectors_yaml = Path("./config/sectors.yml")
+    sectors_yaml = Path("./configs/sectors.yml")
 
     um = UniverseManager(
         membership_csv=membership_csv,

@@ -28,4 +28,4 @@ RUN python -m pip install .
 WORKDIR /app/v2
 
 # Default: run the app (override with `--config ...` at runtime)
-CMD ["python", "run_app.py", "--config", "config/app.yml"]
+CMD ["python", "run_app.py", "--config", "configs/app.yml"]

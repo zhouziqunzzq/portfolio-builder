@@ -25,7 +25,7 @@ def test_defensive_sleeve():
     # Use your existing S&P500 membership CSV
     # e.g. ./data/sp500_membership.csv
     membership_csv = Path("./data/sp500_membership.csv")
-    sectors_yaml = Path("./config/sectors.yml")  # optional
+    sectors_yaml = Path("./configs/sectors.yml")  # optional
 
     um = UniverseManager(
         membership_csv=membership_csv,

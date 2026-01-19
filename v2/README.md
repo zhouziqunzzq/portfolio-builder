@@ -12,7 +12,7 @@ Strategy
 
 Architecture (high level)
 -------------------------
-- Config: `v2/config/app.yml` (and related YAMLs) control runtimes, universes, and outputs.
+- Config: `v2/configs/app.yml` (and related YAMLs) control runtimes, universes, and outputs.
 - Runtime manager: `v2/src/runtime_manager.py` wires singletons (UniverseManager, MarketDataStore, SignalEngine, RegimeEngine, sleeves, allocator).
 - Event-driven runtime: v2 runs as an event-driven application composed of three logical layers:
 	- IML (Information Market Link): sources market clock / bar events and publishes them to the event bus (`v2/src/iml/`).
@@ -97,7 +97,7 @@ Live runner / deployment
 - Example local live run using the Alpaca config:
 
 ```bash
-python v2/run_app.py --config v2/config/app_live_alpaca.yml
+python v2/run_app.py --config v2/configs/app_live_alpaca.yml
 # or use the helper script
 ./v2/run_app_live_alpaca.sh
 ```

@@ -51,7 +51,7 @@ at:
 universe_manager:
   membership_csv: data_live_publicdotcom/sp500_membership.csv
   current_constituents_csv: data_live_publicdotcom/current_sp500_constituents.csv
-  sectors_yaml: config/sectors.yml # Shared with other configs
+  sectors_yaml: configs/sectors.yml # Shared with other configs
 
 market_data_store:
   data_root: data_live_publicdotcom/prices

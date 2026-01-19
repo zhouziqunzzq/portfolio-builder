@@ -21,7 +21,7 @@ def build_runtime() -> Dict[str, object]:
     DefensiveSleeve, TrendSleeve, MultiSleeveAllocator.
     """
     membership_csv = Path("data/sp500_membership.csv")
-    sectors_yaml = Path("config/sectors.yaml")
+    sectors_yaml = Path("configs/sectors.yaml")
 
     # Universe
     um = UniverseManager(
