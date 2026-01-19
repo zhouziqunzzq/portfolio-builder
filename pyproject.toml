@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "algotrading"
+version = "0.1.0"
+description = "Shared libraries and applications for the AlgoTrading project"
+requires-python = ">=3.11"
+license = "MIT"
+
+# Keep this minimal for now; v2 still manages its own runtime deps
+dependencies = []
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# Initially only lib will exist here; v2/v3 can be added later
+include = ["algotrading*"]
+
+# Optional but recommended: makes pytest imports behave sanely
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["v2/tests", "v2/tests_manual"]
+
+# Optional: tooling config placeholders (safe to keep)
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+target-version = "py311"
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true

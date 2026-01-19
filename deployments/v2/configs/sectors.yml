@@ -1,0 +1,32 @@
+# Unified sector mapping and aliases
+# Left side: canonical sector
+# aliases: lists of alternative names from sources (Wikipedia/Yahoo/Custom)
+
+sectors:
+  Communication Services:
+    aliases: ["Communication Services", "Communications", "Telecommunication Services"]
+  Consumer Discretionary:
+    aliases: ["Consumer Discretionary", "Consumer Cyclical"]
+  Consumer Staples:
+    aliases: ["Consumer Staples", "Consumer Defensive"]
+  Energy:
+    aliases: ["Energy"]
+  Financials:
+    aliases: ["Financials", "Finance"]
+  Health Care:
+    aliases: ["Health Care", "Healthcare"]
+  Industrials:
+    aliases: ["Industrials", "Industrial"]
+  Information Technology:
+    aliases: ["Information Technology", "Technology", "Tech"]
+  Materials:
+    aliases: ["Materials"]
+  Real Estate:
+    aliases: ["Real Estate"]
+  Utilities:
+    aliases: ["Utilities", "Utility"]
+
+unknown_labels:
+  - "Unknown"
+  - "N/A"
+  - "NA"

@@ -2,10 +2,10 @@ services:
   v2_app:
     image: portfolio-builder-v2-app:latest
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../../ # Path to the root of the repository
+      dockerfile: deployments/v2/Dockerfile
     volumes:
-      - ./config:/app/v2/config:ro
+      - ./configs:/app/v2/configs:ro
     networks:
       - pb_obs_net
 

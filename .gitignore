@@ -1,6 +1,9 @@
 .venv/
 .vscode/
-__pycache__
+
+# Python stuff
+__pycache__/
+*.egg-info/
 
 # Cached data files
 test_data/
@@ -31,7 +34,7 @@ prom_data/
 grafana_data/
 
 # Local Alertmanager config (contains webhook endpoints)
-v2/alertmanager.yml
+alertmanager.yml
 
 # IBKR secrets
 *.pem

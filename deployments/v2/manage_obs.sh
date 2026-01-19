@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
+deployments_dir="$script_dir"
 
 usage() {
 	echo "Usage:" >&2
@@ -27,7 +28,7 @@ shift 1 || true
 
 # Fail fast with actionable errors for required local configs.
 if [[ "$action" == "up" ]]; then
-	if [[ ! -f "alertmanager.yml" ]]; then
+	if [[ ! -f "$deployments_dir/alertmanager.yml" ]]; then
 		echo "Missing alertmanager.yml; create it from alertmanager.yml.example" >&2
 		exit 1
 	fi
@@ -41,7 +42,7 @@ fi
 project="portfolio_builder_obs"
 compose_args=(
 	-p "$project"
-	-f docker-compose.obs.yml
+	-f "$deployments_dir/docker-compose.obs.yml"
 )
 
 case "$action" in

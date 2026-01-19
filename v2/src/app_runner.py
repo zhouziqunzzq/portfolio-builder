@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument(
         "--config",
-        default="config/app.yml",
+        default="configs/app.yml",
         help="Path to application config YAML file",
     )
 

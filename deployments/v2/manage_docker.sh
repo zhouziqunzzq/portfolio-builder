@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
+deployments_dir="$script_dir"
 
 usage() {
     echo "Usage:" >&2
@@ -37,21 +38,21 @@ set_env_vars() {
     case "$env" in
         live_alpaca|live)
             project="portfolio_builder_live_alpaca"
-            env_file="$script_dir/.env.live_alpaca"
-            env_example_file="$script_dir/.env.live_alpaca.example"
-            app_compose="docker-compose.live_alpaca.yml"
+            env_file="$deployments_dir/.env.live_alpaca"
+            env_example_file="$deployments_dir/.env.live_alpaca.example"
+            app_compose="$deployments_dir/docker-compose.live_alpaca.yml"
             ;;
         live_publicdotcom)
             project="portfolio_builder_live_publicdotcom"
-            env_file="$script_dir/.env.live_publicdotcom"
-            env_example_file="$script_dir/.env.live_publicdotcom.example"
-            app_compose="docker-compose.live_publicdotcom.yml"
+            env_file="$deployments_dir/.env.live_publicdotcom"
+            env_example_file="$deployments_dir/.env.live_publicdotcom.example"
+            app_compose="$deployments_dir/docker-compose.live_publicdotcom.yml"
             ;;
         paper)
             project="portfolio_builder_paper"
-            env_file="$script_dir/.env.paper_alpaca"
-            env_example_file="$script_dir/.env.paper_alpaca.example"
-            app_compose="docker-compose.paper.yml"
+            env_file="$deployments_dir/.env.paper_alpaca"
+            env_example_file="$deployments_dir/.env.paper_alpaca.example"
+            app_compose="$deployments_dir/docker-compose.paper.yml"
             ;;
         *)
             return 1
@@ -90,9 +91,9 @@ if [[ "$env_name" == "all" ]]; then
 
         echo "== $action: $e =="
         if [[ "$action" == "up" ]]; then
-            docker compose -p "$project" -f docker-compose.yml -f "$app_compose" up --build "$@"
+            docker compose -p "$project" -f "$deployments_dir/docker-compose.yml" -f "$app_compose" up --build "$@"
         else
-            docker compose -p "$project" -f docker-compose.yml -f "$app_compose" "$action" "$@"
+            docker compose -p "$project" -f "$deployments_dir/docker-compose.yml" -f "$app_compose" "$action" "$@"
         fi
     done
     exit 0
@@ -107,7 +108,7 @@ fi
 # Compose file stack (base + env override)
 compose_args=(
     -p "$project"
-    -f docker-compose.yml
+    -f "$deployments_dir/docker-compose.yml"
     -f "$app_compose"
 )
 

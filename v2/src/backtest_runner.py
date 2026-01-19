@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     # Paths
     p.add_argument(
         "--app-config",
-        default="config/app.yml",
+        default="configs/app.yml",
         help="Path to application config YAML file",
     )
 
@@ -169,7 +169,7 @@ def parse_args() -> argparse.Namespace:
         "--rf-annual",
         type=float,
         default=0.03,
-        help="Annual risk-free rate used for Sharpe (e.g. 0.03 = 3%)",
+        help="Annual risk-free rate used for Sharpe (e.g. 0.03 = 3%%)",
     )
 
     # Plotting controls

@@ -6,7 +6,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol:4317
       OTEL_SERVICE_NAME: portfolio-builder-v2-live_publicdotcom
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment=live_publicdotcom
-    command: [ "python", "run_app.py", "--config", "config/app_live_publicdotcom.yml" ]
+    command: [ "python", "run_app.py", "--config", "configs/app_live_publicdotcom.yml" ]
     volumes:
       - ./data_live_publicdotcom:/app/v2/data_live_publicdotcom
     restart: unless-stopped

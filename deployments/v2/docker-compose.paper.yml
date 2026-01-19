@@ -6,7 +6,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol:4317
       OTEL_SERVICE_NAME: portfolio-builder-v2-paper
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment=paper
-    command: [ "python", "run_app.py", "--config", "config/app_paper_alpaca.yml" ]
+    command: [ "python", "run_app.py", "--config", "configs/app_paper_alpaca.yml" ]
     volumes:
       - ./data_paper_alpaca:/app/v2/data_paper_alpaca
     restart: unless-stopped
