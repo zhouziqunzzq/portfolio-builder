@@ -14,7 +14,7 @@ from algotrading.lib.eventing.events import BaseEvent
 
 
 class BaseService(ABC):
-    """Common base class for v2 services.
+    """Common base class for services.
 
     Provides:
     - Common resources: log, bus, name, _running
