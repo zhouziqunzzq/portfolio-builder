@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
-
-
 from pathlib import Path
 import sys
+from typing import Set
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     BaseEvent,
@@ -29,6 +29,15 @@ class BaseATService(BaseService, ABC):
         name: str = "AT",
     ):
         super().__init__(bus=bus, name=name)
+
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        topics = {
+            Topic.MARKET_CLOCK,  # All ATs need market clock updates
+            Topic.ACCOUNT,  # All ATs need account updates
+        }
+
+        return super().subscription_topics.union(topics)
 
     @abstractmethod
     async def _run_loop(self) -> None:

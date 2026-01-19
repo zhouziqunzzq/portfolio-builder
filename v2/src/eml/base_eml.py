@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Optional, Set
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     BaseEvent,
@@ -17,7 +17,6 @@ from events.events import (
     MarketClockEvent,
     PositionCleanupPlanRequestEvent,
 )
-
 from services.base_service import BaseService
 
 
@@ -44,6 +43,14 @@ class BaseEML(BaseService, ABC):
 
         # Internal caches
         self._market_clock: Optional[MarketClockEvent] = None
+
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        topics = {
+            Topic.MARKET_CLOCK,  # All EMLs need market clock updates
+        }
+
+        return super().subscription_topics.union(topics)
 
     @abstractmethod
     async def _run_loop(self) -> None:

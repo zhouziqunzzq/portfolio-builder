@@ -103,3 +103,7 @@ class EventBus:
                     )
             else:
                 await sub.q.put(e)
+
+    async def close_all_subscriptions(self) -> None:
+        for sub in self._all_subs:
+            await sub.close()

@@ -7,7 +7,7 @@ import logging
 import threading
 from pathlib import Path
 import sys
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Set
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
@@ -30,6 +30,7 @@ class BaseService(ABC):
     def __init__(self, bus: "EventBus", name: str):
         self.log = logging.getLogger(self.__class__.__name__)
         self.bus = bus
+        self.sub: Optional["Subscription"] = None  # To be set up later on startup
         self.name = name
 
         self._running = False
@@ -40,9 +41,18 @@ class BaseService(ABC):
         # Track threadpool futures created by this service so we can await them
         # during shutdown ("join" semantics). These are asyncio Futures wrapping
         # executor work.
-        self._thread_futures: set[asyncio.Future[Any]] = set()
+        self._thread_futures: Set[asyncio.Future[Any]] = set()
 
-    async def run(self, sub: "Subscription") -> None:
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        """Topics this service subscribes to.
+        Concreate services should override to specify topics they consume.
+        Default: STOP only.
+        """
+
+        return {Topic.STOP}
+
+    async def run(self) -> None:
         """Main entrypoint.
 
         Pattern:
@@ -59,7 +69,7 @@ class BaseService(ABC):
         run_task = asyncio.create_task(self._run_loop(), name=f"{self.name}.loop")
         try:
             while True:
-                e = await sub.next()
+                e = await self.sub.next()
                 try:
                     if e.topic == Topic.STOP:
                         break
@@ -67,7 +77,7 @@ class BaseService(ABC):
                 except Exception:
                     self.log.exception("Error processing event in service")
                 finally:
-                    sub.task_done()
+                    self.sub.task_done()
         finally:
             # Signal shutdown early so any in-flight blocking loops can abort.
             try:
@@ -96,6 +106,13 @@ class BaseService(ABC):
         return
 
     async def _startup(self) -> None:
+        # Handle subscription setup
+        topics = self.subscription_topics.union(
+            {Topic.STOP}
+        )  # Always subscribe to STOP
+        self.sub = self.bus.subscribe(topics=topics)
+        self.log.debug("Subscribed to topics: %s", topics)
+
         await self._on_startup()
 
     async def _shutdown(self) -> None:
@@ -118,6 +135,17 @@ class BaseService(ABC):
             self.log.exception(
                 "Error while awaiting service thread tasks during shutdown"
             )
+
+        # Close the service subscription defensively. App-level shutdown
+        # performs global cleanup, but closing here ensures the service does
+        # not leak its subscription if the global cleanup is skipped or
+        # runs after this method.
+        try:
+            if self.sub is not None:
+                await self.sub.close()
+                self.log.debug("Closed subscription during shutdown.")
+        except Exception:
+            self.log.exception("Error closing subscription during shutdown")
 
         await self._on_shutdown()
 

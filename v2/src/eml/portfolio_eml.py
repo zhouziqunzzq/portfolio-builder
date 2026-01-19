@@ -4,14 +4,11 @@ import asyncio
 from datetime import datetime
 import time
 import uuid
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
-
 from decimal import Decimal
-
 from opentelemetry import metrics
 from opentelemetry.metrics import Observation
-
 
 from pathlib import Path
 import sys
@@ -20,6 +17,7 @@ _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     AccountSnapshotEvent,
@@ -103,7 +101,9 @@ class PortfolioEMLService(BaseEML):
             if broker == "alpaca":
                 self._trading_api = AlpacaTradingAPI(name="AlpacaTradingAPI")
             elif broker in {"publicdotcom", "public", "public.com"}:
-                self._trading_api = PublicDotComTradingAPI(name="PublicDotComTradingAPI")
+                self._trading_api = PublicDotComTradingAPI(
+                    name="PublicDotComTradingAPI"
+                )
             else:
                 raise ValueError(
                     f"Unsupported EMLConfig.broker={self.config.broker!r}; supported: 'alpaca', 'publicdotcom'"
@@ -123,6 +123,15 @@ class PortfolioEMLService(BaseEML):
         self._last_positions: List[BrokerPosition] = []
 
         self._init_metrics_instruments()
+
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        topics = {
+            Topic.REBALANCE_PLAN,  # PortfolioEML executes rebalance plans
+            Topic.POSITION_CLEANUP_PLAN,  # PortfolioEML executes position cleanup plans
+        }
+
+        return super().subscription_topics.union(topics)
 
     def _init_metrics_instruments(self) -> None:
         meter = metrics.get_meter("portfolio_builder.v2.eml")

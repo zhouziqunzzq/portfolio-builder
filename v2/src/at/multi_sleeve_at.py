@@ -1,26 +1,23 @@
 import asyncio
-from datetime import datetime
 import time
 import uuid
-from pathlib import Path
 import sys
-from typing import Any, Dict, List, Mapping, Optional
-
-from decimal import Decimal
-
 import pandas as pd
-
-from opentelemetry import metrics
-from opentelemetry.metrics import Observation
-
+from datetime import datetime
+from pathlib import Path
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from typing import Any, Dict, List, Mapping, Optional, Set
+from decimal import Decimal
+from opentelemetry import metrics
+from opentelemetry.metrics import Observation
 from .base_at import BaseATService
 from .config import ATConfig
 from runtime_manager import RuntimeManager
+from events.topic import Topic
 from events.events import (
     AccountSnapshotEvent,
     BaseEvent,
@@ -169,6 +166,16 @@ class MultiSleeveATService(BaseATService):
         self._gate_market_open_now: Optional[bool] = None
         self._gate_market_open_today: Optional[bool] = None
         self._init_metrics_instruments()
+
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        topics = {
+            Topic.BAR,  # MultiSleeveAT needs bar updates to track market data freshness
+            Topic.REBALANCE_PLAN,  # MultiSleeveAT handles rebalance plan confirmations
+            Topic.POSITION_CLEANUP_PLAN,  # MultiSleeveAT handles position cleanup confirmations
+        }
+
+        return super().subscription_topics.union(topics)
 
     def _init_metrics_instruments(self) -> None:
         meter = metrics.get_meter("portfolio_builder.v2.at")

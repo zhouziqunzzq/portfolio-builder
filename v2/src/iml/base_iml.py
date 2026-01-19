@@ -1,14 +1,14 @@
 from abc import ABC, abstractmethod
 
-
 from pathlib import Path
 import sys
-from typing import Tuple
+from typing import Set, Tuple
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import MarketClockEvent, NewBarsEvent, BarsCheckedEvent
 
@@ -39,6 +39,12 @@ class BaseIMLService(BaseService, ABC):
     ):
         super().__init__(bus=bus, name=name)
         self.bar_interval = bar_interval
+
+    @property
+    def subscription_topics(self) -> Set[Topic]:
+        """IML subscribes to no additional topics by default (other than STOP)."""
+
+        return super().subscription_topics
 
     @abstractmethod
     async def _run_loop(self) -> None:

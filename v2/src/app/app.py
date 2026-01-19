@@ -15,7 +15,7 @@ if str(_ROOT_SRC) not in sys.path:
 from configs import AppConfig
 from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from states.state_manager import FileStateManager
-from events.event_bus import EventBus, EventBusOptions, Subscription
+from events.event_bus import EventBus, EventBusOptions
 from events.events import BaseEvent
 from events.topic import Topic
 from iml.base_iml import BaseIMLService
@@ -147,14 +147,14 @@ class App:
             bus=self.event_bus,
             rm=self.rm,
             config=self.config.iml,
-            # Alpaca API credentials loaded from env by default
+            # Market Data API credentials loaded from env by default
         )
         # EML
         self.eml: BaseEML = PortfolioEMLService(
             bus=self.event_bus,
             rm=self.rm,
             config=self.config.eml,
-            # Broker credentials loaded from env by default
+            # Broker API credentials loaded from env by default
         )
         # AutoTrader (AT)
         self.at: BaseATService = MultiSleeveATService(
@@ -182,7 +182,6 @@ class App:
     async def _handle_graceful_shutdown(
         self,
         tasks: List[asyncio.Task],
-        subscriptions: Dict[str, Subscription],
     ) -> None:
         if not tasks:
             return
@@ -204,15 +203,17 @@ class App:
         await asyncio.gather(*tasks, return_exceptions=True)
 
         # Cleanup subscriptions
-        for svc, sub in subscriptions.items():
-            self.log.debug(f"Closing subscription for {svc}...")
-            await sub.close()
+        await self.event_bus.close_all_subscriptions()
 
-    async def _run_periodic_state_persistence(self, sub: "Subscription") -> None:
+    async def _run_periodic_state_persistence(self) -> None:
         """
         Periodically persist runtime state to disk.
         Exits cleanly on STOP event.
         """
+        # Subscribe to STOP
+        sub = self.event_bus.subscribe(topics={Topic.STOP})
+        self.log.debug("State persistence task subscribed to STOP topic.")
+
         try:
             while True:
                 try:
@@ -246,62 +247,29 @@ class App:
         # Setup graceful shutdown handler
         self._setup_graceful_shutdown()
 
-        # Initialize service tasks and subscriptions
-        subs: Dict[str, Subscription] = {
-            "StatePersistence": self.event_bus.subscribe(
-                topics={Topic.STOP},
-            ),
-            "IML": self.event_bus.subscribe(
-                topics={Topic.STOP},
-            ),
-            "EML": self.event_bus.subscribe(
-                topics={
-                    Topic.STOP,
-                    Topic.MARKET_CLOCK,
-                    Topic.REBALANCE_PLAN,
-                    Topic.POSITION_CLEANUP_PLAN,
-                },
-            ),
-            "AT": self.event_bus.subscribe(
-                topics={
-                    Topic.STOP,
-                    Topic.MARKET_CLOCK,
-                    Topic.BAR,
-                    Topic.ACCOUNT,
-                    Topic.REBALANCE_PLAN,
-                    Topic.POSITION_CLEANUP_PLAN,
-                },
-            ),
-        }
+        # Initialize service tasks
+        # Note: Subscriptions are handled within each service / task.
         tasks = [
             asyncio.create_task(
-                self._run_periodic_state_persistence(
-                    sub=subs["StatePersistence"],
-                ),
+                self._run_periodic_state_persistence(),
                 name="StatePersistence",
             ),
             asyncio.create_task(
-                self.iml.run(
-                    sub=subs["IML"],
-                ),
+                self.iml.run(),
                 name="IML",
             ),
             asyncio.create_task(
-                self.eml.run(
-                    sub=subs["EML"],
-                ),
+                self.eml.run(),
                 name="EML",
             ),
             asyncio.create_task(
-                self.at.run(
-                    sub=subs["AT"],
-                ),
+                self.at.run(),
                 name="AT",
             ),
         ]
 
         # Handle graceful shutdown
-        await self._handle_graceful_shutdown(tasks, subscriptions=subs)
+        await self._handle_graceful_shutdown(tasks)
 
         # Persist state on shutdown
         self.state_manager.save_state()
