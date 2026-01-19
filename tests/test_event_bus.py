@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from v2.src.events.event_bus import EventBus
-from v2.src.events.events import BaseEvent
-from v2.src.events.topic import Topic
+from algotrading.lib.eventing.event_bus import EventBus
+from algotrading.lib.eventing.events import BaseEvent
+from algotrading.lib.eventing.topic import Topic
 
 
 def _run(coro):

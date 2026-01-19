@@ -23,7 +23,7 @@ include = ["algotrading*"]
 # Optional but recommended: makes pytest imports behave sanely
 [tool.pytest.ini_options]
 addopts = "-q"
-testpaths = ["v2/tests", "v2/tests_manual"]
+testpaths = ["tests", "v2/tests", "v2/tests_manual"]
 
 # Optional: tooling config placeholders (safe to keep)
 [tool.black]

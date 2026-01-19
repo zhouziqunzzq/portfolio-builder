@@ -1,5 +1,5 @@
 import pandas as pd
-from v2.src.utils.tz import as_utc, as_eastern
+from algotrading.lib.utils.tz import as_eastern, as_utc
 
 
 def test_as_utc_naive_timestamp():
