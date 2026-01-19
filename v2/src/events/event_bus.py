@@ -105,5 +105,12 @@ class EventBus:
                 await sub.q.put(e)
 
     async def close_all_subscriptions(self) -> None:
-        for sub in self._all_subs:
-            await sub.close()
+        # Iterate over a snapshot because `Subscription.close()` calls
+        # `EventBus.unsubscribe()` which mutates `self._all_subs` and
+        # would raise `RuntimeError: Set changed size during iteration`.
+        subs = list(self._all_subs)
+        for sub in subs:
+            try:
+                await sub.close()
+            except Exception:
+                self.log.exception("Error closing subscription %s", sub)
