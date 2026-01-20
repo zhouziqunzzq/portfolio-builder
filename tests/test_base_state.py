@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 
-from v2.src.states.base_state import BaseState, StateSerializationError
+from dataclasses import dataclass
+
+from algotrading.lib.state.base_state import BaseState
+from algotrading.lib.state.errors import StateSerializationError
 
 
 @dataclass

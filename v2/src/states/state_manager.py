@@ -1,58 +1,21 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
-
-import json
-import os
-import shutil
+from typing import Any, Dict, Mapping, Optional, Sequence
 import logging
 
 from .base_state import BaseState, StateSerializationError
 
 import sys
-from pathlib import Path
 
 _ROOT_SRC = Path(__file__).resolve().parents[1]
 if str(_ROOT_SRC) not in sys.path:
     sys.path.insert(0, str(_ROOT_SRC))
 
+from algotrading.lib.state.manager import BaseStateManager
+from algotrading.lib.state.file_store import FileStateStore
 from runtime_manager import RuntimeManager
-
-
-StateBlob = Dict[str, Any]
-
-
-class BaseStateManager(ABC):
-    """Public interface for runtime state persistence.
-
-    A StateManager owns *persistence* and *reset* semantics for a set of
-    stateful runtime objects (sleeves, allocators, etc).
-
-    Each stateful object is expected to expose a `.state` attribute that is a
-    `BaseState` instance.
-    """
-
-    @abstractmethod
-    def managed_names(self) -> set[str]:
-        """Canonical names of managed objects (e.g. {'trend', 'allocator'})."""
-
-    @abstractmethod
-    def save_state(self, names: Optional[Sequence[str]] = None) -> None:
-        """Persist state for `names` (or all if None)."""
-
-    @abstractmethod
-    def load_state(self, names: Optional[Sequence[str]] = None) -> bool:
-        """Load persisted state into live objects.
-
-        Returns True if a state file was found and successfully loaded.
-        """
-
-    @abstractmethod
-    def reset_state(self, names: Optional[Sequence[str]] = None) -> None:
-        """Reset state for `names` (or all if None)."""
 
 
 @dataclass
@@ -99,6 +62,12 @@ class FileStateManager(BaseStateManager):
             )
 
         self.state_file = Path(state_file)
+        self._store = FileStateStore(
+            state_file=self.state_file,
+            file_schema_version=self.file_schema_version,
+            backup_suffix=self.backup_suffix,
+            tmp_suffix=self.tmp_suffix,
+        )
 
         # Fail fast if RuntimeManager wiring is incomplete.
         if not skip_self_check:
@@ -204,53 +173,6 @@ class FileStateManager(BaseStateManager):
         return st
 
     # ---------------------------
-    # IO helpers
-    # ---------------------------
-
-    def _backup_file(self) -> Path:
-        return self.state_file.with_suffix(self.state_file.suffix + self.backup_suffix)
-
-    def _tmp_file(self) -> Path:
-        return self.state_file.with_suffix(self.state_file.suffix + self.tmp_suffix)
-
-    def _atomic_write_json(self, path: Path, data: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        tmp = self._tmp_file()
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-
-        # Backup old file (best-effort)
-        if path.exists():
-            try:
-                shutil.copy2(path, self._backup_file())
-            except Exception:
-                pass
-
-        os.replace(tmp, path)
-
-    def _read_json(self, path: Path) -> Optional[StateBlob]:
-        if not path.exists():
-            return None
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
-
-    def _read_state_blob(self) -> Optional[StateBlob]:
-        blob = self._read_json(self.state_file)
-        if blob is not None:
-            return blob
-
-        # Fallback to backup if main is corrupted/missing
-        bak = self._backup_file()
-        blob = self._read_json(bak)
-        return blob
-
-    # ---------------------------
     # Public API
     # ---------------------------
 
@@ -258,7 +180,7 @@ class FileStateManager(BaseStateManager):
         selected = self._normalize_names(names)
 
         # Load existing so partial writes can merge (when names != all)
-        existing = self._read_state_blob() or {}
+        existing = self._store.load_blob() or {}
         states_existing = existing.get("states") if isinstance(existing, dict) else None
         if not isinstance(states_existing, dict):
             states_existing = {}
@@ -275,14 +197,15 @@ class FileStateManager(BaseStateManager):
             "states": states_out,
         }
 
-        self._atomic_write_json(self.state_file, out)
+        self._store.save_blob(out)
 
     def load_state(self, names: Optional[Sequence[str]] = None) -> bool:
         selected = self._normalize_names(names)
-        blob = self._read_state_blob()
+
+        blob = self._store.load_blob()
         if blob is None:
             # If neither the main nor backup exists, treat as "no state yet".
-            if not self.state_file.exists() and not self._backup_file().exists():
+            if not self.state_file.exists() and not self._store._backup_file().exists():
                 return False
             raise StateSerializationError(
                 f"Failed to read/parse state file (or backup): {self.state_file}"

@@ -22,7 +22,6 @@
 **/plots/
 **/backtests/
 **/prices/
-**/state/
 
 # VCS / editor
 **/.git/
@@ -30,5 +29,5 @@
 **/.DS_Store/
 **/.github/
 
-# Playgrounds code
+# Playgrounds
 **/playgrounds/
