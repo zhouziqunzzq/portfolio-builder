@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import Enum
 from typing import Optional
 
 
@@ -23,6 +24,11 @@ class AccountSnapshot:
     adj_equity: Optional[Decimal] = None
 
 
+class PositionSide(str, Enum):
+    LONG = "long"
+    SHORT = "short"
+
+
 @dataclass(frozen=True)
 class PositionSnapshot:
     """Normalized position snapshot."""
@@ -31,5 +37,5 @@ class PositionSnapshot:
     qty: Optional[Decimal] = None
     market_value: Optional[Decimal] = None
     avg_entry_price: Optional[Decimal] = None
-    side: Optional[str] = None
+    side: Optional[PositionSide] = None
     unrealized_pnl: Optional[Decimal] = None

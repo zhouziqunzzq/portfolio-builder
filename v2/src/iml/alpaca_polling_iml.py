@@ -16,7 +16,7 @@ from utils.tz import to_canonical_eastern_naive
 from .base_iml import BaseIMLService
 from .config import IMLConfig
 
-from events.events import MarketClockEvent, NewBarsEvent, BarsCheckedEvent
+from events.events import V2MarketClockEvent, V2NewBarsEvent, V2BarsCheckedEvent
 from events.event_bus import EventBus
 from runtime_manager import RuntimeManager
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -171,7 +171,7 @@ class AlpacaPollingIMLService(BaseIMLService):
         self.state: PollingIMLState = PollingIMLState()
 
         # Internal market clock cache
-        self._last_market_clock: Optional[MarketClockEvent] = None
+        self._last_market_clock: Optional[V2MarketClockEvent] = None
 
         # Metrics
         self._market_is_open: Optional[bool] = None
@@ -321,14 +321,14 @@ class AlpacaPollingIMLService(BaseIMLService):
                 # Check for new bars
                 has_new_bars, bars_checked = await self.check_new_bars(now=now)
                 if has_new_bars:
-                    new_bars_event = NewBarsEvent(
+                    new_bars_event = V2NewBarsEvent(
                         ts=time.time(),
                         source=self.name,
                     )
                     self.log.debug("New bars detected; emitting NewBarsEvent")
                     await self.emit_new_bars(new_bars_event)
                 if bars_checked:
-                    bars_checked_event = BarsCheckedEvent(
+                    bars_checked_event = V2BarsCheckedEvent(
                         ts=time.time(),
                         source=self.name,
                     )
@@ -360,7 +360,7 @@ class AlpacaPollingIMLService(BaseIMLService):
                         {"success": iteration_success},
                     )
 
-    async def get_market_clock(self) -> MarketClockEvent:
+    async def get_market_clock(self) -> V2MarketClockEvent:
         """Fetch clock from Alpaca (runs sync client in a worker thread)."""
 
         # alpaca-py is synchronous; avoid blocking the event loop.
@@ -372,7 +372,7 @@ class AlpacaPollingIMLService(BaseIMLService):
         next_open = getattr(c, "next_open", None)
         next_close = getattr(c, "next_close", None)
 
-        return MarketClockEvent(
+        return V2MarketClockEvent(
             ts=time.time(),
             source=self.name,
             now=now,

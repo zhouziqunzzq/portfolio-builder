@@ -16,7 +16,7 @@ from configs import AppConfig
 from runtime_manager import RuntimeManager, RuntimeManagerOptions
 from states.state_manager import FileStateManager
 from events.event_bus import EventBus, EventBusOptions
-from events.events import BaseEvent
+from events.events import BaseEvent, StopEvent
 from events.topic import Topic
 from iml.base_iml import BaseIMLService
 from iml.alpaca_polling_iml import AlpacaPollingIMLService
@@ -189,9 +189,7 @@ class App:
         # Wait for OS shutdown signal, then publish STOP ONCE.
         await self._stop_event.wait()
         self.log.info("Shutdown signal received; cancelling tasks...")
-        await self.event_bus.publish(
-            BaseEvent(topic=Topic.STOP, ts=time.time(), source="APP")
-        )
+        await self.event_bus.publish(StopEvent(ts=time.time(), source="APP"))
 
         # Let tasks drain/exit; then cancel if anything is stuck
         _, pending = await asyncio.wait(
@@ -211,7 +209,7 @@ class App:
         Exits cleanly on STOP event.
         """
         # Subscribe to STOP
-        sub = self.event_bus.subscribe(topics={Topic.STOP})
+        sub = self.event_bus.subscribe(topics={Topic.SYSTEM_STOP})
         self.log.debug("State persistence task subscribed to STOP topic.")
 
         try:
@@ -222,7 +220,7 @@ class App:
                         timeout=self.state_persist_interval_secs,
                     )
                     sub.task_done()
-                    if e.topic == Topic.STOP:
+                    if e.topic == Topic.SYSTEM_STOP:
                         self.log.debug(
                             "STOP event received; exiting state persistence task."
                         )

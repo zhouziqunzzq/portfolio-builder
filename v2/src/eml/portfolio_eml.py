@@ -23,11 +23,11 @@ from events.events import (
     AccountSnapshotEvent,
     AccountSnapshot,
     PositionSnapshot,
-    PositionCleanupIntent,
-    PositionCleanupPlanRequestEvent,
-    PositionCleanupPlanConfirmationEvent,
-    RebalancePlanRequestEvent,
-    RebalancePlanConfirmationEvent,
+    V2PositionCleanupIntent,
+    V2PositionCleanupPlanRequestEvent,
+    V2PositionCleanupPlanConfirmationEvent,
+    V2RebalancePlanRequestEvent,
+    V2RebalancePlanConfirmationEvent,
 )
 from runtime_manager import RuntimeManager
 
@@ -127,8 +127,8 @@ class PortfolioEMLService(BaseEML):
     @property
     def subscription_topics(self) -> Set[Topic]:
         topics = {
-            Topic.REBALANCE_PLAN,  # PortfolioEML executes rebalance plans
-            Topic.POSITION_CLEANUP_PLAN,  # PortfolioEML executes position cleanup plans
+            Topic.V2_REBALANCE_PLAN,  # PortfolioEML executes rebalance plans
+            Topic.V2_POSITION_CLEANUP_PLAN,  # PortfolioEML executes position cleanup plans
         }
 
         return super().subscription_topics.union(topics)
@@ -473,7 +473,7 @@ class PortfolioEMLService(BaseEML):
             return []
         return orders[: int(limit)]
 
-    async def execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
+    async def execute_rebalance_plan(self, event: V2RebalancePlanRequestEvent) -> None:
         """Execute a rebalance plan request.
         This function simply records the pending rebalance request in state, and
         emits a RebalancePlanConfirmationEvent. Actual execution of the rebalance
@@ -496,7 +496,7 @@ class PortfolioEMLService(BaseEML):
             else:
                 self.state.remember_pending_rebalance_request(event)
             # We still send back confirmation even if duplicate.
-            confirmation_event = RebalancePlanConfirmationEvent(
+            confirmation_event = V2RebalancePlanConfirmationEvent(
                 ts=now_ts,
                 rebalance_id=event.rebalance_id,
                 confirmed_ts=now_ts,
@@ -660,7 +660,7 @@ class PortfolioEMLService(BaseEML):
                         rebalance_id,
                     )
 
-    def _execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
+    def _execute_rebalance_plan(self, event: V2RebalancePlanRequestEvent) -> None:
         """Synchronously execute a single rebalance plan by placing broker orders.
 
         This method is intentionally synchronous and may block while waiting for
@@ -818,7 +818,7 @@ class PortfolioEMLService(BaseEML):
             raise
 
     async def execute_position_cleanup_plan(
-        self, event: PositionCleanupPlanRequestEvent
+        self, event: V2PositionCleanupPlanRequestEvent
     ) -> None:
         """Record a position cleanup plan request and confirm receipt.
 
@@ -845,7 +845,7 @@ class PortfolioEMLService(BaseEML):
             else:
                 self.state.remember_pending_position_cleanup_request(event)
 
-            confirmation_event = PositionCleanupPlanConfirmationEvent(
+            confirmation_event = V2PositionCleanupPlanConfirmationEvent(
                 ts=now_ts,
                 request_id=str(request_id),
                 confirmed_ts=now_ts,
@@ -894,7 +894,7 @@ class PortfolioEMLService(BaseEML):
 
     def _position_cleanup_request_from_state(
         self, payload: Mapping[str, Any]
-    ) -> PositionCleanupPlanRequestEvent:
+    ) -> V2PositionCleanupPlanRequestEvent:
         request_id = payload.get("request_id")
         if not request_id:
             raise ValueError(
@@ -914,13 +914,13 @@ class PortfolioEMLService(BaseEML):
         if not isinstance(intents_payload, Mapping):
             intents_payload = {}
 
-        intents: Dict[str, PositionCleanupIntent] = {}
+        intents: Dict[str, V2PositionCleanupIntent] = {}
         for sym, info in dict(intents_payload).items():
             if not isinstance(info, Mapping):
                 info = {}
             ticker = str(info.get("ticker") or sym)
             reason = str(info.get("reason") or "")
-            intents[str(sym)] = PositionCleanupIntent(
+            intents[str(sym)] = V2PositionCleanupIntent(
                 ticker=ticker,
                 reason=reason,
                 observed_qty=to_decimal(info.get("observed_qty")),
@@ -929,7 +929,7 @@ class PortfolioEMLService(BaseEML):
                 market_value_threshold=to_decimal(info.get("market_value_threshold")),
             )
 
-        return PositionCleanupPlanRequestEvent(
+        return V2PositionCleanupPlanRequestEvent(
             ts=ts_f,
             request_id=request_id,
             intents=intents,
@@ -1051,7 +1051,7 @@ class PortfolioEMLService(BaseEML):
                     )
 
     def _execute_position_cleanup_plan(
-        self, event: PositionCleanupPlanRequestEvent
+        self, event: V2PositionCleanupPlanRequestEvent
     ) -> None:
         """Synchronously execute a single position cleanup plan.
 
@@ -1654,7 +1654,7 @@ class PortfolioEMLService(BaseEML):
     @staticmethod
     def _rebalance_request_from_state(
         payload: Mapping[str, Any],
-    ) -> RebalancePlanRequestEvent:
+    ) -> V2RebalancePlanRequestEvent:
         rebalance_id = str(payload.get("rebalance_id") or "")
         if not rebalance_id:
             raise ValueError("Invalid pending rebalance payload: missing rebalance_id")
@@ -1671,7 +1671,7 @@ class PortfolioEMLService(BaseEML):
         if not isinstance(weights, Mapping):
             weights = {}
 
-        return RebalancePlanRequestEvent(
+        return V2RebalancePlanRequestEvent(
             ts=ts_f,
             rebalance_id=rebalance_id,
             weights=dict(weights),

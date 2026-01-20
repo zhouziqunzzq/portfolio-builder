@@ -21,13 +21,13 @@ from events.topic import Topic
 from events.events import (
     AccountSnapshotEvent,
     BaseEvent,
-    MarketClockEvent,
-    RebalancePlanRequestEvent,
-    RebalancePlanConfirmationEvent,
-    BarsCheckedEvent,
-    PositionCleanupPlanRequestEvent,
-    PositionCleanupPlanConfirmationEvent,
-    PositionCleanupIntent,
+    V2MarketClockEvent,
+    V2RebalancePlanRequestEvent,
+    V2RebalancePlanConfirmationEvent,
+    V2BarsCheckedEvent,
+    V2PositionCleanupPlanRequestEvent,
+    V2PositionCleanupPlanConfirmationEvent,
+    V2PositionCleanupIntent,
 )
 from events.event_bus import EventBus
 from allocator.multi_sleeve_allocator import MultiSleeveAllocator
@@ -154,7 +154,7 @@ class MultiSleeveATService(BaseATService):
         self.state: MultiSleeveATState = MultiSleeveATState()
 
         # Internal caches
-        self._market_clock: Optional[MarketClockEvent] = None
+        self._market_clock: Optional[V2MarketClockEvent] = None
         self._account_snapshot: Optional[AccountSnapshotEvent] = None
 
         # Metrics
@@ -170,9 +170,9 @@ class MultiSleeveATService(BaseATService):
     @property
     def subscription_topics(self) -> Set[Topic]:
         topics = {
-            Topic.BAR,  # MultiSleeveAT needs bar updates to track market data freshness
-            Topic.REBALANCE_PLAN,  # MultiSleeveAT handles rebalance plan confirmations
-            Topic.POSITION_CLEANUP_PLAN,  # MultiSleeveAT handles position cleanup confirmations
+            Topic.V2_BAR,  # MultiSleeveAT needs bar updates to track market data freshness
+            Topic.V2_REBALANCE_PLAN,  # MultiSleeveAT handles rebalance plan confirmations
+            Topic.V2_POSITION_CLEANUP_PLAN,  # MultiSleeveAT handles position cleanup confirmations
         }
 
         return super().subscription_topics.union(topics)
@@ -357,7 +357,7 @@ class MultiSleeveATService(BaseATService):
                         self.state.pending_rebalance_id,
                         self.state.pending_rebalance_weights,
                     )
-                    event = RebalancePlanRequestEvent(
+                    event = V2RebalancePlanRequestEvent(
                         ts=now.timestamp(),
                         rebalance_id=self.state.pending_rebalance_id,
                         weights=self.state.pending_rebalance_weights,
@@ -501,7 +501,7 @@ class MultiSleeveATService(BaseATService):
         )
 
         # Handle MarketClockEvent
-        if isinstance(event, MarketClockEvent):
+        if isinstance(event, V2MarketClockEvent):
             self._market_clock = event
             self.log.debug(
                 "Stored market clock: now=%s is_open=%s next_market_open=%s next_market_close=%s",
@@ -513,7 +513,7 @@ class MultiSleeveATService(BaseATService):
             return
 
         # Handle BarsCheckedEvent
-        if isinstance(event, BarsCheckedEvent):
+        if isinstance(event, V2BarsCheckedEvent):
             # Update last market data timestamp in state
             self.state.last_market_data_ts = datetime.fromtimestamp(event.ts)
             self.log.debug(
@@ -536,7 +536,7 @@ class MultiSleeveATService(BaseATService):
             return
 
         # Handle RebalancePlanConfirmationEvent
-        if isinstance(event, RebalancePlanConfirmationEvent):
+        if isinstance(event, V2RebalancePlanConfirmationEvent):
             if (
                 self.state.pending_rebalance_id is not None
                 and event.rebalance_id == self.state.pending_rebalance_id
@@ -671,7 +671,7 @@ class MultiSleeveATService(BaseATService):
 
     def _generate_rebalance_plan_request(
         self, now: Optional[datetime] = None
-    ) -> "RebalancePlanRequestEvent":
+    ) -> "V2RebalancePlanRequestEvent":
         """Generate a RebalancePlanRequestEvent by:
         - Resetting MarketDataStore caches to ensure fresh data.
         - Invoking the precompute logic in MultiSleeveAllocator to prepare sleeves for rebalancing.
@@ -781,7 +781,7 @@ class MultiSleeveATService(BaseATService):
         rebalance_id = self._generate_rebalance_id()
         self.log.debug("Generated rebalance ID: %s", rebalance_id)
 
-        event = RebalancePlanRequestEvent(
+        event = V2RebalancePlanRequestEvent(
             ts=now.timestamp(),
             rebalance_id=rebalance_id,
             weights=weights,
@@ -987,7 +987,7 @@ class MultiSleeveATService(BaseATService):
 
     def _generate_position_cleanup_plan_request(
         self, now: Optional[datetime] = None
-    ) -> Optional[PositionCleanupPlanRequestEvent]:
+    ) -> Optional[V2PositionCleanupPlanRequestEvent]:
         """Generate a position cleanup plan request (if needed).
 
         A position is considered a cleanup candidate when:
@@ -1035,7 +1035,7 @@ class MultiSleeveATService(BaseATService):
 
         mv_thresh_d = to_decimal(market_value_threshold) or Decimal("0")
         qty_thresh_d = to_decimal(qty_threshold) or Decimal("0")
-        intents: Dict[str, PositionCleanupIntent] = {}
+        intents: Dict[str, V2PositionCleanupIntent] = {}
         tickers_in_last_rebalance_weights = set(last_weights.keys())
         for pos in positions:
             # If symbol was in last rebalance weights, no cleanup
@@ -1069,7 +1069,7 @@ class MultiSleeveATService(BaseATService):
                 reasons.append("below_min_market_value")
             if qty_below:
                 reasons.append("below_min_qty")
-            intents[ticker] = PositionCleanupIntent(
+            intents[ticker] = V2PositionCleanupIntent(
                 ticker=ticker,
                 reason=",".join(reasons),
                 observed_qty=qty_d,
@@ -1088,7 +1088,7 @@ class MultiSleeveATService(BaseATService):
             return None
 
         cleanup_id = self._generate_position_cleanup_id()
-        return PositionCleanupPlanRequestEvent(
+        return V2PositionCleanupPlanRequestEvent(
             ts=now.timestamp(),
             request_id=cleanup_id,
             intents=intents,

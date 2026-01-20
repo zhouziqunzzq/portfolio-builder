@@ -13,9 +13,9 @@ from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     BaseEvent,
-    RebalancePlanRequestEvent,
-    MarketClockEvent,
-    PositionCleanupPlanRequestEvent,
+    V2RebalancePlanRequestEvent,
+    V2MarketClockEvent,
+    V2PositionCleanupPlanRequestEvent,
 )
 from services.base_service import BaseService
 
@@ -42,12 +42,12 @@ class BaseEML(BaseService, ABC):
         super().__init__(bus=bus, name=name)
 
         # Internal caches
-        self._market_clock: Optional[MarketClockEvent] = None
+        self._market_clock: Optional[V2MarketClockEvent] = None
 
     @property
     def subscription_topics(self) -> Set[Topic]:
         topics = {
-            Topic.MARKET_CLOCK,  # All EMLs need market clock updates
+            Topic.V2_MARKET_CLOCK,  # All EMLs need market clock updates
         }
 
         return super().subscription_topics.union(topics)
@@ -84,17 +84,17 @@ class BaseEML(BaseService, ABC):
         )
 
         # Handle RebalancePlanRequestEvent
-        if isinstance(event, RebalancePlanRequestEvent):
+        if isinstance(event, V2RebalancePlanRequestEvent):
             await self.execute_rebalance_plan(event)
             return
 
         # Handle PositionCleanupPlanRequestEvent
-        if isinstance(event, PositionCleanupPlanRequestEvent):
+        if isinstance(event, V2PositionCleanupPlanRequestEvent):
             await self.execute_position_cleanup_plan(event)
             return
 
         # Handle MarketClockEvent
-        if isinstance(event, MarketClockEvent):
+        if isinstance(event, V2MarketClockEvent):
             self._market_clock = event
             self.log.debug(
                 "Stored market clock: now=%s is_open=%s next_market_open=%s next_market_close=%s",
@@ -115,7 +115,7 @@ class BaseEML(BaseService, ABC):
         )
 
     @abstractmethod
-    async def execute_rebalance_plan(self, event: RebalancePlanRequestEvent) -> None:
+    async def execute_rebalance_plan(self, event: V2RebalancePlanRequestEvent) -> None:
         """Execute a rebalance plan request.
 
         `MultiSleeveATService` emits `RebalancePlanRequestEvent(rebalance_id, weights)`.
@@ -129,7 +129,7 @@ class BaseEML(BaseService, ABC):
 
     @abstractmethod
     async def execute_position_cleanup_plan(
-        self, event: PositionCleanupPlanRequestEvent
+        self, event: V2PositionCleanupPlanRequestEvent
     ) -> None:
         """Execute a position cleanup plan request.
 
@@ -152,7 +152,7 @@ class BaseEML(BaseService, ABC):
     async def emit_order_event(self, event: BaseEvent) -> None:
         """Publish an order-related event.
 
-        Note: the event's topic should be `Topic.ORDER`.
+        Note: the event's topic should be `Topic.EXEC_ORDER`.
         """
 
         await self.bus.publish(event)
@@ -160,7 +160,7 @@ class BaseEML(BaseService, ABC):
     async def emit_fill_event(self, event: BaseEvent) -> None:
         """Publish a fill-related event.
 
-        Note: the event's topic should be `Topic.FILL`.
+        Note: the event's topic should be `Topic.EXEC_FILL`.
         """
 
         await self.bus.publish(event)
@@ -168,7 +168,7 @@ class BaseEML(BaseService, ABC):
     async def emit_account_event(self, event: BaseEvent) -> None:
         """Publish an account/positions-related event.
 
-        The specific event type is implementation-defined.
+        Note: the event's topic should be `Topic.EXEC_ACCOUNT_SNAPSHOT`.
         """
 
         await self.bus.publish(event)

@@ -10,7 +10,7 @@ if str(_ROOT_SRC) not in sys.path:
 
 from events.topic import Topic
 from events.event_bus import EventBus
-from events.events import MarketClockEvent, NewBarsEvent, BarsCheckedEvent
+from events.events import V2MarketClockEvent, V2NewBarsEvent, V2BarsCheckedEvent
 
 from services.base_service import BaseService
 
@@ -58,7 +58,7 @@ class BaseIMLService(BaseService, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_market_clock(self) -> "MarketClockEvent":
+    async def get_market_clock(self) -> "V2MarketClockEvent":
         """
         Return authoritative market clock snapshot.
         Must NOT block for long.
@@ -77,11 +77,11 @@ class BaseIMLService(BaseService, ABC):
 
     # Event emitters
 
-    async def emit_market_clock(self, clock: "MarketClockEvent") -> None:
+    async def emit_market_clock(self, clock: "V2MarketClockEvent") -> None:
         await self.bus.publish(clock)
 
-    async def emit_new_bars(self, new_bars_event: "NewBarsEvent") -> None:
+    async def emit_new_bars(self, new_bars_event: "V2NewBarsEvent") -> None:
         await self.bus.publish(new_bars_event)
 
-    async def emit_bars_checked(self, bars_checked_event: "BarsCheckedEvent") -> None:
+    async def emit_bars_checked(self, bars_checked_event: "V2BarsCheckedEvent") -> None:
         await self.bus.publish(bars_checked_event)

@@ -8,8 +8,8 @@ from v2.src.eml.config import EMLConfig
 from v2.src.eml.state import PortfolioEMLState
 from v2.src.events.event_bus import EventBus
 from v2.src.events.events import (
-    MarketClockEvent,
-    RebalancePlanRequestEvent,
+    V2MarketClockEvent,
+    V2RebalancePlanRequestEvent,
 )
 from v2.src.models import AccountSnapshot, PositionSnapshot
 
@@ -28,7 +28,7 @@ def test_tradability_check_blocks_non_tradable():
         config=EMLConfig(include_positions=False),
     )
 
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 0.5, "BBB": 0.5}
     )
 
@@ -55,7 +55,7 @@ def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
     # Avoid real sleeping in wait loop
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 0.0, "BBB": 1.0}
     )
     svc._execute_rebalance_plan(e)
@@ -83,7 +83,7 @@ def test_near_zero_weights_are_ignored(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
     # Weight is tiny -> should be ignored -> no orders
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 1e-12}
     )
     svc._execute_rebalance_plan(e)
@@ -107,7 +107,7 @@ def test_min_order_size_filters_small_orders(monkeypatch):
     # With equity=1000:
     # - AAA @ 10% => $100 (should trade)
     # - BBB @ 1%  => $10  (should be ignored due to min_order_size=50)
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 0.10, "BBB": 0.01}
     )
     svc._execute_rebalance_plan(e)
@@ -140,7 +140,7 @@ def test_execute_pending_marks_state_executed(monkeypatch):
     }
 
     # Pending execution is gated on a known, open market clock.
-    svc._market_clock = MarketClockEvent(
+    svc._market_clock = V2MarketClockEvent(
         ts=time.time(),
         source="test",
         now=datetime.now(),
@@ -207,7 +207,7 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
         "correlation_id": "",
     }
 
-    svc._market_clock = MarketClockEvent(
+    svc._market_clock = V2MarketClockEvent(
         ts=time.time(),
         source="test",
         now=datetime.now(),
@@ -248,7 +248,7 @@ def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
         "execution_failures": 0,
     }
 
-    svc._market_clock = MarketClockEvent(
+    svc._market_clock = V2MarketClockEvent(
         ts=time.time(),
         source="test",
         now=datetime.now(),
@@ -289,7 +289,7 @@ def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatc
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 1.0}
     )
     svc._execute_rebalance_plan(e)
@@ -314,7 +314,7 @@ def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypat
 
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
-    e = RebalancePlanRequestEvent(
+    e = V2RebalancePlanRequestEvent(
         ts=time.time(), rebalance_id="r1", weights={"AAA": 1.0}
     )
 

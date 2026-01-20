@@ -11,6 +11,7 @@ from alpaca.trading.enums import OrderSide as AlpacaSide
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.enums import TimeInForce as AlpacaTIF
 from alpaca.trading.enums import AssetStatus
+from alpaca.trading.enums import PositionSide as AlpacaPositionSide
 from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
@@ -19,7 +20,7 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.models import Order as AlpacaOrder
 
-from models import AccountSnapshot, PositionSnapshot
+from models import AccountSnapshot, PositionSnapshot, PositionSide
 from models.trading import (
     BrokerCapabilities,
     Instrument,
@@ -147,7 +148,11 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
                         qty=to_decimal(p.qty),
                         market_value=to_decimal(p.market_value),
                         avg_entry_price=to_decimal(p.avg_entry_price),
-                        side=p.side,
+                        side=(
+                            PositionSide.LONG
+                            if p.side == AlpacaPositionSide.LONG
+                            else PositionSide.SHORT
+                        ),
                         unrealized_pnl=to_decimal(p.unrealized_pl),
                     )
                 )

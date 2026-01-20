@@ -10,7 +10,7 @@ import pytest
 from v2.src.at.config import ATConfig
 from v2.src.at.multi_sleeve_at import MultiSleeveATService
 from v2.src.events.event_bus import EventBus
-from v2.src.events.events import AccountSnapshotEvent, MarketClockEvent
+from v2.src.events.events import AccountSnapshotEvent, V2MarketClockEvent
 from v2.src.models.broker import AccountSnapshot, PositionSnapshot
 
 
@@ -42,7 +42,7 @@ def _make_service(*, config: ATConfig) -> MultiSleeveATService:
 
 
 def _set_market_clock_open_now(svc: MultiSleeveATService, now: datetime) -> None:
-    svc._market_clock = MarketClockEvent(
+    svc._market_clock = V2MarketClockEvent(
         ts=now.timestamp(),
         now=now,
         is_market_open=True,
@@ -102,7 +102,7 @@ def test_cleanup_requires_market_open_now_or_today():
     svc = _make_service(config=ATConfig(position_cleanup_enabled=True))
     now = datetime(2026, 1, 7, 10, 0, 0)
 
-    svc._market_clock = MarketClockEvent(
+    svc._market_clock = V2MarketClockEvent(
         ts=now.timestamp(),
         now=now,
         is_market_open=False,

@@ -5,8 +5,8 @@ from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Optional
 
 from events.events import (
-    PositionCleanupPlanRequestEvent,
-    RebalancePlanRequestEvent,
+    V2PositionCleanupPlanRequestEvent,
+    V2RebalancePlanRequestEvent,
 )
 from states.base_state import BaseState
 
@@ -168,7 +168,7 @@ class PortfolioEMLState(BaseState):
         return str(rebalance_id) in self.pending_rebalance_requests
 
     def remember_pending_rebalance_request(
-        self, event: RebalancePlanRequestEvent
+        self, event: V2RebalancePlanRequestEvent
     ) -> None:
         self.pending_rebalance_requests[str(event.rebalance_id)] = {
             "rebalance_id": str(event.rebalance_id),
@@ -252,7 +252,7 @@ class PortfolioEMLState(BaseState):
         return str(request_id) in self.pending_position_cleanup_requests
 
     def remember_pending_position_cleanup_request(
-        self, event: PositionCleanupPlanRequestEvent
+        self, event: V2PositionCleanupPlanRequestEvent
     ) -> None:
         def _json_decimal_str(v: Any) -> Optional[str]:
             """Convert common numeric inputs into a JSON-safe decimal string.

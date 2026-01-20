@@ -14,16 +14,16 @@ from v2.tests.fakes import FakeTradingAPI
 # Use the same import paths in tests to avoid duplicate module instances.
 from events.event_bus import EventBus
 from events.events import (
-    MarketClockEvent,
-    PositionCleanupIntent,
-    PositionCleanupPlanRequestEvent,
+    V2MarketClockEvent,
+    V2PositionCleanupIntent,
+    V2PositionCleanupPlanRequestEvent,
 )
 from events.topic import Topic
 from models import PositionSnapshot
 
 
-def _open_market_clock(now: datetime) -> MarketClockEvent:
-    return MarketClockEvent(
+def _open_market_clock(now: datetime) -> V2MarketClockEvent:
+    return V2MarketClockEvent(
         ts=now.timestamp(),
         source="unit",
         now=now,
@@ -36,7 +36,7 @@ def _open_market_clock(now: datetime) -> MarketClockEvent:
 def test_execute_position_cleanup_plan_stores_pending_and_confirms():
     trading = FakeTradingAPI()
     bus = EventBus()
-    sub = bus.subscribe(topics={Topic.POSITION_CLEANUP_PLAN})
+    sub = bus.subscribe(topics={Topic.V2_POSITION_CLEANUP_PLAN})
 
     svc = PortfolioEMLService(
         bus=bus,
@@ -45,10 +45,10 @@ def test_execute_position_cleanup_plan_stores_pending_and_confirms():
     )
     svc.state = PortfolioEMLState.empty()
 
-    req = PositionCleanupPlanRequestEvent(
+    req = V2PositionCleanupPlanRequestEvent(
         ts=time.time(),
         request_id="pc-1",
-        intents={"AAA": PositionCleanupIntent(ticker="AAA", reason="unit")},
+        intents={"AAA": V2PositionCleanupIntent(ticker="AAA", reason="unit")},
         source="unit",
     )
 
@@ -60,7 +60,7 @@ def test_execute_position_cleanup_plan_stores_pending_and_confirms():
     evt = asyncio.run(_do())
 
     assert getattr(evt, "request_id", None) == "pc-1"
-    assert getattr(evt, "topic", None) == Topic.POSITION_CLEANUP_PLAN
+    assert getattr(evt, "topic", None) == Topic.V2_POSITION_CLEANUP_PLAN
     assert "pc-1" in svc.state.pending_position_cleanup_requests
 
 

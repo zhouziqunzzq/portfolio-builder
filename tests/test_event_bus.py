@@ -15,16 +15,16 @@ def test_publish_with_no_subscribers_is_noop():
     bus = EventBus()
 
     async def _case():
-        await bus.publish(BaseEvent(topic=Topic.LOG, ts=1.0))
+        await bus.publish(BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0))
 
     _run(_case())
 
 
 def test_subscriber_receives_published_event():
     bus = EventBus()
-    sub = bus.subscribe({Topic.LOG})
+    sub = bus.subscribe({Topic.SYSTEM_LOG})
 
-    e = BaseEvent(topic=Topic.LOG, ts=123.0, source="unit")
+    e = BaseEvent(topic=Topic.SYSTEM_LOG, ts=123.0, source="unit")
 
     async def _case():
         await bus.publish(e)
@@ -36,10 +36,10 @@ def test_subscriber_receives_published_event():
 
 def test_fanout_delivers_to_all_subscribers_of_topic():
     bus = EventBus()
-    a = bus.subscribe({Topic.LOG})
-    b = bus.subscribe({Topic.LOG})
+    a = bus.subscribe({Topic.SYSTEM_LOG})
+    b = bus.subscribe({Topic.SYSTEM_LOG})
 
-    e = BaseEvent(topic=Topic.LOG, ts=1.0)
+    e = BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0)
 
     async def _case():
         await bus.publish(e)
@@ -53,11 +53,11 @@ def test_fanout_delivers_to_all_subscribers_of_topic():
 
 def test_unsubscribe_stops_delivery():
     bus = EventBus()
-    sub = bus.subscribe({Topic.LOG})
+    sub = bus.subscribe({Topic.SYSTEM_LOG})
 
     async def _case():
         await sub.close()
-        await bus.publish(BaseEvent(topic=Topic.LOG, ts=1.0))
+        await bus.publish(BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0))
         assert sub.q.empty()  # should not receive after close
 
     _run(_case())
@@ -65,10 +65,10 @@ def test_unsubscribe_stops_delivery():
 
 def test_drop_if_full_drops_slow_subscriber_events():
     bus = EventBus(per_subscriber_queue_size=1, drop_if_full=True)
-    sub = bus.subscribe({Topic.LOG})
+    sub = bus.subscribe({Topic.SYSTEM_LOG})
 
-    e1 = BaseEvent(topic=Topic.LOG, ts=1.0)
-    e2 = BaseEvent(topic=Topic.LOG, ts=2.0)
+    e1 = BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0)
+    e2 = BaseEvent(topic=Topic.SYSTEM_LOG, ts=2.0)
 
     async def _case():
         await bus.publish(e1)
@@ -83,10 +83,10 @@ def test_drop_if_full_drops_slow_subscriber_events():
 
 def test_blocking_mode_applies_backpressure_until_consumer_advances():
     bus = EventBus(per_subscriber_queue_size=1, drop_if_full=False)
-    sub = bus.subscribe({Topic.LOG})
+    sub = bus.subscribe({Topic.SYSTEM_LOG})
 
-    e1 = BaseEvent(topic=Topic.LOG, ts=1.0)
-    e2 = BaseEvent(topic=Topic.LOG, ts=2.0)
+    e1 = BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0)
+    e2 = BaseEvent(topic=Topic.SYSTEM_LOG, ts=2.0)
 
     async def _case():
         await bus.publish(e1)
@@ -109,10 +109,10 @@ def test_stop_is_broadcast_to_all_subscribers():
     bus = EventBus()
 
     # Subscribe to a non-STOP topic; should still receive STOP.
-    sub_a = bus.subscribe({Topic.LOG})
-    sub_b = bus.subscribe({Topic.MARKET_CLOCK})
+    sub_a = bus.subscribe({Topic.SYSTEM_LOG})
+    sub_b = bus.subscribe({Topic.V2_MARKET_CLOCK})
 
-    stop_evt = BaseEvent(topic=Topic.STOP, ts=99.0)
+    stop_evt = BaseEvent(topic=Topic.SYSTEM_STOP, ts=99.0)
 
     async def _case():
         await bus.publish(stop_evt)
@@ -126,14 +126,14 @@ def test_stop_is_broadcast_to_all_subscribers():
 
 def test_broadcast_topics_can_be_customized():
     # Make LOG a broadcast topic, and disable STOP broadcast.
-    bus = EventBus(broadcast_topics={Topic.LOG})
+    bus = EventBus(broadcast_topics={Topic.SYSTEM_LOG})
 
     # Neither subscribes to LOG, but both should still receive it due to broadcast.
-    sub_a = bus.subscribe({Topic.MARKET_CLOCK})
-    sub_b = bus.subscribe({Topic.BAR})
+    sub_a = bus.subscribe({Topic.V2_MARKET_CLOCK})
+    sub_b = bus.subscribe({Topic.V2_BAR})
 
-    log_evt = BaseEvent(topic=Topic.LOG, ts=1.0)
-    stop_evt = BaseEvent(topic=Topic.STOP, ts=2.0)
+    log_evt = BaseEvent(topic=Topic.SYSTEM_LOG, ts=1.0)
+    stop_evt = BaseEvent(topic=Topic.SYSTEM_STOP, ts=2.0)
 
     async def _case():
         await bus.publish(log_evt)

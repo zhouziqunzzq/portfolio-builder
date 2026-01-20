@@ -11,8 +11,8 @@ from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     BaseEvent,
-    RebalancePlanRequestEvent,
-    PositionCleanupPlanRequestEvent,
+    V2RebalancePlanRequestEvent,
+    V2PositionCleanupPlanRequestEvent,
 )
 
 from services.base_service import BaseService
@@ -33,8 +33,8 @@ class BaseATService(BaseService, ABC):
     @property
     def subscription_topics(self) -> Set[Topic]:
         topics = {
-            Topic.MARKET_CLOCK,  # All ATs need market clock updates
-            Topic.ACCOUNT,  # All ATs need account updates
+            Topic.V2_MARKET_CLOCK,  # All ATs need market clock updates
+            Topic.EXEC_ACCOUNT_SNAPSHOT,  # All ATs need account updates
         }
 
         return super().subscription_topics.union(topics)
@@ -56,11 +56,11 @@ class BaseATService(BaseService, ABC):
     # Event emitters
 
     async def emit_rebalance_plan_request(
-        self, plan_request: "RebalancePlanRequestEvent"
+        self, plan_request: "V2RebalancePlanRequestEvent"
     ) -> None:
         await self.bus.publish(plan_request)
 
     async def emit_position_cleanup_plan_request(
-        self, plan_request: "PositionCleanupPlanRequestEvent"
+        self, plan_request: "V2PositionCleanupPlanRequestEvent"
     ) -> None:
         await self.bus.publish(plan_request)

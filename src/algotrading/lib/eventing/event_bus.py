@@ -36,7 +36,7 @@ class EventBusOptions:
 
     per_subscriber_queue_size: int = 10_000
     drop_if_full: bool = False
-    broadcast_topics: Optional[Set[Topic]] = frozenset({Topic.STOP})
+    broadcast_topics: Optional[Set[Topic]] = frozenset({Topic.SYSTEM_STOP})
 
 
 class EventBus:
@@ -45,7 +45,7 @@ class EventBus:
 
     - Each subscriber gets its own queue.
     - Publishing an event delivers it to all subscribers who subscribed to that topic
-      or to the wildcard Topic.LOG/Topic.STOP etc as they choose.
+      or to the wildcard Topic.SYSTEM_LOG/Topic.SYSTEM_STOP etc as they choose.
     - Certain topics can be configured as true broadcasts: publish once -> everyone sees it.
     """
 
@@ -59,7 +59,7 @@ class EventBus:
         self._all_subs: Set[Subscription] = set()
         self._default_qsize = per_subscriber_queue_size
         self._drop_if_full = drop_if_full
-        self._broadcast_topics = frozenset(broadcast_topics or {Topic.STOP})
+        self._broadcast_topics = frozenset(broadcast_topics or {Topic.SYSTEM_STOP})
         self.log = logging.getLogger(self.__class__.__name__)
 
     def subscribe(

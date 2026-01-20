@@ -45,7 +45,7 @@ class BaseService(ABC):
         Default: STOP only.
         """
 
-        return {Topic.STOP}
+        return {Topic.SYSTEM_STOP}
 
     async def run(self) -> None:
         """Main entrypoint.
@@ -66,7 +66,7 @@ class BaseService(ABC):
             while True:
                 e = await self.sub.next()
                 try:
-                    if e.topic == Topic.STOP:
+                    if e.topic == Topic.SYSTEM_STOP:
                         break
                     await self._handle_event(e)
                 except Exception:
@@ -103,7 +103,7 @@ class BaseService(ABC):
     async def _startup(self) -> None:
         # Handle subscription setup
         topics = self.subscription_topics.union(
-            {Topic.STOP}
+            {Topic.SYSTEM_STOP}
         )  # Always subscribe to STOP
         self.sub = self.bus.subscribe(topics=topics)
         self.log.debug("Subscribed to topics: %s", topics)
