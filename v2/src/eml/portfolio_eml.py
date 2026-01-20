@@ -21,8 +21,8 @@ from events.topic import Topic
 from events.event_bus import EventBus
 from events.events import (
     AccountSnapshotEvent,
-    BrokerAccount,
-    BrokerPosition,
+    AccountSnapshot,
+    PositionSnapshot,
     PositionCleanupIntent,
     PositionCleanupPlanRequestEvent,
     PositionCleanupPlanConfirmationEvent,
@@ -119,8 +119,8 @@ class PortfolioEMLService(BaseEML):
         self.state = PortfolioEMLState()
 
         # Latest snapshots for metrics
-        self._last_account: Optional[BrokerAccount] = None
-        self._last_positions: List[BrokerPosition] = []
+        self._last_account: Optional[AccountSnapshot] = None
+        self._last_positions: List[PositionSnapshot] = []
 
         self._init_metrics_instruments()
 
@@ -374,7 +374,7 @@ class PortfolioEMLService(BaseEML):
 
                 # Fetch account + positions
                 account = await self._run_in_thread(self._get_account)
-                positions: List[BrokerPosition] = []
+                positions: List[PositionSnapshot] = []
                 if self.config.include_positions:
                     positions = await self._run_in_thread(self._list_positions)
 
@@ -1226,7 +1226,7 @@ class PortfolioEMLService(BaseEML):
         return out
 
     @staticmethod
-    def _get_effective_equity(account: BrokerAccount) -> float:
+    def _get_effective_equity(account: AccountSnapshot) -> float:
         # Prefer adjusted equity (cash buffer), then equity, then portfolio_value.
         for v in (account.adj_equity, account.equity, account.portfolio_value):
             try:
@@ -1241,9 +1241,9 @@ class PortfolioEMLService(BaseEML):
 
     @classmethod
     def _positions_by_symbol(
-        cls, positions: Iterable[BrokerPosition]
-    ) -> Dict[str, BrokerPosition]:
-        out: Dict[str, BrokerPosition] = {}
+        cls, positions: Iterable[PositionSnapshot]
+    ) -> Dict[str, PositionSnapshot]:
+        out: Dict[str, PositionSnapshot] = {}
         for p in positions or []:
             sym = cls._normalize_symbol(getattr(p, "symbol", ""))
             if not sym:
@@ -1256,7 +1256,7 @@ class PortfolioEMLService(BaseEML):
         *,
         target_weights: Mapping[str, float],
         equity: float,
-        positions_by_symbol: Mapping[str, BrokerPosition],
+        positions_by_symbol: Mapping[str, PositionSnapshot],
     ) -> Dict[str, Dict[str, float]]:
         # Returns per-symbol: current_value, target_value, delta_value.
         symbols = set(positions_by_symbol.keys()) | set(target_weights.keys())
@@ -1287,7 +1287,7 @@ class PortfolioEMLService(BaseEML):
         cls,
         *,
         deltas: Mapping[str, Mapping[str, float]],
-        positions_by_symbol: Mapping[str, BrokerPosition],
+        positions_by_symbol: Mapping[str, PositionSnapshot],
         min_order_size_notional: float,
         dollar_epsilon: float = 1e-6,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1397,7 +1397,7 @@ class PortfolioEMLService(BaseEML):
 
     @staticmethod
     def _estimate_qty_for_notional_sell(
-        position: BrokerPosition, *, notional: float
+        position: PositionSnapshot, *, notional: float
     ) -> Optional[float]:
         # Approximate qty to sell from position market_value/qty.
         # If we can't compute a reasonable unit price, fall back to selling full qty.
@@ -1738,9 +1738,9 @@ class PortfolioEMLService(BaseEML):
             label="executed position cleanup",
         )
 
-    def _get_account(self) -> BrokerAccount:
+    def _get_account(self) -> AccountSnapshot:
         acct = self._trading_api.get_account()
-        return BrokerAccount(
+        return AccountSnapshot(
             id=acct.id,
             status=acct.status,
             cash=acct.cash,
@@ -1751,7 +1751,7 @@ class PortfolioEMLService(BaseEML):
             adj_equity=self._get_equity_adj(acct.equity),
         )
 
-    def _list_positions(self) -> List[BrokerPosition]:
+    def _list_positions(self) -> List[PositionSnapshot]:
         return list(self._trading_api.list_positions())
 
     def _get_equity_adj(self, equity_abs: Optional[Decimal]) -> Optional[Decimal]:

@@ -19,7 +19,7 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.models import Order as AlpacaOrder
 
-from models import BrokerAccount, BrokerPosition
+from models import AccountSnapshot, PositionSnapshot
 from models.trading import (
     BrokerCapabilities,
     Instrument,
@@ -116,11 +116,11 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
     # Account / Positions
     # ------------------------------------------------------------------
 
-    def get_account(self) -> BrokerAccount:
+    def get_account(self) -> AccountSnapshot:
         try:
             acct = self._trading.get_account()
             equity = to_decimal(getattr(acct, "equity", None))
-            return BrokerAccount(
+            return AccountSnapshot(
                 id=getattr(acct, "id", None),
                 status=getattr(acct, "status", None),
                 cash=to_decimal(getattr(acct, "cash", None)),
@@ -133,16 +133,16 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
         except Exception as e:
             raise self._map_exception(e) from e
 
-    def list_positions(self) -> List[BrokerPosition]:
+    def list_positions(self) -> List[PositionSnapshot]:
         try:
             pos_list = self._trading.get_all_positions()
-            out: List[BrokerPosition] = []
+            out: List[PositionSnapshot] = []
             for p in pos_list:
                 symbol = p.symbol
                 if not symbol:
                     continue
                 out.append(
-                    BrokerPosition(
+                    PositionSnapshot(
                         symbol=str(symbol),
                         qty=to_decimal(p.qty),
                         market_value=to_decimal(p.market_value),

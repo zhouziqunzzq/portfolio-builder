@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import List
 
-from models import BrokerAccount, BrokerPosition
+from models import AccountSnapshot, PositionSnapshot
 from models.trading import (
     BrokerCapabilities,
     InstrumentRef,
@@ -32,11 +32,11 @@ class BaseTradingAPI(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_account(self) -> BrokerAccount:
+    def get_account(self) -> AccountSnapshot:
         raise NotImplementedError
 
     @abstractmethod
-    def list_positions(self) -> List[BrokerPosition]:
+    def list_positions(self) -> List[PositionSnapshot]:
         raise NotImplementedError
 
     @abstractmethod

@@ -4,8 +4,8 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class BrokerAccount:
-    """Normalized broker account snapshot.
+class AccountSnapshot:
+    """Normalized account snapshot.
 
     This is intentionally a small, stable set of fields needed by the app.
     Execution adapters (EML) should map broker-specific payloads into this model.
@@ -24,8 +24,8 @@ class BrokerAccount:
 
 
 @dataclass(frozen=True)
-class BrokerPosition:
-    """Normalized broker position snapshot."""
+class PositionSnapshot:
+    """Normalized position snapshot."""
 
     symbol: str
     qty: Optional[Decimal] = None

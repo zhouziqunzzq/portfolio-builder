@@ -19,7 +19,7 @@ from events.events import (
     PositionCleanupPlanRequestEvent,
 )
 from events.topic import Topic
-from models import BrokerPosition
+from models import PositionSnapshot
 
 
 def _open_market_clock(now: datetime) -> MarketClockEvent:
@@ -111,8 +111,8 @@ def test_pending_cleanup_executes_close_orders_for_long_and_short(monkeypatch, c
     # AAA long -> SELL qty; BBB short -> warn + skip buy-to-cover
     trading.set_positions(
         [
-            BrokerPosition(symbol="AAA", qty=1.0, market_value=0.05),
-            BrokerPosition(symbol="BBB", qty=-2.0, market_value=-0.08),
+            PositionSnapshot(symbol="AAA", qty=1.0, market_value=0.05),
+            PositionSnapshot(symbol="BBB", qty=-2.0, market_value=-0.08),
         ]
     )
 
@@ -172,7 +172,7 @@ def test_pending_cleanup_qty_safety_threshold_blocks_large_sells(monkeypatch):
     trading.set_positions(
         [
             # Too large for cleanup; should be blocked by EML safety gate.
-            BrokerPosition(symbol="AAA", qty=2.0, market_value=10.0),
+            PositionSnapshot(symbol="AAA", qty=2.0, market_value=10.0),
         ]
     )
 

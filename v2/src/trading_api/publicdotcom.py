@@ -29,7 +29,7 @@ from public_api_sdk.exceptions import (
 from public_api_sdk.models.instrument import Trading as PublicTrading
 from public_api_sdk.models.order import Order as PublicOrder
 
-from models import BrokerAccount, BrokerPosition
+from models import AccountSnapshot, PositionSnapshot
 from models.trading import (
     BrokerCapabilities,
     Instrument,
@@ -124,7 +124,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
     # Account / Positions
     # ------------------------------------------------------------------
 
-    def get_account(self) -> BrokerAccount:
+    def get_account(self) -> AccountSnapshot:
         try:
             p = self._client.get_portfolio()
 
@@ -137,7 +137,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
 
             cash = p.buying_power.cash_only_buying_power
             buying_power = p.buying_power.buying_power
-            return BrokerAccount(
+            return AccountSnapshot(
                 id=p.account_id,
                 status=(
                     str(p.account_type.value) if p.account_type is not None else None
@@ -152,18 +152,18 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         except Exception as e:
             raise self._map_exception(e) from e
 
-    def list_positions(self) -> List[BrokerPosition]:
+    def list_positions(self) -> List[PositionSnapshot]:
         try:
             # Note: The docstring for get_portfolio().positions states that only non-IRA
             # accounts are supported, but in practice it seems to work for IRA accounts too.
             p = self._client.get_portfolio()
-            out: List[BrokerPosition] = []
+            out: List[PositionSnapshot] = []
             for pos in p.positions or []:
                 symbol = self._normalize_symbol(pos.instrument.symbol)
                 if not symbol:
                     continue
                 out.append(
-                    BrokerPosition(
+                    PositionSnapshot(
                         symbol=symbol,
                         qty=pos.quantity,
                         market_value=pos.current_value,

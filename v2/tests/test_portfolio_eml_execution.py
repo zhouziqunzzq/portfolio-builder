@@ -11,14 +11,14 @@ from v2.src.events.events import (
     MarketClockEvent,
     RebalancePlanRequestEvent,
 )
-from v2.src.models import BrokerAccount, BrokerPosition
+from v2.src.models import AccountSnapshot, PositionSnapshot
 
 from v2.tests.fakes import FakeTradingAPI
 
 
 def test_tradability_check_blocks_non_tradable():
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
     trading.set_instrument("BBB", tradable=False)
 
@@ -38,13 +38,13 @@ def test_tradability_check_blocks_non_tradable():
 
 def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.next_order_fill_after = 2
     trading.set_instrument("AAA", tradable=True)
     trading.set_instrument("BBB", tradable=True)
 
     # Hold AAA ($1000), want to rotate to BBB.
-    trading.set_positions([BrokerPosition(symbol="AAA", qty=10.0, market_value=1000.0)])
+    trading.set_positions([PositionSnapshot(symbol="AAA", qty=10.0, market_value=1000.0)])
 
     svc = PortfolioEMLService(
         bus=EventBus(),
@@ -71,7 +71,7 @@ def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
 
 def test_near_zero_weights_are_ignored(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -92,7 +92,7 @@ def test_near_zero_weights_are_ignored(monkeypatch):
 
 def test_min_order_size_filters_small_orders(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
     trading.set_instrument("BBB", tradable=True)
 
@@ -119,7 +119,7 @@ def test_min_order_size_filters_small_orders(monkeypatch):
 
 def test_execute_pending_marks_state_executed(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -156,7 +156,7 @@ def test_execute_pending_marks_state_executed(monkeypatch):
 
 def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -187,7 +187,7 @@ def test_execute_pending_skips_when_market_clock_unknown(monkeypatch):
 
 def test_execute_pending_skips_when_market_closed(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -224,7 +224,7 @@ def test_execute_pending_skips_when_market_closed(monkeypatch):
 
 def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -278,7 +278,7 @@ def test_execute_pending_retries_then_moves_to_failed(monkeypatch):
 
 def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
 
     svc = PortfolioEMLService(
@@ -301,7 +301,7 @@ def test_execute_rebalance_plan_cancels_open_orders_before_submitting(monkeypatc
 
 def test_execute_rebalance_plan_cancels_open_orders_on_execution_error(monkeypatch):
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
     trading.set_instrument("AAA", tradable=True)
     trading.next_order_final_status = "rejected"
     trading.next_order_fill_after = 1

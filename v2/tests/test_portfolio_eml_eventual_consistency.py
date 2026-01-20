@@ -3,7 +3,7 @@ from decimal import Decimal
 from v2.src.eml.config import EMLConfig
 from v2.src.eml.portfolio_eml import PortfolioEMLService
 from v2.src.events.event_bus import EventBus
-from v2.src.models import BrokerAccount
+from v2.src.models import AccountSnapshot
 from v2.src.models.trading import InstrumentRef, OrderIntent, OrderSide
 
 from v2.tests.fakes import FakeTradingAPI
@@ -11,7 +11,7 @@ from v2.tests.fakes import FakeTradingAPI
 
 def test_wait_for_order_fill_retries_on_order_not_found_yet():
     trading = FakeTradingAPI()
-    trading.set_account(BrokerAccount(equity=1000.0, adj_equity=1000.0))
+    trading.set_account(AccountSnapshot(equity=1000.0, adj_equity=1000.0))
 
     # Simulate eventual consistency: first 2 polls raise OrderNotFoundYet.
     trading.get_order_not_found_for_polls = 2

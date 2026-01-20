@@ -36,7 +36,7 @@ from utils.decimals import to_decimal
 from utils.tz import to_canonical_eastern_naive
 from states.base_state import BaseState
 from context.rebalance import RebalanceContext
-from models import BrokerPosition
+from models import PositionSnapshot
 
 
 class MultiSleeveATState(BaseState):
@@ -1012,7 +1012,7 @@ class MultiSleeveATService(BaseATService):
             raise RuntimeError(
                 "Cannot generate position cleanup plan: no AccountSnapshotEvent received yet"
             )
-        positions: List[BrokerPosition] | None = getattr(
+        positions: List[PositionSnapshot] | None = getattr(
             self._account_snapshot, "positions", None
         )
         if positions is None:

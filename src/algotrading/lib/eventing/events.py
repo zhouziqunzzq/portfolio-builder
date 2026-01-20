@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from .topic import Topic
-from algotrading.lib.types import BrokerAccount, BrokerPosition
+from algotrading.lib.types import AccountSnapshot, PositionSnapshot
 
 
 @dataclass(frozen=True)
@@ -81,8 +81,8 @@ class AccountSnapshotEvent(BaseEvent):
 
     topic: Topic = field(default=Topic.ACCOUNT, init=False)
 
-    account: BrokerAccount
-    positions: List[BrokerPosition] = field(default_factory=list)
+    account: AccountSnapshot
+    positions: List[PositionSnapshot] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

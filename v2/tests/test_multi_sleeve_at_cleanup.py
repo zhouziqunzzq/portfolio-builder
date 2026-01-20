@@ -11,7 +11,7 @@ from v2.src.at.config import ATConfig
 from v2.src.at.multi_sleeve_at import MultiSleeveATService
 from v2.src.events.event_bus import EventBus
 from v2.src.events.events import AccountSnapshotEvent, MarketClockEvent
-from v2.src.models.broker import BrokerAccount, BrokerPosition
+from v2.src.models.broker import AccountSnapshot, PositionSnapshot
 
 
 def _run(coro_or_fn):
@@ -55,8 +55,8 @@ def _set_market_clock_open_now(svc: MultiSleeveATService, now: datetime) -> None
 def _set_account_snapshot_with_positions(
     svc: MultiSleeveATService, now: datetime
 ) -> None:
-    acct = BrokerAccount(adj_equity=1000.0)
-    pos = BrokerPosition(symbol="SPY", qty=1.0, market_value=500.0)
+    acct = AccountSnapshot(adj_equity=1000.0)
+    pos = PositionSnapshot(symbol="SPY", qty=1.0, market_value=500.0)
     svc._account_snapshot = AccountSnapshotEvent(
         ts=now.timestamp(),
         account=acct,
@@ -66,9 +66,9 @@ def _set_account_snapshot_with_positions(
 
 
 def _set_account_snapshot(
-    svc: MultiSleeveATService, now: datetime, *, positions: list[BrokerPosition]
+    svc: MultiSleeveATService, now: datetime, *, positions: list[PositionSnapshot]
 ) -> None:
-    acct = BrokerAccount(adj_equity=1000.0)
+    acct = AccountSnapshot(adj_equity=1000.0)
     svc._account_snapshot = AccountSnapshotEvent(
         ts=now.timestamp(),
         account=acct,
@@ -216,7 +216,7 @@ def test_generate_cleanup_skips_symbols_in_last_rebalance_weights():
     _set_account_snapshot(
         svc,
         now,
-        positions=[BrokerPosition(symbol="SPY", qty=0.0, market_value=0.0)],
+        positions=[PositionSnapshot(symbol="SPY", qty=0.0, market_value=0.0)],
     )
 
     assert _run(svc._generate_position_cleanup_plan_request(now=now)) is None
@@ -238,15 +238,15 @@ def test_generate_cleanup_builds_intents_for_residuals():
         now,
         positions=[
             # In last weights -> never cleaned up, even if tiny
-            BrokerPosition(symbol="SPY", qty=0.0, market_value=0.0),
+            PositionSnapshot(symbol="SPY", qty=0.0, market_value=0.0),
             # Residual by qty
-            BrokerPosition(symbol="AAA", qty=0.0005, market_value=10.0),
+            PositionSnapshot(symbol="AAA", qty=0.0005, market_value=10.0),
             # Residual by market value
-            BrokerPosition(symbol="BBB", qty=1.0, market_value=0.05),
+            PositionSnapshot(symbol="BBB", qty=1.0, market_value=0.05),
             # Residual by both
-            BrokerPosition(symbol="DDD", qty=0.0, market_value=0.0),
+            PositionSnapshot(symbol="DDD", qty=0.0, market_value=0.0),
             # Not residual
-            BrokerPosition(symbol="CCC", qty=1.0, market_value=10.0),
+            PositionSnapshot(symbol="CCC", qty=1.0, market_value=10.0),
         ],
     )
 
