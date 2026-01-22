@@ -7,7 +7,7 @@ deployments_dir="$script_dir"
 
 usage() {
     echo "Usage:" >&2
-    echo "  $0 {live_alpaca|live_publicdotcom|paper|all} {up|down|restart|ps} [args...]" >&2
+    echo "  $0 {live_alpaca|live_publicdotcom|paper|all|all_live} {up|down|restart|ps} [args...]" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  ./manage_obs.sh up -d" >&2
@@ -17,6 +17,7 @@ usage() {
     echo "  $0 paper restart" >&2
     echo "  $0 live_alpaca down" >&2
     echo "  $0 live_publicdotcom ps" >&2
+    echo "  $0 all_live up -d   # bring up all live deployments (excludes paper)" >&2
 }
 
 env_name="${1:-}"
@@ -48,6 +49,12 @@ set_env_vars() {
             env_example_file="$deployments_dir/.env.live_publicdotcom.example"
             app_compose="$deployments_dir/docker-compose.live_publicdotcom.yml"
             ;;
+        live_publicdotcom_roth)
+            project="portfolio_builder_live_publicdotcom_roth"
+            env_file="$deployments_dir/.env.live_publicdotcom_roth"
+            env_example_file="$deployments_dir/.env.live_publicdotcom_roth.example"
+            app_compose="$deployments_dir/docker-compose.live_publicdotcom_roth.yml"
+            ;;
         paper)
             project="portfolio_builder_paper"
             env_file="$deployments_dir/.env.paper_alpaca"
@@ -61,9 +68,13 @@ set_env_vars() {
     return 0
 }
 
-# Support applying an action to all known environments
-if [[ "$env_name" == "all" ]]; then
-    envs=(live_alpaca live_publicdotcom paper)
+# Support applying an action to all known environments (two flavors)
+if [[ "$env_name" == "all" || "$env_name" == "all_live" ]]; then
+    if [[ "$env_name" == "all" ]]; then
+        envs=(live_alpaca live_publicdotcom live_publicdotcom_roth paper)
+    else
+        envs=(live_alpaca live_publicdotcom live_publicdotcom_roth)
+    fi
     if [[ "$action" == "up" ]]; then
         if ! docker network inspect pb_obs_net >/dev/null 2>&1; then
             echo "Missing Docker network 'pb_obs_net' (global observability network)." >&2
