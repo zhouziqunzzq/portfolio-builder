@@ -32,7 +32,7 @@ from public_api_sdk.models.order import Order as PublicOrder
 from models import AccountSnapshot, PositionSnapshot
 from models.trading import (
     BrokerCapabilities,
-    Instrument,
+    InstrumentMeta,
     InstrumentRef,
     OrderFilter,
     OrderIntent,
@@ -184,7 +184,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
     # Instruments
     # ------------------------------------------------------------------
 
-    def get_instrument(self, instrument: InstrumentRef) -> Instrument:
+    def get_instrument(self, instrument: InstrumentRef) -> InstrumentMeta:
         symbol = self._normalize_symbol(instrument.symbol)
 
         try:
@@ -204,7 +204,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         tradable = inst.trading != PublicTrading.DISABLED
         fractionable = inst.fractional_trading == PublicTrading.BUY_AND_SELL
 
-        return Instrument(
+        return InstrumentMeta(
             instrument=InstrumentRef(
                 symbol=inst.instrument.symbol,
                 instrument_type=instrument.instrument_type,

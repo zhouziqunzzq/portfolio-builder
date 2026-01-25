@@ -23,7 +23,7 @@ from alpaca.trading.models import Order as AlpacaOrder
 from models import AccountSnapshot, PositionSnapshot, PositionSide
 from models.trading import (
     BrokerCapabilities,
-    Instrument,
+    InstrumentMeta,
     InstrumentRef,
     OrderFilter,
     OrderIntent,
@@ -165,7 +165,7 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
     # Instruments
     # ------------------------------------------------------------------
 
-    def get_instrument(self, instrument: InstrumentRef) -> Instrument:
+    def get_instrument(self, instrument: InstrumentRef) -> InstrumentMeta:
         symbol = self._normalize_symbol(instrument.symbol)
         try:
             asset = self._trading.get_asset(symbol)
@@ -181,7 +181,7 @@ class AlpacaTradingAPI(BaseSyncTradingAPI):
             )
             tradable = False
 
-        return Instrument(
+        return InstrumentMeta(
             instrument=InstrumentRef(
                 symbol=asset.symbol, instrument_type=instrument.instrument_type
             ),

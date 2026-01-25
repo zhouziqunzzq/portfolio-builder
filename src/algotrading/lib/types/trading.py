@@ -5,10 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any, FrozenSet, Optional
-
-
-class InstrumentType(Enum):
-    EQUITY = "equity"
+from .instruments import InstrumentType, InstrumentRef
 
 
 class OrderSide(Enum):
@@ -38,20 +35,8 @@ class OrderStatus(Enum):
 
 
 @dataclass(frozen=True)
-class InstrumentRef:
-    """Broker-agnostic instrument reference.
-
-    Keep this minimal: Public.com requires an explicit instrument type for many calls;
-    other brokers may ignore it.
-    """
-
-    symbol: str
-    instrument_type: InstrumentType = InstrumentType.EQUITY
-
-
-@dataclass(frozen=True)
-class Instrument:
-    """Broker-agnostic instrument details."""
+class InstrumentMeta:
+    """Broker-agnostic instrument metadata."""
 
     instrument: InstrumentRef
     tradable: Optional[bool] = None

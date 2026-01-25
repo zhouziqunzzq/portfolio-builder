@@ -13,7 +13,7 @@ from models.trading import (
     OrderFilter,
     PreflightOrderResult,
     PlacedOrder,
-    Instrument,
+    InstrumentMeta,
 )
 
 
@@ -40,7 +40,7 @@ class BaseTradingAPI(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_instrument(self, instrument: InstrumentRef) -> Instrument:
+    def get_instrument(self, instrument: InstrumentRef) -> InstrumentMeta:
         raise NotImplementedError
 
     @abstractmethod

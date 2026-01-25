@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from models.trading import (
     BrokerCapabilities,
-    Instrument,
+    InstrumentMeta,
     InstrumentRef,
     OrderFilter,
     OrderIntent,
@@ -50,7 +50,7 @@ class FakeTradingAPI(BaseSyncTradingAPI):
     def __init__(self):
         self._account: Any = None
         self._positions: List[Any] = []
-        self._instruments: Dict[str, Instrument] = {}
+        self._instruments: Dict[str, InstrumentMeta] = {}
 
         self.submitted: List[Dict[str, Any]] = []
         self.actions: List[str] = []
@@ -88,7 +88,7 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         fractionable: Optional[bool] = None,
     ) -> None:
         sym = str(symbol).upper()
-        self._instruments[sym] = Instrument(
+        self._instruments[sym] = InstrumentMeta(
             instrument=InstrumentRef(symbol=sym),
             tradable=bool(tradable),
             fractionable=fractionable,
@@ -117,13 +117,13 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         self.actions.append("list_positions")
         return list(self._positions)
 
-    def get_instrument(self, instrument: InstrumentRef) -> Instrument:
+    def get_instrument(self, instrument: InstrumentRef) -> InstrumentMeta:
         sym = str(instrument.symbol).upper()
         self.actions.append(f"get_instrument:{sym}")
         if sym in self._instruments:
             return self._instruments[sym]
         # Default: unknown instruments are tradable.
-        return Instrument(instrument=InstrumentRef(symbol=sym), tradable=True)
+        return InstrumentMeta(instrument=InstrumentRef(symbol=sym), tradable=True)
 
     def preflight_order(self, intent: OrderIntent) -> PreflightOrderResult:
         self.actions.append("preflight_order")
