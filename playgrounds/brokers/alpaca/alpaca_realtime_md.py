@@ -79,7 +79,7 @@ def _print_events(events: Iterable[object]) -> None:
     for ev in events:
         key = getattr(ev, "key", None)
         bar = getattr(ev, "bar", None)
-        print(f"{type(ev).__name__}: key={key} bar={bar}")
+        print(f"{type(ev).__name__}: key={key} bar={bar}", flush=True)
 
 
 if __name__ == "__main__":
@@ -125,7 +125,10 @@ if __name__ == "__main__":
     aggregator.on_subscribe(_SubMsg(refs=refs, timeframes=tuple(agg_tfs)))
 
     async def bar_data_handler(bar):
-        print(f"[{datetime.now(timezone.utc).isoformat()}] Received raw bar: {bar}")
+        print(
+            f"[{datetime.now(timezone.utc).isoformat()}] Received raw bar: {bar}",
+            flush=True,
+        )
         ohlcv = _bar_to_ohlcv(bar)
         ref = InstrumentRef(bar.symbol)
         key = BarKey(ref=ref, tf=BASE_TF, start_ts=ohlcv.start_ts)
@@ -138,7 +141,10 @@ if __name__ == "__main__":
             is_correction=False,
         )
         outs = aggregator.on_base_upsert(ev)
-        print(f"[{datetime.now(timezone.utc).isoformat()}] Derived events:")
+        print(
+            f"[{datetime.now(timezone.utc).isoformat()}] Derived events:",
+            flush=True,
+        )
         _print_events(outs)
 
     if args.test_feed:
