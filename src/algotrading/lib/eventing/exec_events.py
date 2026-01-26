@@ -7,7 +7,7 @@ from .topic import Topic
 from .base import *
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AccountSnapshotEvent(BaseEvent):
     """Event containing broker account + positions snapshot.
 

@@ -6,7 +6,7 @@ class InstrumentType(Enum):
     EQUITY = "equity"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InstrumentRef:
     """Universal instrument reference."""
 

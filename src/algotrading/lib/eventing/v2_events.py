@@ -7,7 +7,7 @@ from .topic import Topic
 from .base import *
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2MarketClockEvent(BaseEvent):
     """V2 Market clock event indicating market open/close status."""
 
@@ -22,7 +22,7 @@ class V2MarketClockEvent(BaseEvent):
     next_market_close: Optional[datetime] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2NewBarsEvent(BaseEvent):
     """V2 Event indicating new bar data is available."""
 
@@ -32,7 +32,7 @@ class V2NewBarsEvent(BaseEvent):
     # TODO: Add more fields as needed, e.g., bar data payload
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2BarsCheckedEvent(BaseEvent):
     """V2 Event indicating that new bars have been checked."""
 
@@ -40,7 +40,7 @@ class V2BarsCheckedEvent(BaseEvent):
     topic: Topic = field(default=Topic.V2_BAR, init=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2RebalancePlanRequestEvent(BaseEvent):
     """V2 Event indicating a rebalance plan request."""
 
@@ -51,7 +51,7 @@ class V2RebalancePlanRequestEvent(BaseEvent):
     weights: Dict[str, float]  # Mapping of tickers to target weights
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2RebalancePlanConfirmationEvent(BaseEvent):
     """V2 Event indicating a rebalance plan has been confirmed."""
 
@@ -76,7 +76,7 @@ class V2PositionCleanupIntent:
     market_value_threshold: Optional[Decimal] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2PositionCleanupPlanRequestEvent(BaseEvent):
     """V2 Event indicating a position cleanup plan request."""
 
@@ -87,7 +87,7 @@ class V2PositionCleanupPlanRequestEvent(BaseEvent):
     intents: Dict[str, V2PositionCleanupIntent]  # Mapping of ticker to intent
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class V2PositionCleanupPlanConfirmationEvent(BaseEvent):
     """V2 Event indicating a position cleanup plan has been confirmed."""
 

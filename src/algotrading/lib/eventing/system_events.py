@@ -4,7 +4,7 @@ from .topic import Topic
 from .base import BaseEvent
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StopEvent(BaseEvent):
     """Event indicating a system stop signal."""
 

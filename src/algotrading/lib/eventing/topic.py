@@ -9,7 +9,15 @@ class Topic(str, Enum):
     SYSTEM_LOG = "system_log"
 
     # Market data topics
-    # TODO: Add topics
+    # Note: "upsert" simply means "insert or update"
+    MD_BAR_BASE_UPSERT = "md_bar_base_upsert" # Base (raw) bar data upsert from md provider
+    MD_BAR_COMPLETED = "md_bar_completed"  # Signal that all bars for a given timeframe have been ingested
+    MD_BAR_UPDATED = "md_bar_updated"  # Updated bar data (e.g. after late ticks) from md aggregator
+    MD_BAR_CLOSED = "md_bar_closed"  # Closed bar data from md aggregator
+    MD_BARS_BATCH_CLOSED = "md_bars_batch_closed"  # Cross-instrument sync signal for closed bars batch
+    MD_BAR_SUBSCRIBE = "md_bar_subscribe"  # Request to subscribe to bar market data
+    MD_BAR_UNSUBSCRIBE = "md_bar_unsubscribe"  # Request to unsubscribe from bar market data
+    # TODO: Add tick topics
 
     # Execution-related topics
     EXEC_ACCOUNT_SNAPSHOT = "exec_account_snapshot"
