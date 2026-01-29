@@ -55,6 +55,19 @@ class BarKey:
 
 
 @dataclass(frozen=True, slots=True)
+class BarBatchKey:
+    """
+    Identity of a batch of bars for cross-instrument sync.
+
+    E.g. all 1m bars starting at 2024-01-01 09:30:00 for a set of instruments.
+    """
+
+    refs: tuple[InstrumentRef, ...]
+    tf: Timeframe
+    start_ts: datetime  # bar start
+
+
+@dataclass(frozen=True, slots=True)
 class OHLCVBar:
     """
     Minimal OHLCV. Add vwap, trades, etc later if needed.

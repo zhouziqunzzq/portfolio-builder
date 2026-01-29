@@ -8,7 +8,12 @@ from alpaca.data.enums import DataFeed
 from alpaca.data.live import StockDataStream
 from dotenv import load_dotenv
 
-from algotrading.lib.eventing.md_events import BaseBarUpserted
+from algotrading.lib.eventing.md_events import (
+    BaseBarUpserted,
+    BarClosed,
+    MDBarBatchSubscribeRequest,
+    MDBarSubscribeRequest,
+)
 from algotrading.lib.market_data.realtime.aggregator.direct_from_base import (
     DirectFromBaseAggregator,
     DirectFromBaseAggregatorConfig,
@@ -20,12 +25,6 @@ TEST_FEED_URL = "wss://stream.data.alpaca.markets/v2/test"
 TEST_FEED_SYMBOL = "FAKEPACA"
 
 BASE_TF = Timeframe(1, TimeframeUnit.MINUTE)
-
-
-@dataclass(frozen=True)
-class _SubMsg:
-    refs: tuple[InstrumentRef, ...]
-    timeframes: tuple[Timeframe, ...]
 
 
 def _parse_timeframes(raw: str) -> List[Timeframe]:
@@ -53,6 +52,13 @@ def _parse_timeframes(raw: str) -> List[Timeframe]:
             raise ValueError(f"Invalid timeframe value: {n}")
         tfs.append(Timeframe(n, unit_map[unit_part]))
     return tfs
+
+
+def _parse_single_timeframe(raw: str) -> Timeframe:
+    tfs = _parse_timeframes(raw)
+    if len(tfs) != 1:
+        raise ValueError("Exactly one timeframe is required for batch subscription")
+    return tfs[0]
 
 
 def _ensure_tzaware(ts: datetime) -> datetime:
@@ -103,6 +109,18 @@ if __name__ == "__main__":
         default="5m",
         help="Comma-separated aggregation timeframes (e.g. 5m,15m).",
     )
+    parser.add_argument(
+        "--batch-symbols",
+        type=str,
+        default="",
+        help="Comma-separated symbols for a single batch group (e.g. AAPL,MSFT).",
+    )
+    parser.add_argument(
+        "--batch-tf",
+        type=str,
+        default="5m",
+        help="Single batch timeframe (e.g. 5m).",
+    )
     args = parser.parse_args()
 
     # load env variables from .env file
@@ -116,13 +134,50 @@ if __name__ == "__main__":
         symbols = [TEST_FEED_SYMBOL]
     else:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-        if not symbols:
+        has_batch_symbols = any(
+            s.strip() for s in args.batch_symbols.split(",") if s.strip()
+        )
+        if not symbols and not has_batch_symbols:
             raise SystemExit("--symbols is required when using the IEX feed")
 
-    refs = tuple(InstrumentRef(sym) for sym in symbols)
+    instrument_refs = tuple(InstrumentRef(sym) for sym in symbols)
     cfg = DirectFromBaseAggregatorConfig(source_name="alpaca", base_timeframe=BASE_TF)
     aggregator = DirectFromBaseAggregator(cfg)
-    aggregator.on_subscribe(_SubMsg(refs=refs, timeframes=tuple(agg_tfs)))
+    aggregator.on_subscribe(
+        MDBarSubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="alpaca",
+            instrument_refs=instrument_refs,
+            timeframes=tuple(agg_tfs),
+        )
+    )
+
+    if args.batch_symbols or args.batch_tf:
+        if not args.batch_tf:
+            raise SystemExit("--batch-tf is required when using batch subscription")
+
+        batch_tf = _parse_single_timeframe(args.batch_tf)
+        if args.test_feed:
+            batch_symbols = ["FAKEPACA"]
+        else:
+            batch_symbols = [
+                s.strip().upper() for s in args.batch_symbols.split(",") if s.strip()
+            ]
+            if not batch_symbols:
+                raise SystemExit(
+                    "--batch-symbols is required when using batch subscription"
+                )
+
+        batch_refs = tuple(InstrumentRef(sym) for sym in batch_symbols)
+        aggregator.on_subscribe_batch(
+            MDBarBatchSubscribeRequest(
+                ts=datetime.now(timezone.utc).timestamp(),
+                source="alpaca",
+                instrument_refs=batch_refs,
+                timeframe=batch_tf,
+                auto_subscribe_constituents=True,
+            )
+        )
 
     async def bar_data_handler(bar):
         print(
@@ -146,6 +201,15 @@ if __name__ == "__main__":
             flush=True,
         )
         _print_events(outs)
+
+        gc_events = aggregator.run_gc(now=datetime.now(timezone.utc))
+        gc_closed = [ev for ev in gc_events if isinstance(ev, BarClosed)]
+        if gc_closed:
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] GC closed events:",
+                flush=True,
+            )
+            _print_events(gc_closed)
 
     if args.test_feed:
         wss_client = StockDataStream(

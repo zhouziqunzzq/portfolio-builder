@@ -17,6 +17,10 @@ from algotrading.lib.eventing.md_events import (
     BarCompleted,
     BarUpdated,
     BarClosed,
+    BarBatchCompleted,
+    MDBarSubscribeRequest,
+    MDBarUnsubscribeRequest,
+    MDBarBatchSubscribeRequest,
 )
 
 
@@ -171,12 +175,6 @@ def test_bucketagg_completed_flag():
     assert b.completed
 
 
-class _Msg:
-    def __init__(self, refs, timeframes):
-        self.refs = tuple(refs)
-        self.timeframes = tuple(timeframes)
-
-
 def test_direct_from_base_subscribe_unsubscribe_and_queries():
     cfg = DirectFromBaseAggregatorConfig(
         source_name="x", base_timeframe=Timeframe(30, TimeframeUnit.SECOND)
@@ -191,21 +189,49 @@ def test_direct_from_base_subscribe_unsubscribe_and_queries():
     tf_bad = Timeframe(99, TimeframeUnit.SECOND)  # not an integer multiple of 30
 
     # subscribe valid timeframes for two refs
-    agg.on_subscribe(_Msg([ref, other], [tf_base, tf_60, tf_90]))
+    agg.on_subscribe(
+        MDBarSubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref, other),
+            timeframes=(tf_base, tf_60, tf_90),
+        )
+    )
     assert agg.subscribed_timeframes(ref) == (tf_base, tf_60, tf_90)
     assert agg.subscribed_timeframes(other) == (tf_base, tf_60, tf_90)
 
     # subscribing invalid timeframe raises and leaves prior state intact
     with pytest.raises(ValueError):
-        agg.on_subscribe(_Msg([ref], [tf_bad]))
+        agg.on_subscribe(
+            MDBarSubscribeRequest(
+                ts=datetime.now(timezone.utc).timestamp(),
+                source="src",
+                instrument_refs=(ref,),
+                timeframes=(tf_bad,),
+            )
+        )
     assert agg.subscribed_timeframes(ref) == (tf_base, tf_60, tf_90)
 
     # unsubscribe one timeframe
-    agg.on_unsubscribe(_Msg([ref], [tf_base]))
+    agg.on_unsubscribe(
+        MDBarUnsubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref,),
+            timeframes=(tf_base,),
+        )
+    )
     assert agg.subscribed_timeframes(ref) == (tf_60, tf_90)
 
     # unsubscribe remaining timeframes removes the ref entry
-    agg.on_unsubscribe(_Msg([ref], [tf_60, tf_90]))
+    agg.on_unsubscribe(
+        MDBarUnsubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref,),
+            timeframes=(tf_60, tf_90),
+        )
+    )
     assert agg.subscribed_timeframes(ref) == ()
     assert ref not in agg._subs
 
@@ -214,7 +240,14 @@ def test_direct_from_base_subscribe_unsubscribe_and_queries():
 
     # unsubscribing unknown ref should be a no-op
     unknown = InstrumentRef("NVDA")
-    agg.on_unsubscribe(_Msg([unknown], [tf_60]))
+    agg.on_unsubscribe(
+        MDBarUnsubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(unknown,),
+            timeframes=(tf_60,),
+        )
+    )
     assert agg.subscribed_timeframes(unknown) == ()
 
 
@@ -251,7 +284,14 @@ def test_on_base_upsert_case2_base_pass_through_new_and_correction():
 
     ref = InstrumentRef("AAPL")
     base_tf = Timeframe(30, TimeframeUnit.SECOND)
-    agg.on_subscribe(_Msg([ref], [base_tf]))
+    agg.on_subscribe(
+        MDBarSubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref,),
+            timeframes=(base_tf,),
+        )
+    )
 
     t0 = datetime(2021, 1, 1, 9, 30, tzinfo=timezone.utc)
     bar1 = OHLCVBar(
@@ -301,7 +341,14 @@ def test_on_base_upsert_case3_derived_aggregation_and_correction():
     ref = InstrumentRef("AAPL")
     base_tf = Timeframe(30, TimeframeUnit.SECOND)
     derived_tf = Timeframe(90, TimeframeUnit.SECOND)
-    agg.on_subscribe(_Msg([ref], [derived_tf]))
+    agg.on_subscribe(
+        MDBarSubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref,),
+            timeframes=(derived_tf,),
+        )
+    )
 
     t0 = datetime(2021, 1, 1, 9, 30, tzinfo=timezone.utc)
     t1 = t0 + timedelta(seconds=30)
@@ -380,7 +427,14 @@ def test_run_gc_closes_completed_buckets_after_settle():
     ref = InstrumentRef("AAPL")
     base_tf = Timeframe(30, TimeframeUnit.SECOND)
     derived_tf = Timeframe(90, TimeframeUnit.SECOND)
-    agg.on_subscribe(_Msg([ref], [derived_tf]))
+    agg.on_subscribe(
+        MDBarSubscribeRequest(
+            ts=datetime.now(timezone.utc).timestamp(),
+            source="src",
+            instrument_refs=(ref,),
+            timeframes=(derived_tf,),
+        )
+    )
 
     t0 = datetime(2021, 1, 1, 9, 30, tzinfo=timezone.utc)
     t1 = t0 + timedelta(seconds=30)
@@ -517,3 +571,145 @@ def test_run_gc_evicts_incomplete_buckets():
     assert key in agg._bucket_aggs
     list(agg.run_gc(now=now))
     assert key not in agg._bucket_aggs
+
+
+def test_batch_subscribe_auto_subscribe_constituents():
+    cfg = DirectFromBaseAggregatorConfig(
+        source_name="x", base_timeframe=Timeframe(30, TimeframeUnit.SECOND)
+    )
+    agg = DirectFromBaseAggregator(cfg)
+
+    tf = Timeframe(30, TimeframeUnit.SECOND)
+    aapl = InstrumentRef("AAPL")
+    msft = InstrumentRef("MSFT")
+
+    msg = MDBarBatchSubscribeRequest(
+        ts=datetime.now(timezone.utc).timestamp(),
+        source="src",
+        instrument_refs=(msft, aapl),
+        timeframe=tf,
+        auto_subscribe_constituents=True,
+    )
+    agg.on_subscribe_batch(msg)
+
+    assert agg.subscribed_timeframes(aapl) == (tf,)
+    assert agg.subscribed_timeframes(msft) == (tf,)
+    assert tf in agg._batch_subs
+    assert (aapl, msft) in agg._batch_subs[tf]
+
+
+def test_batch_completed_emits_for_base_pass_through():
+    cfg = DirectFromBaseAggregatorConfig(
+        source_name="x", base_timeframe=Timeframe(30, TimeframeUnit.SECOND)
+    )
+    agg = DirectFromBaseAggregator(cfg)
+
+    tf = Timeframe(30, TimeframeUnit.SECOND)
+    aapl = InstrumentRef("AAPL")
+    msft = InstrumentRef("MSFT")
+    t0 = datetime(2021, 1, 1, 9, 30, tzinfo=timezone.utc)
+
+    msg = MDBarBatchSubscribeRequest(
+        ts=t0.timestamp(),
+        source="src",
+        instrument_refs=(aapl, msft),
+        timeframe=tf,
+        auto_subscribe_constituents=True,
+    )
+    agg.on_subscribe_batch(msg)
+
+    bar_a = OHLCVBar(
+        start_ts=t0, end_ts=t0 + timedelta(seconds=30), o=1, h=2, l=1, c=1.5, v=10
+    )
+    bar_m = OHLCVBar(
+        start_ts=t0, end_ts=t0 + timedelta(seconds=30), o=2, h=3, l=1.5, c=2.5, v=20
+    )
+
+    ev_a = BaseBarUpserted(
+        ts=t0.timestamp(),
+        source="src",
+        key=BarKey(ref=aapl, tf=tf, start_ts=t0),
+        curr=bar_a,
+        prev=None,
+        is_correction=False,
+    )
+    ev_m = BaseBarUpserted(
+        ts=t0.timestamp(),
+        source="src",
+        key=BarKey(ref=msft, tf=tf, start_ts=t0),
+        curr=bar_m,
+        prev=None,
+        is_correction=False,
+    )
+
+    outs_a = list(agg.on_base_upsert(ev_a, now=t0))
+    assert any(isinstance(ev, BarCompleted) for ev in outs_a)
+    assert not any(isinstance(ev, BarBatchCompleted) for ev in outs_a)
+
+    outs_m = list(agg.on_base_upsert(ev_m, now=t0))
+    assert any(isinstance(ev, BarCompleted) for ev in outs_m)
+    batch_events = [ev for ev in outs_m if isinstance(ev, BarBatchCompleted)]
+    assert len(batch_events) == 1
+    assert batch_events[0].key.refs == (aapl, msft)
+    assert batch_events[0].key.tf == tf
+    assert batch_events[0].key.start_ts == t0
+
+
+def test_batch_completed_emits_for_derived_timeframe():
+    cfg = DirectFromBaseAggregatorConfig(
+        source_name="x", base_timeframe=Timeframe(30, TimeframeUnit.SECOND)
+    )
+    agg = DirectFromBaseAggregator(cfg)
+
+    base_tf = Timeframe(30, TimeframeUnit.SECOND)
+    derived_tf = Timeframe(90, TimeframeUnit.SECOND)
+    aapl = InstrumentRef("AAPL")
+    msft = InstrumentRef("MSFT")
+
+    t0 = datetime(2021, 1, 1, 9, 30, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(seconds=30)
+    t2 = t0 + timedelta(seconds=60)
+
+    msg = MDBarBatchSubscribeRequest(
+        ts=t0.timestamp(),
+        source="src",
+        instrument_refs=(aapl, msft),
+        timeframe=derived_tf,
+        auto_subscribe_constituents=True,
+    )
+    agg.on_subscribe_batch(msg)
+
+    def make_ev(ref: InstrumentRef, ts: datetime, o: float) -> BaseBarUpserted:
+        bar = OHLCVBar(
+            start_ts=ts,
+            end_ts=ts + timedelta(seconds=30),
+            o=o,
+            h=o + 1,
+            l=o - 0.5,
+            c=o + 0.25,
+            v=10,
+        )
+        return BaseBarUpserted(
+            ts=ts.timestamp(),
+            source="src",
+            key=BarKey(ref=ref, tf=base_tf, start_ts=ts),
+            curr=bar,
+            prev=None,
+            is_correction=False,
+        )
+
+    assert list(agg.on_base_upsert(make_ev(aapl, t0, 1.0), now=t0)) == []
+    assert list(agg.on_base_upsert(make_ev(aapl, t1, 1.5), now=t1)) == []
+    outs_a = list(agg.on_base_upsert(make_ev(aapl, t2, 2.0), now=t2))
+    assert any(isinstance(ev, BarCompleted) for ev in outs_a)
+    assert not any(isinstance(ev, BarBatchCompleted) for ev in outs_a)
+
+    assert list(agg.on_base_upsert(make_ev(msft, t0, 2.0), now=t0)) == []
+    assert list(agg.on_base_upsert(make_ev(msft, t1, 2.5), now=t1)) == []
+    outs_m = list(agg.on_base_upsert(make_ev(msft, t2, 3.0), now=t2))
+    assert any(isinstance(ev, BarCompleted) for ev in outs_m)
+    batch_events = [ev for ev in outs_m if isinstance(ev, BarBatchCompleted)]
+    assert len(batch_events) == 1
+    assert batch_events[0].key.refs == (aapl, msft)
+    assert batch_events[0].key.tf == derived_tf
+    assert batch_events[0].key.start_ts == t0

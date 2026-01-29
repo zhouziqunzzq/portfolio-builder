@@ -10,10 +10,13 @@ from algotrading.lib.types.trading import InstrumentRef
 from algotrading.lib.eventing.md_events import (
     MDBarSubscribeRequest,
     MDBarUnsubscribeRequest,
+    MDBarBatchSubscribeRequest,
+    MDBarBatchUnsubscribeRequest,
     BaseBarUpserted,
     BarCompleted,
     BarUpdated,
     BarClosed,
+    BarBatchCompleted,
 )
 
 
@@ -23,6 +26,9 @@ class BaseMarketDataAggregatorConfig:
     base_timeframe: Timeframe  # e.g. 1m, 5s
     # Provider-specific configs, e.g. auth config, environment, etc.,
     # should be added in subclasses.
+
+
+MDBarEvents = BarCompleted | BarUpdated | BarClosed | BarBatchCompleted
 
 
 class BaseMarketDataAggregator(ABC):
@@ -60,11 +66,27 @@ class BaseMarketDataAggregator(ABC):
         """
 
     @abstractmethod
+    def on_subscribe_batch(self, msg: MDBarBatchSubscribeRequest) -> None:
+        """
+        Register downstream interest in a batch of bars for cross-instrument sync.
+
+        Implementation should call `on_subscribe()` internally for each instrument/timeframe pair in the batch if requested.
+        """
+
+    @abstractmethod
     def on_unsubscribe(self, msg: MDBarUnsubscribeRequest) -> None:
         """
         Unregister downstream interest in bars for a set of instruments/timeframes.
 
         Implementations should be robust to unsubscribing unknown refs/timeframes.
+        """
+
+    @abstractmethod
+    def on_unsubscribe_batch(self, msg: MDBarBatchUnsubscribeRequest) -> None:
+        """
+        Unregister downstream interest in a batch of bars for cross-instrument sync.
+
+        Implementation should call `on_unsubscribe()` internally for each instrument/timeframe pair in the batch if requested.
         """
 
     @abstractmethod
@@ -76,7 +98,7 @@ class BaseMarketDataAggregator(ABC):
     @abstractmethod
     def on_base_upsert(
         self, ev: BaseBarUpserted, *, now: Optional[datetime] = None
-    ) -> Iterable[BarCompleted | BarUpdated | BarClosed]:
+    ) -> Iterable[MDBarEvents]:
         """
         Ingest a base bar UPSERT and return zero or more derived bar closed/updated events.
 

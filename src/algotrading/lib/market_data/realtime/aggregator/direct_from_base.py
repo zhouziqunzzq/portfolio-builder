@@ -4,21 +4,25 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from algotrading.lib.types.market_data import Timeframe, BarKey, OHLCVBar
+from algotrading.lib.types.market_data import Timeframe, BarKey, BarBatchKey, OHLCVBar
 from algotrading.lib.types.trading import InstrumentRef
 from algotrading.lib.eventing.md_events import (
     MDBarSubscribeRequest,
     MDBarUnsubscribeRequest,
+    MDBarBatchSubscribeRequest,
+    MDBarBatchUnsubscribeRequest,
     BaseBarUpserted,
     BarCompleted,
     BarUpdated,
     BarClosed,
+    BarBatchCompleted,
 )
 from algotrading.lib.calendar.session import BaseSessionCalendar
 from algotrading.lib.market_data.bucketing import floor_time, shift_timeframe
 from .base import (
     BaseMarketDataAggregatorConfig,
     BaseMarketDataAggregator,
+    MDBarEvents,
 )
 
 # -----------------------------
@@ -30,6 +34,16 @@ def _is_integer_multiple(outer: Timeframe, inner: Timeframe) -> bool:
     o = outer.seconds
     i = inner.seconds
     return i > 0 and o % i == 0
+
+
+def _normalize_batch_refs(refs: Iterable[InstrumentRef]) -> tuple[InstrumentRef, ...]:
+    uniq = {ref: None for ref in refs}
+    return tuple(
+        sorted(
+            uniq.keys(),
+            key=lambda r: (r.instrument_type.value, r.symbol),
+        )
+    )
 
 
 # -----------------------------
@@ -120,6 +134,60 @@ class _BucketAgg:
         return OHLCVBar(start_ts=start_ts, end_ts=end_ts, o=o, h=h, l=l, c=c, v=v)
 
 
+@dataclass
+class _BarBatchAgg:
+    key: BarBatchKey
+    created_ts: datetime
+    expected_refs: Set[InstrumentRef] = field(init=False)
+    outstanding_refs: Set[InstrumentRef] = field(init=False)
+    _closed: bool = False
+    _closed_ts: Optional[datetime] = None
+    _last_updated_ts: Optional[datetime] = None
+
+    def __post_init__(self) -> None:
+        self.expected_refs = set(self.key.refs)
+        self.outstanding_refs = set(self.key.refs)
+        self._last_updated_ts = self.created_ts
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def closed_ts(self) -> Optional[datetime]:
+        return self._closed_ts
+
+    @property
+    def last_updated_ts(self) -> Optional[datetime]:
+        return self._last_updated_ts
+
+    @property
+    def completed(self) -> bool:
+        return not self.outstanding_refs
+
+    def close(self, *, now: Optional[datetime] = None) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._closed_ts = now if now is not None else datetime.now(timezone.utc)
+
+    def observe_completed(
+        self, ref: InstrumentRef, *, now: Optional[datetime] = None
+    ) -> bool:
+        if ref not in self.expected_refs:
+            return False
+        if ref not in self.outstanding_refs:
+            return False
+
+        self.outstanding_refs.discard(ref)
+        self._last_updated_ts = now if now is not None else datetime.now(timezone.utc)
+
+        if not self.outstanding_refs and not self._closed:
+            self.close(now=now)
+            return True
+        return False
+
+
 # -----------------------------
 # Concrete implementation
 # -----------------------------
@@ -175,6 +243,10 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
         self._bucket_aggs: Dict[BarKey, _BucketAgg] = {}
         # derived store: BarKey(ref, tf, start_ts) -> aggregated bar
         self._derived_store: Dict[BarKey, OHLCVBar] = {}
+        # batch subscriptions: tf -> set(tuple(refs))
+        self._batch_subs: Dict[Timeframe, Set[tuple[InstrumentRef, ...]]] = {}
+        # batch aggs: BarBatchKey -> _BarBatchAgg
+        self._batch_aggs: Dict[BarBatchKey, _BarBatchAgg] = {}
 
     @property
     def source_name(self) -> str:
@@ -187,7 +259,7 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
     # ----- subscription management -----
 
     def on_subscribe(self, msg: MDBarSubscribeRequest) -> None:
-        for ref in msg.refs:
+        for ref in msg.instrument_refs:
             s = self._subs.setdefault(ref, set())
             for tf in msg.timeframes:
                 if not _is_integer_multiple(tf, self._base_tf):
@@ -196,8 +268,29 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
                     )
                 s.add(tf)
 
+    def on_subscribe_batch(self, msg: MDBarBatchSubscribeRequest) -> None:
+        tf = msg.timeframe
+        if not _is_integer_multiple(tf, self._base_tf):
+            raise ValueError(
+                f"Requested timeframe {tf} must be an integer multiple of base timeframe {self._base_tf}"
+            )
+
+        refs = _normalize_batch_refs(msg.instrument_refs)
+        if refs:
+            self._batch_subs.setdefault(tf, set()).add(refs)
+
+        if msg.auto_subscribe_constituents and refs:
+            self.on_subscribe(
+                MDBarSubscribeRequest(
+                    ts=msg.ts,
+                    source=self._config.aggregator_name,
+                    instrument_refs=refs,
+                    timeframes=(tf,),
+                )
+            )
+
     def on_unsubscribe(self, msg: MDBarUnsubscribeRequest) -> None:
-        for ref in msg.refs:
+        for ref in msg.instrument_refs:
             s = self._subs.get(ref)
             if not s:
                 continue
@@ -205,6 +298,31 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
                 s.discard(tf)
             if not s:
                 self._subs.pop(ref, None)
+
+    def on_unsubscribe_batch(self, msg: MDBarBatchUnsubscribeRequest) -> None:
+        tf = msg.timeframe
+        refs = _normalize_batch_refs(msg.instrument_refs)
+        if refs:
+            groups = self._batch_subs.get(tf)
+            if groups:
+                groups.discard(refs)
+                if not groups:
+                    self._batch_subs.pop(tf, None)
+
+        if msg.auto_unsubscribe_constituents and refs:
+            self.on_unsubscribe(
+                MDBarUnsubscribeRequest(
+                    ts=msg.ts,
+                    source=self._config.aggregator_name,
+                    instrument_refs=refs,
+                    timeframes=(tf,),
+                )
+            )
+
+        if refs:
+            for key in list(self._batch_aggs.keys()):
+                if key.tf == tf and key.refs == refs:
+                    del self._batch_aggs[key]
 
     def subscribed_timeframes(self, ref: InstrumentRef) -> tuple[Timeframe, ...]:
         s = self._subs.get(ref)
@@ -216,7 +334,7 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
 
     def on_base_upsert(
         self, ev: BaseBarUpserted, *, now: Optional[datetime] = None
-    ) -> Iterable[BarCompleted | BarUpdated | BarClosed]:
+    ) -> Iterable[MDBarEvents]:
         if ev.key.tf != self._base_tf:
             raise ValueError(
                 f"BaseBarUpserted tf={ev.key.tf} does not match aggregator base_timeframe={self._base_tf}"
@@ -236,7 +354,7 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
         if_corr_base = prev_base is not None and prev_base != curr_bar
 
         # Generate output events
-        outs: List[BarCompleted | BarUpdated | BarClosed] = []
+        outs: List[MDBarEvents] = []
         tfs = self._subs.get(ref)
         # Case 1: No subscribers for this ref -> no output
         if not tfs:
@@ -313,6 +431,34 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
             # Otherwise, either the bucket is incomplete, or the derived bar is unchanged
             # -> no output
 
+        # Batch completion tracking (sync signals)
+        completed_events = [ev for ev in outs if isinstance(ev, BarCompleted)]
+        if completed_events and self._batch_subs:
+            for evc in completed_events:
+                groups = self._batch_subs.get(evc.key.tf)
+                if not groups:
+                    continue
+                for refs in groups:
+                    if evc.key.ref not in refs:
+                        continue
+                    batch_key = BarBatchKey(
+                        refs=refs,
+                        tf=evc.key.tf,
+                        start_ts=evc.key.start_ts,
+                    )
+                    agg = self._batch_aggs.get(batch_key)
+                    if agg is None:
+                        agg = _BarBatchAgg(batch_key, created_ts=now)
+                        self._batch_aggs[batch_key] = agg
+                    if agg.observe_completed(evc.key.ref, now=now):
+                        outs.append(
+                            BarBatchCompleted(
+                                ts=now.timestamp(),
+                                source=self._config.aggregator_name,
+                                key=batch_key,
+                            )
+                        )
+
         return outs
 
     def run_gc(self, now: Optional[datetime] = None) -> Iterable[BarClosed]:
@@ -320,11 +466,17 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
         Garbage collection / finalization pass.
 
         Responsibilities:
+
+        For single bar aggregations:
         1) Close completed buckets that are past settle window.
         2) Remove old closed bucket state to free memory.
         3) Evict incomplete buckets after a timeout.
         4) Purge old base bars once no longer needed.
         5) Purge old derived bars once no longer needed.
+
+        For cross-instrument sync bar batches:
+        1) Remove old completed batch state to free memory.
+        2) Evict incomplete batches after a timeout.
 
         Returns BarClosed events for buckets finalized in this run.
         """
@@ -336,6 +488,10 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
         keep_derived = self._config.keep_derived_bars_seconds
         evict_incomplete = self._config.evict_incomplete_buckets_seconds
         outs: List[BarClosed] = []
+
+        # -----------------------------
+        # Single bar aggregation GC
+        # -----------------------------
 
         # 1. Close eligible buckets
         # Close rule: bucket is completed, not closed, AND bucket_end + settle < now
@@ -405,5 +561,30 @@ class DirectFromBaseAggregator(BaseMarketDataAggregator):
             for key, _ in list(self._derived_store.items()):
                 if key.start_ts < cutoff_dt:
                     del self._derived_store[key]
+
+        # -----------------------------
+        # Cross-instrument sync GC
+        # -----------------------------
+        # 1) Evict old closed batch state
+        if keep_closed > 0:
+            cutoff = now_ts - keep_closed
+            for key, agg in list(self._batch_aggs.items()):
+                if not agg.closed:
+                    continue
+                closed_ts = agg.closed_ts
+                if closed_ts is None:
+                    continue
+                if closed_ts.timestamp() < cutoff:
+                    del self._batch_aggs[key]
+
+        # 2) Evict incomplete batch state after timeout
+        if evict_incomplete > 0:
+            cutoff = now_ts - evict_incomplete
+            for key, agg in list(self._batch_aggs.items()):
+                if agg.closed:
+                    continue
+                last_updated_ts = agg.last_updated_ts
+                if last_updated_ts is not None and last_updated_ts.timestamp() < cutoff:
+                    del self._batch_aggs[key]
 
         return outs

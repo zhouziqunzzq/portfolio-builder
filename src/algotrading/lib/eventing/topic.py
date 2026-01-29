@@ -14,9 +14,11 @@ class Topic(str, Enum):
     MD_BAR_COMPLETED = "md_bar_completed"  # Signal that all bars for a given timeframe have been ingested
     MD_BAR_UPDATED = "md_bar_updated"  # Updated bar data (e.g. after late ticks) from md aggregator
     MD_BAR_CLOSED = "md_bar_closed"  # Closed bar data from md aggregator
-    MD_BARS_BATCH_CLOSED = "md_bars_batch_closed"  # Cross-instrument sync signal for closed bars batch
+    MD_BAR_BATCH_COMPLETED = "md_bar_batch_completed"  # Cross-instrument sync signal for completed bars batch
     MD_BAR_SUBSCRIBE = "md_bar_subscribe"  # Request to subscribe to bar market data
     MD_BAR_UNSUBSCRIBE = "md_bar_unsubscribe"  # Request to unsubscribe from bar market data
+    MD_BAR_BATCH_SUBSCRIBE = "md_bar_batch_subscribe"  # Request to subscribe to a batch of bars (sync signal)
+    MD_BAR_BATCH_UNSUBSCRIBE = "md_bar_batch_unsubscribe"  # Request to unsubscribe from a batch of bars (sync signal)
     # TODO: Add tick topics
 
     # Execution-related topics
