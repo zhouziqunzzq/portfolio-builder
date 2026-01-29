@@ -140,6 +140,9 @@ if __name__ == "__main__":
         if not symbols and not has_batch_symbols:
             raise SystemExit("--symbols is required when using the IEX feed")
 
+    batch_symbols_raw = [
+        s.strip().upper() for s in args.batch_symbols.split(",") if s.strip()
+    ]
     instrument_refs = tuple(InstrumentRef(sym) for sym in symbols)
     cfg = DirectFromBaseAggregatorConfig(source_name="alpaca", base_timeframe=BASE_TF)
     aggregator = DirectFromBaseAggregator(cfg)
@@ -158,11 +161,9 @@ if __name__ == "__main__":
 
         batch_tf = _parse_single_timeframe(args.batch_tf)
         if args.test_feed:
-            batch_symbols = ["FAKEPACA"]
+            batch_symbols = [TEST_FEED_SYMBOL]
         else:
-            batch_symbols = [
-                s.strip().upper() for s in args.batch_symbols.split(",") if s.strip()
-            ]
+            batch_symbols = batch_symbols_raw
             if not batch_symbols:
                 raise SystemExit(
                     "--batch-symbols is required when using batch subscription"
@@ -224,7 +225,9 @@ if __name__ == "__main__":
             secret_key=os.getenv("ALPACA_SECRET_KEY"),
             feed=DataFeed.IEX,
         )
-        for sym in symbols:
+        subscribe_symbols = set(symbols)
+        subscribe_symbols.update(batch_symbols_raw)
+        for sym in sorted(subscribe_symbols):
             wss_client.subscribe_bars(bar_data_handler, sym)
 
     wss_client.run()
