@@ -10,7 +10,6 @@ usage() {
     echo "  $0 {live_alpaca|live_publicdotcom|paper|all|all_live} {up|down|restart|ps} [args...]" >&2
     echo "" >&2
     echo "Examples:" >&2
-    echo "  ./manage_obs.sh up -d" >&2
     echo "  $0 live_alpaca up -d --remove-orphans" >&2
     echo "  $0 live_publicdotcom up -d" >&2
     echo "  $0 paper up -d --remove-orphans" >&2
