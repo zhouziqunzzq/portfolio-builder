@@ -34,6 +34,17 @@ groups:
       summary: "EML has failed rebalance request(s) (live_publicdotcom_roth)"
       description: "There is at least one failed rebalance request recorded in EML state for LIVE_PUBLICDOTCOM_ROTH (current value: {{ $value }}). Manual intervention may be required."
 
+  - alert: EMLFailedRebalanceRequests_live_publicdotcom_roth_wd
+    expr: eml_failed_rebalance_requests{deployment_environment="live_publicdotcom_roth_wd"} > 0
+    for: 5m
+    labels:
+      severity: page
+      service: eml
+      deployment_environment: live_publicdotcom_roth_wd
+    annotations:
+      summary: "EML has failed rebalance request(s) (live_publicdotcom_roth_wd)"
+      description: "There is at least one failed rebalance request recorded in EML state for LIVE_PUBLICDOTCOM_ROTH_WD (current value: {{ $value }}). Manual intervention may be required."
+
   - alert: EMLFailedRebalanceRequests_paper
     expr: eml_failed_rebalance_requests{deployment_environment="paper"} > 0
     for: 5m

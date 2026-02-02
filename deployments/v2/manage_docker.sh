@@ -7,7 +7,7 @@ deployments_dir="$script_dir"
 
 usage() {
     echo "Usage:" >&2
-    echo "  $0 {live_alpaca|live_publicdotcom|paper|all|all_live} {up|down|restart|ps} [args...]" >&2
+    echo "  $0 {live_alpaca|live_publicdotcom|live_publicdotcom_roth|live_publicdotcom_roth_wd|paper|all|all_live} {up|down|restart|ps} [args...]" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  $0 live_alpaca up -d --remove-orphans" >&2
@@ -54,6 +54,12 @@ set_env_vars() {
             env_example_file="$deployments_dir/.env.live_publicdotcom_roth.example"
             app_compose="$deployments_dir/docker-compose.live_publicdotcom_roth.yml"
             ;;
+        live_publicdotcom_roth_wd)
+            project="portfolio_builder_live_publicdotcom_roth_wd"
+            env_file="$deployments_dir/.env.live_publicdotcom_roth_wd"
+            env_example_file="$deployments_dir/.env.live_publicdotcom_roth_wd.example"
+            app_compose="$deployments_dir/docker-compose.live_publicdotcom_roth_wd.yml"
+            ;;
         paper)
             project="portfolio_builder_paper"
             env_file="$deployments_dir/.env.paper_alpaca"
@@ -69,10 +75,12 @@ set_env_vars() {
 
 # Support applying an action to all known environments (two flavors)
 if [[ "$env_name" == "all" || "$env_name" == "all_live" ]]; then
+    paper_envs=("paper")
+    live_envs=("live_alpaca" "live_publicdotcom" "live_publicdotcom_roth" "live_publicdotcom_roth_wd")
     if [[ "$env_name" == "all" ]]; then
-        envs=(live_alpaca live_publicdotcom live_publicdotcom_roth paper)
+        envs=("${paper_envs[@]}" "${live_envs[@]}")
     else
-        envs=(live_alpaca live_publicdotcom live_publicdotcom_roth)
+        envs=("${live_envs[@]}")
     fi
     if [[ "$action" == "up" ]]; then
         if ! docker network inspect pb_obs_net >/dev/null 2>&1; then
