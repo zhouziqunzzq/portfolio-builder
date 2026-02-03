@@ -42,6 +42,249 @@
       "fieldConfig": {
         "defaults": {
           "color": {
+            "mode": "thresholds"
+          },
+          "fieldMinMax": true,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "%"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "id": 31,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfbpin0zmz0n4b"
+          },
+          "editorMode": "code",
+          "expr": "100 *\r\n(\r\n  eml_account_portfolio_value{deployment_environment=\"$env\"}\r\n/\r\n  eml_account_portfolio_value{deployment_environment=\"$env\"} offset 1d\r\n  - 1\r\n)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Appox. Daily Return",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfbpin0zmz0n4b"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "fieldMinMax": true,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "%"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfbpin0zmz0n4b"
+          },
+          "editorMode": "code",
+          "expr": "100 *\r\n(\r\n  min by(symbol) (eml_position_market_value{deployment_environment=\"$env\"})\r\n/\r\n  min by(symbol) (eml_position_market_value{deployment_environment=\"$env\"} offset 1d)\r\n  - 1\r\n)",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Positions MV Daily Change Pct",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfbpin0zmz0n4b"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "fieldMinMax": true,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "bfbpin0zmz0n4b"
+          },
+          "editorMode": "code",
+          "expr": "eml_account_portfolio_value{deployment_environment=\"$env\"}\r\n-\r\neml_account_portfolio_value{deployment_environment=\"$env\"} offset 1d",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Appox. Daily PnL",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "bfbpin0zmz0n4b"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
             "mode": "palette-classic"
           },
           "custom": {
@@ -127,7 +370,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 1
+        "y": 9
       },
       "id": 17,
       "options": {
@@ -255,9 +498,9 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 1
+        "y": 9
       },
-      "id": 9,
+      "id": 33,
       "options": {
         "legend": {
           "calcs": [
@@ -296,7 +539,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 17
       },
       "id": 2,
       "panels": [],
@@ -334,7 +577,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 10
+        "y": 18
       },
       "id": 1,
       "options": {
@@ -402,7 +645,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 10
+        "y": 18
       },
       "id": 11,
       "options": {
@@ -474,7 +717,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 10
+        "y": 18
       },
       "id": 12,
       "options": {
@@ -546,7 +789,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 10
+        "y": 18
       },
       "id": 13,
       "options": {
@@ -618,7 +861,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 10
+        "y": 18
       },
       "id": 14,
       "options": {
@@ -720,7 +963,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 10
+        "y": 18
       },
       "id": 6,
       "options": {
@@ -818,7 +1061,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 14
+        "y": 22
       },
       "id": 29,
       "options": {
@@ -912,7 +1155,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 14
+        "y": 22
       },
       "id": 30,
       "options": {
@@ -951,7 +1194,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 30
       },
       "id": 3,
       "panels": [],
@@ -989,7 +1232,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 23
+        "y": 31
       },
       "id": 15,
       "options": {
@@ -1061,7 +1304,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 23
+        "y": 31
       },
       "id": 16,
       "options": {
@@ -1159,7 +1402,7 @@
         "h": 8,
         "w": 10,
         "x": 8,
-        "y": 23
+        "y": 31
       },
       "id": 18,
       "options": {
@@ -1331,7 +1574,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 35
       },
       "id": 7,
       "options": {
@@ -1429,7 +1672,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 39
       },
       "id": 27,
       "options": {
@@ -1523,7 +1766,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 31
+        "y": 39
       },
       "id": 28,
       "options": {
@@ -1562,7 +1805,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 47
       },
       "id": 4,
       "panels": [],
@@ -1600,7 +1843,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 40
+        "y": 48
       },
       "id": 5,
       "options": {
@@ -1668,7 +1911,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 40
+        "y": 48
       },
       "id": 10,
       "options": {
@@ -1770,7 +2013,7 @@
         "h": 4,
         "w": 10,
         "x": 8,
-        "y": 40
+        "y": 48
       },
       "id": 8,
       "options": {
@@ -1868,7 +2111,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "id": 24,
       "options": {
@@ -1962,7 +2205,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 52
       },
       "id": 25,
       "options": {
@@ -2060,7 +2303,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "id": 19,
       "options": {
@@ -2158,7 +2401,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 60
       },
       "id": 20,
       "options": {
@@ -2268,7 +2511,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "id": 21,
       "options": {
@@ -2362,7 +2605,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 60
+        "y": 68
       },
       "id": 23,
       "options": {
@@ -2450,5 +2693,5 @@
   "timezone": "browser",
   "title": "MultiSleeve V2",
   "uid": "ad9x6f4",
-  "version": 14
+  "version": 15
 }
