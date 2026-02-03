@@ -63,8 +63,9 @@ def test_sells_before_buys_and_min_order_size_filtering(monkeypatch):
     assert len(trading.submitted) == 2
     assert trading.submitted[0]["side"] == "sell"
     assert trading.submitted[0]["symbol"] == "AAA"
-    # Prefer notional sells when possible
-    assert trading.submitted[0]["notional"] is not None
+    # Full liquidation prefers qty sells when possible
+    assert trading.submitted[0]["notional"] is None
+    assert trading.submitted[0]["qty"] is not None
     assert trading.submitted[1]["side"] == "buy"
     assert trading.submitted[1]["symbol"] == "BBB"
 

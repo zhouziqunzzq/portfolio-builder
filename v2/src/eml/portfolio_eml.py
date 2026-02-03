@@ -745,6 +745,7 @@ class PortfolioEMLService(BaseEML):
             sells, buys, dropped_by_min_size = self._build_market_orders(
                 deltas=deltas,
                 positions_by_symbol=pos_by_symbol,
+                target_weights=target_weights,
                 min_order_size_notional=float(self.config.min_order_size_notional),
             )
 
@@ -1288,6 +1289,7 @@ class PortfolioEMLService(BaseEML):
         *,
         deltas: Mapping[str, Mapping[str, float]],
         positions_by_symbol: Mapping[str, PositionSnapshot],
+        target_weights: Mapping[str, float],
         min_order_size_notional: float,
         dollar_epsilon: float = 1e-6,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1303,6 +1305,7 @@ class PortfolioEMLService(BaseEML):
         dropped_by_min_size: List[Dict[str, Any]] = []
 
         min_abs = max(0.0, float(min_order_size_notional))
+        target_symbols = {cls._normalize_symbol(s) for s in dict(target_weights).keys()}
 
         for sym, info in dict(deltas).items():
             try:
@@ -1313,7 +1316,7 @@ class PortfolioEMLService(BaseEML):
                 continue
 
             if dv < 0:
-                # SELL: prefer notional if broker supports it, with qty fallback.
+                # SELL: prefer qty for full liquidations, otherwise notional with qty fallback.
                 if abs(dv) < min_abs:
                     dropped_by_min_size.append(
                         {
@@ -1328,6 +1331,8 @@ class PortfolioEMLService(BaseEML):
                 p = positions_by_symbol.get(sym)
                 if p is None:
                     continue
+
+                full_liquidation = sym not in target_symbols
 
                 # Cap notional sells to current position market value (best-effort).
                 desired_notional = float(abs(dv))
@@ -1346,6 +1351,23 @@ class PortfolioEMLService(BaseEML):
                             "desired_notional": desired_notional,
                             "min_order_size_notional": min_abs,
                             "reason": "below_min_order_size_notional_after_cap",
+                        }
+                    )
+                    continue
+
+                if full_liquidation:
+                    try:
+                        qty = float(p.qty or 0.0)
+                    except Exception:
+                        qty = 0.0
+                    if qty <= 0:
+                        continue
+                    sells.append(
+                        {
+                            "symbol": sym,
+                            "side": "sell",
+                            "notional": None,
+                            "qty_fallback": abs(qty),
                         }
                     )
                     continue
