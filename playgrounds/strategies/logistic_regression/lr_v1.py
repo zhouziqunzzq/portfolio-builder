@@ -21,7 +21,7 @@ from sklearn.preprocessing import StandardScaler
 # =============================
 # Config
 # =============================
-TICKER = "MU"
+TICKER = "QQQ"
 PERIOD = "60d"
 INTERVAL = "5m"
 TF_FAST = "5min"
@@ -31,15 +31,15 @@ RTH_START = "09:30"
 RTH_END = "16:00"
 TIMEZONE = "US/Eastern"
 
-K_HORIZON = 5
+K_HORIZON = 4
 TRAIN_DAYS = 45
 VALID_DAYS = 15
 
 COST_BPS = 2.0
 HURDLE_BPS = 2.0
 
-ENTER_THRESHOLD = 0.70
-REENTER_THRESHOLD = 0.65
+ENTER_THRESHOLD = 0.80
+REENTER_THRESHOLD = 0.78
 COOLDOWN_MINUTES = 15
 MAX_TRADES_PER_DAY = 4
 DAILY_LOSS_LIMIT_BPS = 50.0
@@ -151,6 +151,15 @@ def _zscore(series: pd.Series, window: int) -> pd.Series:
     return (series - mean) / std.replace(0, np.nan)
 
 
+def _interval_minutes(interval: str) -> int:
+    interval = interval.strip().lower()
+    if interval.endswith("min"):
+        return int(interval[:-3])
+    if interval.endswith("m"):
+        return int(interval[:-1])
+    raise ValueError(f"Unsupported interval format: {interval}")
+
+
 def _resample_features(df: pd.DataFrame, rule: str, prefix: str) -> pd.DataFrame:
     # Resample with right label/closed to ensure bar is complete at timestamp
     ohlcv = df.resample(rule, label="right", closed="right").agg(
@@ -206,6 +215,8 @@ def _daily_features(df: pd.DataFrame) -> pd.DataFrame:
         },
         index=daily.index,
     )
+    # Shift by one day to avoid using same-day information intraday.
+    feats = feats.shift(1)
     feats = feats.reindex(df.index, method="ffill")
     return feats
 
@@ -239,7 +250,8 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     features["atr_14"] = tr.rolling(14).mean()
     features["atr_14_pct"] = features["atr_14"] / df["close"]
 
-    features = features.join(_resample_features(df, TF_FAST, "tf_fast"))
+    if _interval_minutes(TF_FAST) != _interval_minutes(INTERVAL):
+        features = features.join(_resample_features(df, TF_FAST, "tf_fast"))
     features = features.join(_resample_features(df, TF_SLOW, "tf_slow"))
     features = features.join(_daily_features(df))
 
@@ -352,6 +364,8 @@ def backtest(
     for i in range(len(idx)):
         ts = idx[i]
         day = ts.normalize()
+        next_day = idx[i + 1].normalize() if i + 1 < len(idx) else None
+        is_last_bar = next_day is None or next_day != day
 
         if day not in daily_trade_count:
             daily_trade_count[day] = 0
@@ -372,12 +386,12 @@ def backtest(
             stop_hit = current_ret <= -(STOP_LOSS_BPS / 10000.0)
             take_hit = current_ret >= (TAKE_PROFIT_BPS / 10000.0)
 
-            if exit_due or stop_hit or take_hit:
-                exit_price = (
-                    price_df.loc[ts, "open"]
-                    if exit_due
-                    else price_df.loc[ts, "close"]
-                )
+            if exit_due or stop_hit or take_hit or is_last_bar:
+                # Force an end-of-session exit at the close to avoid overnights.
+                if exit_due and not is_last_bar and not stop_hit and not take_hit:
+                    exit_price = price_df.loc[ts, "open"]
+                else:
+                    exit_price = price_df.loc[ts, "close"]
                 net_ret = (exit_price - entry_price) / entry_price
                 net_ret -= cost_bps / 10000.0
 
@@ -388,7 +402,7 @@ def backtest(
                         "entry_price": entry_price,
                         "exit_price": exit_price,
                         "net_return": net_ret,
-                        "hold_minutes": bars_held,
+                        "hold_bars": bars_held,
                     }
                 )
 
@@ -412,7 +426,7 @@ def backtest(
             ENTER_THRESHOLD if daily_trade_count[day] == 0 else REENTER_THRESHOLD
         )
 
-        if p >= threshold:
+        if p >= threshold and idx[i + 1].normalize() == day:
             entry_idx = i + 1
             entry_time = idx[entry_idx]
             entry_price = price_df.loc[entry_time, "open"]
