@@ -1,70 +1,43 @@
 # Copilot / AI Agent Instructions — portfolio-builder
 
-Purpose: give an AI coding agent the minimal, actionable knowledge to be productive
-in this repository (where there are two active code lines: `v1/` and `v2/`).
+Purpose: help an AI agent be productive in this repo with two parallel code lines.
 
-- **Big picture**
-  - This repo implements a sector-rotating portfolio pipeline with two largely
-    separate codelines: `v1/` (production, imperative runners) and `v2/` (refactored,
-    vectorized, sleeve-based allocator). Do not mix imports across versions.
-  - Data flow: Universe CSV → MarketDataStore (parquet cache) → SignalEngine(s)
-    → Sleeves (trend/defensive/sideways) → MultiSleeveAllocator → PortfolioBacktester.
-  - Caching: price cache lives under `data/prices` (v2) or `data/ohlcv/1d` (v1).
+- Big picture: sector-rotating, momentum-driven portfolio pipeline with two separate codelines: `v1/` (imperative runners) and `v2/` (vectorized, sleeve-based allocator). Do not mix imports across versions.
+- Core data flow: Universe CSV → MarketDataStore (parquet cache) → SignalEngine(s) → Sleeves → MultiSleeveAllocator → PortfolioBacktester. v1 cache under `data/ohlcv/1d`, v2 cache under `v2/data/prices`.
+- Event-driven runtime (v2): IML (market data) → AT (auto trader) → EML (execution), wired by `v2/src/runtime_manager.py` and launched via `v2/run_app.py`.
 
-- **Key entrypoints & common commands** (examples you can run locally)
-  - Warm cache / live pipeline (v1): `python v1/run_live.py --update-prices` then
-    `--compute-signals` / `--compute-sector-weights` / `--rebalance` as needed.
-  - Backtest (v1): `python v1/run_backtest.py --backtest-start 2015-01-01 --backtest-end 2024-12-31`
-  - Backtest (v2, vectorized): `python v2/src/backtest_runner.py --start 2015-01-01 --end 2024-12-31 --sample-frequency monthly`
-  - Tests (v2): run `pytest v2/tests -q` from repo root (use virtualenv with dependencies).
+Key entrypoints and workflows
+- Activate the virtualenv before running any Python or tests: `source .venv/bin/activate` from repo root.
+- The repo expects the root `.venv` to be active; runners and tests assume its deps are installed.
+- v1 live steps: `python v1/run_live.py --update-prices` then `--compute-signals` / `--compute-sector-weights` / `--rebalance`.
+- v1 backtest: `python v1/run_backtest.py --backtest-start 2015-01-01 --backtest-end 2024-12-31`.
+- v2 backtest (vectorized): `python v2/run_backtest.py --start 2018-01-01 --end 2020-12-31 --sample-frequency monthly --local-only`.
+- v2 tests: `pytest v2/tests -q` (use `--local-only` or fixtures to avoid network).
 
-- **Project-specific conventions & patterns**
-  - Two parallel APIs: `v1/src/*` are self-contained modules; `v2/src/*` expects
-    `v2/src` on `sys.path` (runners insert the path). See `v2/src/backtest_runner.py`.
-  - Symbol normalization: universe CSV tickers must be uppercased and dots converted
-    to dashes (`BRK.B` → `BRK-B`) for `yfinance` compatibility. See README examples.
-  - Backtests treat weights as timestamped on execution day `t`; signals use data up
-    to `t-1` (lookahead avoidance). v2 has explicit `signal_delay_days` and
-    `sample_frequency` knobs in `v2/src/backtest_runner.py`.
-  - Precompute: v2 supports sleeve precompute to speed vectorized backtests; caller
-    can skip with `--skip-precompute`.
+Project-specific conventions
+- v2 runners insert `v2/src` on `sys.path` (see `v2/src/backtest_runner.py`); v1 modules are self-contained.
+- Tickers must be uppercased and `.` replaced with `-` for `yfinance` (e.g. `BRK.B` → `BRK-B`).
+- v2 backtests use `signal_delay_days` and `sample_frequency` to avoid lookahead; precompute can be skipped via `--skip-precompute`.
 
-- **Important files to inspect when changing behavior**
-  - High level runner + docs: [README.md](README.md)
-  - v1 production runners: [v1/run_live.py](v1/run_live.py), [v1/run_backtest.py](v1/run_backtest.py)
-  - v2 orchestrator: [v2/src/backtest_runner.py](v2/src/backtest_runner.py)
-  - Market/cache abstractions: `v1/src/market_data_store.py` and `v2/src/market_data_store.py`
-  - Allocator & sleeves (v2): [v2/src/allocator/multi_sleeve_allocator.py](v2/src/allocator/multi_sleeve_allocator.py) and `v2/src/sleeves`
-  - Backtester: [v2/src/portfolio_backtester.py](v2/src/portfolio_backtester.py)
+Common library (`src/algotrading/lib`)
+- Shared primitives used by v2 (and future v3) live workflows: eventing, runtime services, state persistence, types, and market-data utilities.
+- Tests for the shared lib live under root `tests/` (not `v2/tests`).
+- Eventing: `EventBus` fan-out with per-subscriber queues in [src/algotrading/lib/eventing/event_bus.py](src/algotrading/lib/eventing/event_bus.py); events are dataclasses inheriting `BaseEvent` with fixed `Topic` in `*.events` files (see [src/algotrading/lib/eventing/md_events.py](src/algotrading/lib/eventing/md_events.py) and [src/algotrading/lib/eventing/v2_events.py](src/algotrading/lib/eventing/v2_events.py)).
+- Services: derive from `BaseService` ([src/algotrading/lib/runtime/base_service.py](src/algotrading/lib/runtime/base_service.py)) to get the standard run loop, STOP handling, and threadpool helpers; override `subscription_topics`, `_run_loop()`, and `_handle_event()`.
+- State: persistent runtime state must implement `BaseState` ([src/algotrading/lib/state/base_state.py](src/algotrading/lib/state/base_state.py)); use `FileStateStore` for JSON persistence ([src/algotrading/lib/state/file_store.py](src/algotrading/lib/state/file_store.py)) and `BaseStateManager` for load/save/reset semantics ([src/algotrading/lib/state/manager.py](src/algotrading/lib/state/manager.py)).
+- Types/utilities: `InstrumentRef`, `Timeframe`, and `OHLCVBar` in [src/algotrading/lib/types](src/algotrading/lib/types) are the canonical market-data types; time bucketing helpers live in [src/algotrading/lib/market_data/bucketing.py](src/algotrading/lib/market_data/bucketing.py).
 
-- **Testing & debug tips**
-  - Unit tests in `v2/tests/` instantiate `UniverseManager`, `MarketDataStore`, and
-    `SignalEngine`. Use the `--local-only` or create minimal synthetic price matrices
-    to avoid external network calls in CI. See `v2/tests/*` for fixtures.
-  - To debug data mismatches, compare v1 vs v2 with `compare.py` which instantiates
-    both versions' `MarketDataStore` and `UniverseManager`.
+Where to look when changing behavior
+- Runners/docs: [README.md](README.md), [v1/README.md](v1/README.md), [v2/README.md](v2/README.md).
+- v1 pipeline: [v1/src/market_data_store.py](v1/src/market_data_store.py), [v1/src/signal_engine.py](v1/src/signal_engine.py), [v1/src/portfolio_backtester.py](v1/src/portfolio_backtester.py).
+- v2 pipeline: [v2/src/backtest_runner.py](v2/src/backtest_runner.py), [v2/src/allocator/multi_sleeve_allocator.py](v2/src/allocator/multi_sleeve_allocator.py), [v2/src/portfolio_backtester.py](v2/src/portfolio_backtester.py).
+- Shared libs for event-driven work: [src/algotrading/lib/eventing](src/algotrading/lib/eventing) and [src/algotrading/lib/alpha](src/algotrading/lib/alpha).
 
-- **Integration points / external dependencies**
-  - Data fetch: `yfinance` (or local parquet); ensure `pyarrow` or `fastparquet` installed.
-  - Universe CSVs live under `v1/data/` or `data/` (`v2` expects `data/sp500_membership.csv`).
-  - Config: `v1/config/strategy.yml` and `v2/config/strategy.yml` control output roots.
+Integration points and external deps
+- Market data fetch uses `yfinance` with parquet caches (`pyarrow`/`fastparquet`).
+- Config files: `v1/config/strategy.yml`, `v2/configs/app.yml` control universes and outputs.
+- Observability: `docker compose -f v2/docker-compose.obs.yml up -d` starts Grafana/Prometheus/otelcol.
 
-- **What AI agents should not change without confirmation**
-  - Do not refactor across `v1`/`v2` boundaries (mixing imports). Changes that alter
-    the structure of the price cache or the `strategy.yml` layout require human review.
-
-- **Quick examples (copyable)**
-  - Install environment:
-
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -U pip
-    pip install pandas yfinance pyarrow matplotlib pytest
-
-  - Run a quick v2 backtest (vectorized):
-
-    python v2/src/backtest_runner.py --start 2018-01-01 --end 2020-12-31 --sample-frequency monthly --local-only
-
-If anything is missing or you want more detail for a particular area (e.g. sleeve
-implementation patterns, friction-control rules, or config fields in `strategy.yml`),
-tell me which part and I'll expand the instructions.
+Do not change without confirmation
+- Cross-imports between `v1/` and `v2/`.
+- Cache layout or YAML schema under `v1/config` or `v2/configs`.
