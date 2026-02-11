@@ -190,6 +190,12 @@ if __name__ == "__main__":
             )
 
     async def bar_data_handler(bar: Bar) -> None:
+        # Print raw bar data
+        print(
+            f"[{datetime.now(timezone.utc).isoformat()}] Received bar: "
+            f"{bar.symbol} {bar.timestamp} O:{bar.open} H:{bar.high} L:{bar.low} C:{bar.close} V:{bar.volume}",
+            flush=True,
+        )
         ohlcv = _bar_to_ohlcv(bar)
         ref = InstrumentRef(bar.symbol)
         key = BarKey(ref=ref, tf=BASE_TF, start_ts=ohlcv.start_ts)
