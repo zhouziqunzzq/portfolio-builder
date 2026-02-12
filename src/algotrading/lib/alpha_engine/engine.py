@@ -80,6 +80,11 @@ class AlphaEngine(BaseAlphaEngine):
                     alpha_type=alpha_type,
                 )
 
+    def reset(self) -> None:
+        for group in self._groups.values():
+            for alpha in group.values():
+                alpha.reset()
+
     def _get_alpha(self, key: AlphaKey) -> Optional[BaseAlpha]:
         group = self._groups.get(_AlphaGroupKey(ref=key.ref, tf=key.tf))
         if not group:

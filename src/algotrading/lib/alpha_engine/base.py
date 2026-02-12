@@ -47,3 +47,7 @@ class BaseAlphaEngine(ABC):
     @abstractmethod
     def keys(self) -> Iterable[AlphaKey]:
         """Return all registered alpha keys."""
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset all registered alpha instances."""

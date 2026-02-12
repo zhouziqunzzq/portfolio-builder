@@ -2,10 +2,11 @@ import argparse
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.live import StockDataStream
@@ -16,6 +17,7 @@ from algotrading.lib.alpha.macd import MACDAlpha, MACDAlphaConfig, MACDAlphaOutp
 from algotrading.lib.alpha_engine.engine import AlphaEngine
 from algotrading.lib.eventing.md_events import (
     BaseBarUpserted,
+    BarClosed,
     BarCompleted,
     MDBarSubscribeRequest,
 )
@@ -37,6 +39,9 @@ TEST_FEED_URL = "wss://stream.data.alpaca.markets/v2/test"
 TEST_FEED_SYMBOL = "FAKEPACA"
 
 BASE_TF = Timeframe(1, TimeframeUnit.MINUTE)
+ET_TZ = ZoneInfo("America/New_York")
+RTH_START = time(9, 30)
+RTH_END = time(16, 0)
 
 
 @dataclass
@@ -125,6 +130,17 @@ def _build_intent(
     )
 
 
+def _to_et(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(ET_TZ)
+
+
+def _is_rth(ts: datetime) -> bool:
+    local = _to_et(ts)
+    return RTH_START <= local.time() < RTH_END
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Alpaca MACD strategy playground")
     parser.add_argument(
@@ -180,6 +196,18 @@ if __name__ == "__main__":
         type=float,
         default=0.01,
         help="Stop-loss percent (e.g. 0.01 for 1%%)",
+    )
+    parser.add_argument(
+        "--time-stop-buffer-mins",
+        type=int,
+        default=2,
+        help="Minutes before close to exit all positions",
+    )
+    parser.add_argument(
+        "--gc-every",
+        type=int,
+        default=30,
+        help="Run aggregator GC every N ticks",
     )
     parser.add_argument(
         "--notional",
@@ -246,11 +274,12 @@ if __name__ == "__main__":
             signal_window=args.macd_signal_window,
         ),
     )
-
     prev_macd: dict[str, Optional[float]] = {"value": None}
+    session_state = {"date": None, "time_stop_triggered": False}
+    tick_state = {"count": 0}
 
     async def bar_data_handler(bar: Bar) -> None:
-        # Print raw bar data
+        # Raw bar logging
         print(
             f"[{datetime.now(timezone.utc).isoformat()}] Received bar: "
             f"{bar.symbol} {bar.timestamp} O:{bar.open} H:{bar.high} L:{bar.low} C:{bar.close} V:{bar.volume}",
@@ -258,6 +287,54 @@ if __name__ == "__main__":
         )
 
         ohlcv = _bar_to_ohlcv(bar)
+        bar_ts = ohlcv.start_ts
+        # Session window gating and resets
+        if not _is_rth(bar_ts):
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] Bar outside RTH, skipping",
+                flush=True,
+            )
+            return
+
+        session_date = _to_et(bar_ts).date()
+        if session_state["date"] != session_date:
+            session_state["date"] = session_date
+            session_state["time_stop_triggered"] = False
+            alpha_engine.reset()
+            prev_macd["value"] = None
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] "
+                f"New session detected ({session_date}); MACD reset",
+                flush=True,
+            )
+
+        stop_time = (
+            datetime.combine(session_date, RTH_END, ET_TZ)
+            - timedelta(minutes=int(args.time_stop_buffer_mins))
+        ).time()
+        if (
+            not session_state["time_stop_triggered"]
+            and _to_et(bar_ts).time() >= stop_time
+        ):
+            # Time-stop exit
+            _sync_position(api, symbol, state)
+            if state.in_position and state.qty:
+                intent = _build_intent(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    qty=state.qty,
+                    notional=None,
+                )
+                api.submit_order(intent)
+                print(
+                    f"[{datetime.now(timezone.utc).isoformat()}] "
+                    f"Time stop exit, selling {symbol}",
+                    flush=True,
+                )
+                _sync_position(api, symbol, state)
+            session_state["time_stop_triggered"] = True
+            return
+        # Build base event + derive aggregated bars
         key = BarKey(ref=ref, tf=BASE_TF, start_ts=ohlcv.start_ts)
         base_ev = BaseBarUpserted(
             ts=datetime.now(timezone.utc).timestamp(),
@@ -273,7 +350,7 @@ if __name__ == "__main__":
             if not isinstance(ev, BarCompleted):
                 continue
 
-            # Print derived bar completion event
+            # Bar completion -> alpha update
             print(
                 f"[{datetime.now(timezone.utc).isoformat()}] Derived event: {ev}",
                 flush=True,
@@ -297,11 +374,21 @@ if __name__ == "__main__":
                 prev_macd["value"] = macd_value
                 return
 
+            # Position sync + risk checks
             _sync_position(api, symbol, state)
             price = float(ev.bar.c)
 
             if state.in_position and state.entry_price:
                 pnl = (price - state.entry_price) / state.entry_price
+                qty_float = float(state.qty) if state.qty is not None else 0.0
+                unrealized = (price - state.entry_price) * qty_float
+                print(
+                    f"[{datetime.now(timezone.utc).isoformat()}] "
+                    f"Position qty={state.qty} pnl={pnl:.4f} "
+                    f"unrlzd=${unrealized:.2f} price={price:.2f} "
+                    f"entry={state.entry_price:.2f}",
+                    flush=True,
+                )
                 if pnl >= tp_pct:
                     intent = _build_intent(
                         symbol=symbol,
@@ -331,6 +418,7 @@ if __name__ == "__main__":
                     )
                     _sync_position(api, symbol, state)
 
+            # Signal-based entries/exits
             if not state.in_position and prev_macd["value"] <= 0 and macd_value > 0:
                 intent = _build_intent(
                     symbol=symbol,
@@ -362,6 +450,22 @@ if __name__ == "__main__":
                 _sync_position(api, symbol, state)
 
             prev_macd["value"] = macd_value
+
+        # Aggregator GC
+        tick_state["count"] += 1
+        if args.gc_every > 0 and tick_state["count"] % args.gc_every == 0:
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] Running aggregator GC",
+                flush=True,
+            )
+            gc_events = aggregator.run_gc(now=datetime.now(timezone.utc))
+            gc_closed = [ev for ev in gc_events if isinstance(ev, BarClosed)]
+            if gc_closed:
+                print(
+                    f"[{datetime.now(timezone.utc).isoformat()}] "
+                    f"GC closed {len(gc_closed)} bars",
+                    flush=True,
+                )
 
     if args.test_feed:
         wss_client = StockDataStream(
