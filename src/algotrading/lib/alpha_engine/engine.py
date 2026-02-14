@@ -56,7 +56,8 @@ class AlphaEngine(BaseAlphaEngine):
             return {}
 
         outputs: Dict[AlphaKey, BaseAlphaOutput] = {}
-        alpha_input = MarketDataAlphaInput(event=event)
+        ts = event.key.start_ts
+        alpha_input = MarketDataAlphaInput(event=event, ts=ts)
         for alpha_type, alpha in group.items():
             outputs[
                 AlphaKey(ref=group_key.ref, tf=group_key.tf, alpha_type=alpha_type)

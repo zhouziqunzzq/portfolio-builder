@@ -130,3 +130,21 @@ def test_alpha_engine_reset_clears_outputs():
     engine.reset()
     assert engine.get(key) is None
     assert engine.ready(key) is False
+
+
+def test_alpha_engine_propagates_timestamps():
+    engine = AlphaEngine()
+    ref = InstrumentRef("AAPL")
+    tf = Timeframe(1, TimeframeUnit.MINUTE)
+    engine.subscribe(
+        ref=ref,
+        tf=tf,
+        alpha_type=SMAAlpha,
+        config=SMAAlphaConfig(ref=ref, tf=tf, window=2),
+    )
+
+    t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
+    outputs = engine.update(_make_bar_event(ref, tf, t0, 10.0))
+    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha)
+    assert outputs[key].updated_ts == t0
+    assert engine.get(key).updated_ts == t0

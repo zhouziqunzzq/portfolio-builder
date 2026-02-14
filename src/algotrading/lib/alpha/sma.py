@@ -42,11 +42,23 @@ class SMAAlpha(BaseAlpha[MarketDataAlphaInput, ScalarAlphaOutput, float]):
 
         if not self.ready():
             return self._set_last_output(
-                ScalarAlphaOutput(value=float("nan"), is_ready=False)
+                ScalarAlphaOutput(
+                    updated_ts=alpha_input.ts,
+                    value=float("nan"),
+                    is_ready=False,
+                ),
+                updated_ts=alpha_input.ts,
             )
 
         sma_value = sum(self.buffer) / self.config.window
-        return self._set_last_output(ScalarAlphaOutput(value=sma_value, is_ready=True))
+        return self._set_last_output(
+            ScalarAlphaOutput(
+                updated_ts=alpha_input.ts,
+                value=sma_value,
+                is_ready=True,
+            ),
+            updated_ts=alpha_input.ts,
+        )
 
     def ready(self) -> bool:
         """True once the SMA window is fully populated."""

@@ -28,6 +28,11 @@ def _make_bar_event(
     return BarCompleted(ts=start_ts.timestamp(), key=key, bar=bar)
 
 
+def _to_alpha_input(event: BarCompleted) -> MarketDataAlphaInput:
+    ts = event.key.start_ts
+    return MarketDataAlphaInput(event=event, ts=ts)
+
+
 def test_macd_alpha_warmup_and_ready():
     ref = InstrumentRef("AAPL")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
@@ -43,38 +48,38 @@ def test_macd_alpha_warmup_and_ready():
     )
 
     t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
-    out1 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t0, 10.0)))
+    out1 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t0, 10.0)))
     assert alpha.ready() is False
     assert out1.is_ready is False
     assert math.isnan(out1.macd)
     assert math.isnan(out1.signal)
 
     t1 = t0 + timedelta(minutes=1)
-    out2 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t1, 11.0)))
+    out2 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t1, 11.0)))
     assert alpha.ready() is False
     assert out2.is_ready is False
 
     t2 = t1 + timedelta(minutes=1)
-    out3 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t2, 12.0)))
+    out3 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t2, 12.0)))
     assert alpha.ready() is False
     assert out3.is_ready is False
 
     t3 = t2 + timedelta(minutes=1)
-    out4 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t3, 13.0)))
+    out4 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t3, 13.0)))
     assert alpha.ready() is False
     assert out4.is_ready is False
     assert not math.isnan(out4.macd)
     assert math.isnan(out4.signal)
 
     t4 = t3 + timedelta(minutes=1)
-    out5 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t4, 14.0)))
+    out5 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t4, 14.0)))
     assert alpha.ready() is False
     assert out5.is_ready is False
     assert not math.isnan(out5.macd)
     assert math.isnan(out5.signal)
 
     t5 = t4 + timedelta(minutes=1)
-    out6 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t5, 15.0)))
+    out6 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t5, 15.0)))
     assert alpha.ready() is True
     assert out6.is_ready is True
     assert not math.isnan(out6.macd)
@@ -96,16 +101,16 @@ def test_macd_alpha_uses_sma_signal_when_configured():
     )
 
     t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
-    alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t0, 10.0)))
+    alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t0, 10.0)))
     t1 = t0 + timedelta(minutes=1)
-    alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t1, 12.0)))
+    alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t1, 12.0)))
     t2 = t1 + timedelta(minutes=1)
-    out = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t2, 14.0)))
+    out = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t2, 14.0)))
     assert out.is_ready is False
     assert math.isnan(out.signal)
 
     t3 = t2 + timedelta(minutes=1)
-    out2 = alpha.update(MarketDataAlphaInput(event=_make_bar_event(ref, tf, t3, 16.0)))
+    out2 = alpha.update(_to_alpha_input(_make_bar_event(ref, tf, t3, 16.0)))
     assert out2.is_ready is True
     assert not math.isnan(out2.signal)
 
@@ -120,7 +125,7 @@ def test_macd_alpha_rejects_mismatched_event():
     event = _make_bar_event(other_ref, tf, t0, 10.0)
 
     with pytest.raises(ValueError, match="ref/tf"):
-        alpha.update(MarketDataAlphaInput(event=event))
+        alpha.update(MarketDataAlphaInput(event=event, ts=event.key.start_ts))
 
 
 def test_macd_alpha_rejects_unsupported_event_type():
@@ -142,4 +147,4 @@ def test_macd_alpha_rejects_unsupported_event_type():
     event = BarUpdated(ts=t0.timestamp(), key=key, bar=bar, prev=None)
 
     with pytest.raises(TypeError, match="Unsupported market data event"):
-        alpha.update(MarketDataAlphaInput(event=event))
+        alpha.update(MarketDataAlphaInput(event=event, ts=event.key.start_ts))

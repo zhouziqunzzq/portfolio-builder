@@ -93,12 +93,14 @@ class MACDAlpha(BaseAlpha[MarketDataAlphaInput, MACDAlphaOutput, float]):
         if not (self._fast_alpha.ready() and self._slow_alpha.ready()):
             return self._set_last_output(
                 MACDAlphaOutput(
+                    updated_ts=alpha_input.ts,
                     macd=float("nan"),
                     signal=float("nan"),
                     fast=fast_out.value,
                     slow=slow_out.value,
                     is_ready=False,
-                )
+                ),
+                updated_ts=alpha_input.ts,
             )
 
         macd_value = fast_out.value - slow_out.value
@@ -106,21 +108,25 @@ class MACDAlpha(BaseAlpha[MarketDataAlphaInput, MACDAlphaOutput, float]):
         if signal_value is None:
             return self._set_last_output(
                 MACDAlphaOutput(
+                    updated_ts=alpha_input.ts,
                     macd=macd_value,
                     signal=float("nan"),
                     fast=fast_out.value,
                     slow=slow_out.value,
                     is_ready=False,
-                )
+                ),
+                updated_ts=alpha_input.ts,
             )
         return self._set_last_output(
             MACDAlphaOutput(
+                updated_ts=alpha_input.ts,
                 macd=macd_value,
                 signal=signal_value,
                 fast=fast_out.value,
                 slow=slow_out.value,
                 is_ready=True,
-            )
+            ),
+            updated_ts=alpha_input.ts,
         )
 
     def ready(self) -> bool:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from collections import deque
+from datetime import datetime
 from typing import Deque, Generic, Optional, TypeVar
 
 from algotrading.lib.eventing.md_events import (
@@ -39,7 +40,7 @@ class SingleInstrumentAlphaConfig(BaseAlphaConfig):
 class BaseAlphaInput(ABC):
     """Marker base class for alpha inputs."""
 
-    pass
+    ts: datetime
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class MarketDataAlphaInput(BaseAlphaInput):
 class BaseAlphaOutput(ABC):
     """Marker base class for alpha outputs."""
 
-    pass
+    updated_ts: datetime
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ class BaseAlpha(ABC, Generic[InputT, OutputT, BufferT]):
             deque(maxlen=buffer_size) if buffer_size is not None else deque()
         )
         self._last_output: Optional[OutputT] = None
+        self._last_updated_ts: Optional[datetime] = None
 
     @property
     def buffer(self) -> Deque[BufferT]:
@@ -90,11 +92,18 @@ class BaseAlpha(ABC, Generic[InputT, OutputT, BufferT]):
 
         return self._last_output
 
+    @property
+    def last_updated_ts(self) -> Optional[datetime]:
+        """Return the last update timestamp, if any."""
+
+        return self._last_updated_ts
+
     def _append_buffer(self, value: BufferT) -> None:
         self._buffer.append(value)
 
-    def _set_last_output(self, output: OutputT) -> OutputT:
+    def _set_last_output(self, output: OutputT, *, updated_ts: datetime) -> OutputT:
         self._last_output = output
+        self._last_updated_ts = updated_ts
         return output
 
     def reset(self) -> None:
@@ -102,6 +111,7 @@ class BaseAlpha(ABC, Generic[InputT, OutputT, BufferT]):
 
         self._buffer.clear()
         self._last_output = None
+        self._last_updated_ts = None
 
     @abstractmethod
     def ready(self) -> bool:

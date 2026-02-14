@@ -46,7 +46,12 @@ class EMAAlpha(BaseAlpha[MarketDataAlphaInput, ScalarAlphaOutput, float]):
 
         if not self.ready():
             return self._set_last_output(
-                ScalarAlphaOutput(value=float("nan"), is_ready=False)
+                ScalarAlphaOutput(
+                    updated_ts=alpha_input.ts,
+                    value=float("nan"),
+                    is_ready=False,
+                ),
+                updated_ts=alpha_input.ts,
             )
 
         if self._ema is None:
@@ -54,7 +59,14 @@ class EMAAlpha(BaseAlpha[MarketDataAlphaInput, ScalarAlphaOutput, float]):
         else:
             self._ema = self._alpha * price + (1.0 - self._alpha) * self._ema
 
-        return self._set_last_output(ScalarAlphaOutput(value=self._ema, is_ready=True))
+        return self._set_last_output(
+            ScalarAlphaOutput(
+                updated_ts=alpha_input.ts,
+                value=self._ema,
+                is_ready=True,
+            ),
+            updated_ts=alpha_input.ts,
+        )
 
     def ready(self) -> bool:
         """True once the EMA window is fully populated."""
