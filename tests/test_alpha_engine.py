@@ -48,24 +48,26 @@ def test_alpha_engine_routes_by_group():
     ref_a = InstrumentRef("AAPL")
     ref_b = InstrumentRef("MSFT")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg_a = SMAAlphaConfig(ref=ref_a, tf=tf, window=2)
+    cfg_b = SMAAlphaConfig(ref=ref_b, tf=tf, window=2)
 
     engine.subscribe(
         ref=ref_a,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref_a, tf=tf, window=2),
+        config=cfg_a,
     )
     engine.subscribe(
         ref=ref_b,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref_b, tf=tf, window=2),
+        config=cfg_b,
     )
 
     t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
     outputs = engine.update(_make_bar_event(ref_a, tf, t0, 10.0))
     assert len(outputs) == 1
-    key = AlphaKey(ref=ref_a, tf=tf, alpha_type=SMAAlpha)
+    key = AlphaKey(ref=ref_a, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_a.id())
     assert key in outputs
 
 
@@ -73,14 +75,15 @@ def test_alpha_engine_ready_and_get():
     engine = AlphaEngine()
     ref = InstrumentRef("AAPL")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
     engine.subscribe(
         ref=ref,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref, tf=tf, window=2),
+        config=cfg,
     )
 
-    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha)
+    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg.id())
     assert engine.ready(key) is False
     assert engine.get(key) is None
 
@@ -100,29 +103,31 @@ def test_alpha_engine_keys():
     engine = AlphaEngine()
     ref = InstrumentRef("AAPL")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
     engine.subscribe(
         ref=ref,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref, tf=tf, window=2),
+        config=cfg,
     )
 
     keys = list(engine.keys())
-    assert keys == [AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha)]
+    assert keys == [AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg.id())]
 
 
 def test_alpha_engine_reset_clears_outputs():
     engine = AlphaEngine()
     ref = InstrumentRef("AAPL")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
     engine.subscribe(
         ref=ref,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref, tf=tf, window=2),
+        config=cfg,
     )
 
-    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha)
+    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg.id())
     t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
     engine.update(_make_bar_event(ref, tf, t0, 10.0))
     assert engine.get(key) is not None
@@ -136,15 +141,34 @@ def test_alpha_engine_propagates_timestamps():
     engine = AlphaEngine()
     ref = InstrumentRef("AAPL")
     tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
     engine.subscribe(
         ref=ref,
         tf=tf,
         alpha_type=SMAAlpha,
-        config=SMAAlphaConfig(ref=ref, tf=tf, window=2),
+        config=cfg,
     )
 
     t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
     outputs = engine.update(_make_bar_event(ref, tf, t0, 10.0))
-    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha)
+    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg.id())
     assert outputs[key].updated_ts == t0
     assert engine.get(key).updated_ts == t0
+
+
+def test_alpha_engine_supports_multiple_configs_same_type():
+    engine = AlphaEngine()
+    ref = InstrumentRef("AAPL")
+    tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg_fast = SMAAlphaConfig(ref=ref, tf=tf, window=2)
+    cfg_slow = SMAAlphaConfig(ref=ref, tf=tf, window=5)
+
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg_fast)
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg_slow)
+
+    t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
+    outputs = engine.update(_make_bar_event(ref, tf, t0, 10.0))
+    key_fast = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_fast.id())
+    key_slow = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_slow.id())
+    assert key_fast in outputs
+    assert key_slow in outputs

@@ -17,6 +17,7 @@ class AlphaKey:
     ref: InstrumentRef
     tf: Timeframe
     alpha_type: Type[BaseAlpha]
+    alpha_id: str
 
 
 class BaseAlphaEngine(ABC):

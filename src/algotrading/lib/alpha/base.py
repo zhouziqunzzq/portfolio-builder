@@ -27,6 +27,10 @@ class BaseAlphaConfig(ABC):
     kind: str
     # TODO: add more fields
 
+    @abstractmethod
+    def id(self) -> str:
+        """Return a stable identifier for this alpha config."""
+
 
 @dataclass(frozen=True)
 class SingleInstrumentAlphaConfig(BaseAlphaConfig):
@@ -34,6 +38,9 @@ class SingleInstrumentAlphaConfig(BaseAlphaConfig):
 
     ref: InstrumentRef
     tf: Timeframe
+
+    def id(self) -> str:
+        return f"{self.kind}_{self.ref.symbol}_{self.tf}"
 
 
 @dataclass(frozen=True)

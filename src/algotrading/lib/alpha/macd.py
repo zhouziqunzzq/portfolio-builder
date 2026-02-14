@@ -28,6 +28,12 @@ class MACDAlphaConfig(SingleInstrumentAlphaConfig):
     slow_window: int = 26
     signal_window: int = 9
 
+    def id(self) -> str:
+        return (
+            f"{super().id()}_ma={self.ma_type}_fast={self.fast_window}_"
+            f"slow={self.slow_window}_signal={self.signal_window}"
+        )
+
 
 @dataclass(frozen=True)
 class MACDAlphaOutput(BaseAlphaOutput):

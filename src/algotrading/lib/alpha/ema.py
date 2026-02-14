@@ -20,6 +20,9 @@ class EMAAlphaConfig(SingleInstrumentAlphaConfig):
     kind: str = field(default="ema", init=False)
     window: int = 20
 
+    def id(self) -> str:
+        return f"{super().id()}_window={self.window}"
+
 
 class EMAAlpha(BaseAlpha[MarketDataAlphaInput, ScalarAlphaOutput, float]):
     """Event-driven EMA alpha over bar close prices."""
