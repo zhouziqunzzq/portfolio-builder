@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Type
+from typing import Dict, Iterable, Mapping, Optional, Type
 
 from algotrading.lib.alpha.base import BaseAlpha, BaseAlphaConfig, BaseAlphaOutput
 from algotrading.lib.alpha.base import MarketDataEvent
@@ -18,6 +18,19 @@ class AlphaKey:
     tf: Timeframe
     alpha_type: Type[BaseAlpha]
     alpha_id: str
+
+
+@dataclass(frozen=True)
+class AlphaView:
+    """Read-only view of latest outputs for a set of alphas."""
+
+    outputs: Mapping[AlphaKey, Optional[BaseAlphaOutput]]
+
+    def get(self, key: AlphaKey) -> Optional[BaseAlphaOutput]:
+        return self.outputs.get(key)
+
+    def keys(self) -> Iterable[AlphaKey]:
+        return self.outputs.keys()
 
 
 class BaseAlphaEngine(ABC):
@@ -52,3 +65,7 @@ class BaseAlphaEngine(ABC):
     @abstractmethod
     def reset(self) -> None:
         """Reset all registered alpha instances."""
+
+    @abstractmethod
+    def get_view(self, keys: Iterable[AlphaKey]) -> AlphaView:
+        """Return a read-only view of the latest outputs for requested keys."""

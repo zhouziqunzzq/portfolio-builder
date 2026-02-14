@@ -14,7 +14,7 @@ from algotrading.lib.alpha.base import (
 from algotrading.lib.types.instruments import InstrumentRef
 from algotrading.lib.types.market_data import Timeframe
 
-from .base import AlphaKey, BaseAlphaEngine
+from .base import AlphaKey, AlphaView, BaseAlphaEngine
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,12 @@ class AlphaEngine(BaseAlphaEngine):
         for group in self._groups.values():
             for alpha in group.values():
                 alpha.reset()
+
+    def get_view(self, keys: Iterable[AlphaKey]) -> AlphaView:
+        outputs: Dict[AlphaKey, Optional[BaseAlphaOutput]] = {}
+        for key in keys:
+            outputs[key] = self.get(key)
+        return AlphaView(outputs=outputs)
 
     def _get_alpha(self, key: AlphaKey) -> Optional[BaseAlpha]:
         group = self._groups.get(_AlphaGroupKey(ref=key.ref, tf=key.tf))

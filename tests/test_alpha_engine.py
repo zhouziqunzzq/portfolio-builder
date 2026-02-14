@@ -172,3 +172,64 @@ def test_alpha_engine_supports_multiple_configs_same_type():
     key_slow = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_slow.id())
     assert key_fast in outputs
     assert key_slow in outputs
+
+
+def test_alpha_engine_get_view():
+    engine = AlphaEngine()
+    ref = InstrumentRef("AAPL")
+    tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg)
+
+    key = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg.id())
+    view = engine.get_view({key})
+    assert list(view.keys()) == [key]
+    assert view.get(key) is None
+
+    t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
+    engine.update(_make_bar_event(ref, tf, t0, 10.0))
+    view = engine.get_view({key})
+    assert view.get(key) is not None
+
+
+def test_alpha_engine_get_view_multiple_keys():
+    engine = AlphaEngine()
+    ref = InstrumentRef("AAPL")
+    tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg_fast = SMAAlphaConfig(ref=ref, tf=tf, window=2)
+    cfg_slow = SMAAlphaConfig(ref=ref, tf=tf, window=5)
+
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg_fast)
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg_slow)
+
+    key_fast = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_fast.id())
+    key_slow = AlphaKey(ref=ref, tf=tf, alpha_type=SMAAlpha, alpha_id=cfg_slow.id())
+
+    view = engine.get_view({key_fast, key_slow})
+    assert set(view.keys()) == {key_fast, key_slow}
+    assert view.get(key_fast) is None
+    assert view.get(key_slow) is None
+
+    t0 = datetime(2024, 1, 1, 9, 30, tzinfo=timezone.utc)
+    engine.update(_make_bar_event(ref, tf, t0, 10.0))
+    view = engine.get_view({key_fast, key_slow})
+    assert view.get(key_fast) is not None
+    assert view.get(key_slow) is not None
+
+
+def test_alpha_engine_get_view_missing_key_returns_none():
+    engine = AlphaEngine()
+    ref = InstrumentRef("AAPL")
+    tf = Timeframe(1, TimeframeUnit.MINUTE)
+    cfg = SMAAlphaConfig(ref=ref, tf=tf, window=2)
+    engine.subscribe(ref=ref, tf=tf, alpha_type=SMAAlpha, config=cfg)
+
+    missing = AlphaKey(
+        ref=ref,
+        tf=tf,
+        alpha_type=SMAAlpha,
+        alpha_id="missing_id",
+    )
+
+    view = engine.get_view({missing})
+    assert view.get(missing) is None
