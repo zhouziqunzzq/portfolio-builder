@@ -1,49 +1,25 @@
 groups:
 - name: portfolio_builder_eml
   rules:
-  - alert: EMLFailedRebalanceRequests_live_alpaca
-    expr: eml_failed_rebalance_requests{deployment_environment="live_alpaca"} > 0
+  - alert: EMLFailedRebalanceRequests_live
+    expr: eml_failed_rebalance_requests{deployment_environment=~"live_alpaca|live_publicdotcom|live_publicdotcom_roth|live_publicdotcom_roth_wd"} > 0
     for: 5m
     labels:
       severity: page
       service: eml
-      deployment_environment: live_alpaca
     annotations:
-      summary: "EML has failed rebalance request(s) (live_alpaca)"
-      description: "There is at least one failed rebalance request recorded in EML state for LIVE_ALPACA (current value: {{ $value }}). Manual intervention may be required."
+      summary: "EML has failed rebalance request(s) ({{ $labels.deployment_environment }})"
+      description: "There is at least one failed rebalance request recorded in EML state for {{ $labels.deployment_environment }} (current value: {{ $value }}). Manual intervention may be required."
 
-  - alert: EMLFailedRebalanceRequests_live_publicdotcom
-    expr: eml_failed_rebalance_requests{deployment_environment="live_publicdotcom"} > 0
-    for: 5m
+  - alert: IMLMarketDataFreshnessStale_live
+    expr: histogram_quantile(0.99, sum(rate(iml_md_freshness_seconds_bucket{deployment_environment=~"live_alpaca|live_publicdotcom|live_publicdotcom_roth|live_publicdotcom_roth_wd"}[5m])) by (le, deployment_environment)) > 60 * 60 * 24 * 7
+    for: 15m
     labels:
-      severity: page
-      service: eml
-      deployment_environment: live_publicdotcom
+      severity: warning
+      service: iml
     annotations:
-      summary: "EML has failed rebalance request(s) (live_publicdotcom)"
-      description: "There is at least one failed rebalance request recorded in EML state for LIVE_PUBLICDOTCOM (current value: {{ $value }}). Manual intervention may be required."
-
-  - alert: EMLFailedRebalanceRequests_live_publicdotcom_roth
-    expr: eml_failed_rebalance_requests{deployment_environment="live_publicdotcom_roth"} > 0
-    for: 5m
-    labels:
-      severity: page
-      service: eml
-      deployment_environment: live_publicdotcom_roth
-    annotations:
-      summary: "EML has failed rebalance request(s) (live_publicdotcom_roth)"
-      description: "There is at least one failed rebalance request recorded in EML state for LIVE_PUBLICDOTCOM_ROTH (current value: {{ $value }}). Manual intervention may be required."
-
-  - alert: EMLFailedRebalanceRequests_live_publicdotcom_roth_wd
-    expr: eml_failed_rebalance_requests{deployment_environment="live_publicdotcom_roth_wd"} > 0
-    for: 5m
-    labels:
-      severity: page
-      service: eml
-      deployment_environment: live_publicdotcom_roth_wd
-    annotations:
-      summary: "EML has failed rebalance request(s) (live_publicdotcom_roth_wd)"
-      description: "There is at least one failed rebalance request recorded in EML state for LIVE_PUBLICDOTCOM_ROTH_WD (current value: {{ $value }}). Manual intervention may be required."
+      summary: "IML market data freshness is stale ({{ $labels.deployment_environment }})"
+      description: "P99 market data freshness exceeds 7 days for {{ $labels.deployment_environment }} (current value: {{ $value }} seconds)."
 
   - alert: EMLFailedRebalanceRequests_paper
     expr: eml_failed_rebalance_requests{deployment_environment="paper"} > 0

@@ -22,6 +22,10 @@ class IMLConfig:
     # Interval to check for universe updates
     universe_polling_interval_secs: float = 60 * 60 * 24.0  # Every 24 hours
 
+    # Market data freshness check configuration
+    # Interval to check market data freshness
+    md_freshness_check_interval_secs: float = 60 * 60 * 24.0  # Every 24 hours
+
     def validate(self) -> None:
         if self.polling_interval_secs <= 0:
             raise ValueError("polling_interval_secs must be positive")
@@ -33,3 +37,5 @@ class IMLConfig:
         if self.universe_polling_enabled:
             if self.universe_polling_interval_secs <= 0:
                 raise ValueError("universe_polling_interval_secs must be positive")
+        if self.md_freshness_check_interval_secs <= 0:
+            raise ValueError("md_freshness_check_interval_secs must be positive")

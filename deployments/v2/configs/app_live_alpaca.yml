@@ -19,6 +19,9 @@ iml:
   bar_interval: 1d
   bar_polling_interval_secs: 7200.0 # 2 hours
   bar_fetch_lookback_weeks: 260 # 5 years
+  universe_polling_enabled: true
+  universe_polling_interval_secs: 86400 # 24 hours
+  md_freshness_check_interval_secs: 86400 # 24 hours
 
 eml:
   broker: alpaca

@@ -34,6 +34,8 @@ class PollingIMLState(BaseState):
     last_bar_refresh_time: Optional[datetime] = None
     # Timestamp of last universe refresh
     last_universe_refresh_time: Optional[datetime] = None
+    # Timestamp of last market data freshness check
+    last_md_freshness_check_time: Optional[datetime] = None
 
     def to_payload(self) -> Dict[str, Any]:
         last_bar = (
@@ -46,12 +48,22 @@ class PollingIMLState(BaseState):
             if self.last_universe_refresh_time is not None
             else None
         )
+        last_md_freshness = (
+            to_canonical_eastern_naive(
+                self.last_md_freshness_check_time
+            ).to_pydatetime()
+            if self.last_md_freshness_check_time is not None
+            else None
+        )
         return {
             "last_bar_refresh_time": (
                 last_bar.isoformat() if last_bar is not None else None
             ),
             "last_universe_refresh_time": (
                 last_universe.isoformat() if last_universe is not None else None
+            ),
+            "last_md_freshness_check_time": (
+                last_md_freshness.isoformat() if last_md_freshness is not None else None
             ),
         }
 
@@ -78,9 +90,21 @@ class PollingIMLState(BaseState):
             last_universe_refresh_time = to_canonical_eastern_naive(
                 last_universe_refresh_time
             ).to_pydatetime()
+
+        last_md_freshness_check_time_str = payload.get("last_md_freshness_check_time")
+        last_md_freshness_check_time = (
+            datetime.fromisoformat(last_md_freshness_check_time_str)
+            if last_md_freshness_check_time_str is not None
+            else None
+        )
+        if last_md_freshness_check_time is not None:
+            last_md_freshness_check_time = to_canonical_eastern_naive(
+                last_md_freshness_check_time
+            ).to_pydatetime()
         return cls(
             last_bar_refresh_time=last_bar_refresh_time,
             last_universe_refresh_time=last_universe_refresh_time,
+            last_md_freshness_check_time=last_md_freshness_check_time,
         )
 
     @classmethod
@@ -134,6 +158,8 @@ class AlpacaPollingIMLService(BaseIMLService):
         if not self.universe_polling_enabled:
             self.log.warning("Universe polling is disabled in AlpacaPollingIMLService")
         self.universe_polling_interval_secs = config.universe_polling_interval_secs
+
+        self.md_freshness_check_interval_secs = config.md_freshness_check_interval_secs
 
         self.rm = rm
 
@@ -197,6 +223,12 @@ class AlpacaPollingIMLService(BaseIMLService):
         self._bar_fetch_attempts_counter = meter.create_counter(
             name="iml.bar_fetch_attempts",
             description="Counts attempts to fetch new bars (only when a fetch is triggered)",
+        )
+
+        self._md_freshness_hist = meter.create_histogram(
+            name="iml.md_freshness_seconds",
+            description="Observed market data freshness (now - latest bar timestamp)",
+            unit="s",
         )
 
         def observe_market_open(_: object) -> list[Observation]:
@@ -338,6 +370,11 @@ class AlpacaPollingIMLService(BaseIMLService):
                 universe_refreshed = await self.refresh_universe(now=now)
                 if universe_refreshed:
                     self.log.debug("Universe refreshed successfully")
+
+                # Check market data freshness
+                md_freshness_checked = await self.check_md_freshness(now=now)
+                if md_freshness_checked:
+                    self.log.debug("Market data freshness checked successfully")
 
                 # Sleep until next poll
                 self.log.debug(f"Sleeping for {self._poll_interval_seconds} seconds")
@@ -548,6 +585,19 @@ class AlpacaPollingIMLService(BaseIMLService):
 
         return await self._run_in_thread(self._refresh_universe)
 
+    async def check_md_freshness(self, now: Optional[datetime] = None) -> bool:
+        """Check market data freshness if enough time has passed.
+        Returns True if a freshness check is performed.
+        """
+        if now is None:
+            now = datetime.now().astimezone()
+        now = to_canonical_eastern_naive(now).to_pydatetime()
+
+        if not self._should_check_md_freshness(now):
+            return False
+
+        return await self._run_in_thread(self._check_md_freshness, now)
+
     def _should_refresh_universe(
         self,
         now: datetime,
@@ -568,6 +618,24 @@ class AlpacaPollingIMLService(BaseIMLService):
                 return False
 
         # Enough time has passed
+        return True
+
+    def _should_check_md_freshness(
+        self,
+        now: datetime,
+    ) -> bool:
+        """Check if enough time has passed since last freshness check."""
+        last_check = self.state.last_md_freshness_check_time
+        if last_check is not None:
+            delta_secs = (now - last_check).total_seconds()
+            if delta_secs < self.md_freshness_check_interval_secs:
+                self.log.debug(
+                    "Only %s seconds since last md freshness check; waiting for %s seconds",
+                    delta_secs,
+                    self.md_freshness_check_interval_secs,
+                )
+                return False
+
         return True
 
     def _refresh_universe(self) -> bool:
@@ -611,6 +679,63 @@ class AlpacaPollingIMLService(BaseIMLService):
             f"Refreshed universe with {len(tickers)} tickers across "
             f"{len(set(smap.values()))} sectors"
         )
+
+        return True
+
+    def _check_md_freshness(self, now: datetime) -> bool:
+        """Check market data freshness for current universe and record observations."""
+        if self._shutdown_requested():
+            self.log.info("Shutdown requested; aborting md freshness check")
+            return False
+
+        um: UniverseManager = self.rm.get("universe_manager")
+        if not um:
+            self.log.error(
+                "UniverseManager not found in RuntimeManager; cannot check md freshness"
+            )
+            raise RuntimeError("UniverseManager not found")
+        mds: MarketDataStore = self.rm.get("market_data_store")
+        if not mds:
+            self.log.error(
+                "MarketDataStore not found in RuntimeManager; cannot check md freshness"
+            )
+            raise RuntimeError("MarketDataStore not found")
+
+        tickers = um.get_tickers(current_only=True)
+        if not tickers:
+            self.log.warning("Universe is empty; skipping md freshness check")
+            return False
+
+        end_ts = pd.Timestamp(now)
+        start_ts = end_ts - pd.Timedelta(weeks=self.config.bar_fetch_lookback_weeks)
+        start = start_ts.to_pydatetime()
+        end = end_ts.to_pydatetime()
+
+        for ticker in tickers:
+            if self._shutdown_requested():
+                self.log.info(
+                    "Shutdown requested; aborting md freshness check mid-loop"
+                )
+                return False
+            df = mds.get_ohlcv(
+                ticker=ticker,
+                start=start,
+                end=end,
+                interval=self.bar_interval,
+                auto_adjust=True,
+                local_only=True,  # freshness check should only consider locally cached data
+            )
+            if df is None or df.empty:
+                continue
+            latest_idx = df.index.max()
+            if latest_idx is None:
+                continue
+            latest_ts = to_canonical_eastern_naive(latest_idx).to_pydatetime()
+            age_secs = (now - latest_ts).total_seconds()
+            self._md_freshness_hist.record(max(0.0, float(age_secs)))
+
+        if not self._shutdown_requested():
+            self.state.last_md_freshness_check_time = now
 
         return True
 
