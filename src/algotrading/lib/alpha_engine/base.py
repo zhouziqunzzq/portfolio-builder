@@ -17,7 +17,7 @@ class AlphaKey:
     ref: InstrumentRef
     tf: Timeframe
     alpha_type: Type[BaseAlpha]
-    alpha_id: str
+    alpha_id: str # Derived from config.id(), should be stable across runs for the same config
 
 
 @dataclass(frozen=True)

@@ -23,11 +23,17 @@ class _AlphaGroupKey:
     tf: Timeframe
 
 
+@dataclass(frozen=True)
+class _AlphaInstanceKey:
+    alpha_type: Type[BaseAlpha]
+    alpha_id: str
+
+
 class AlphaEngine(BaseAlphaEngine):
     """Event-driven alpha router grouped by (instrument, timeframe)."""
 
     def __init__(self) -> None:
-        self._groups: Dict[_AlphaGroupKey, Dict[Tuple[Type[BaseAlpha], str], BaseAlpha]] = {}
+        self._groups: Dict[_AlphaGroupKey, Dict[_AlphaInstanceKey, BaseAlpha]] = {}
 
     def subscribe(
         self,
@@ -43,7 +49,7 @@ class AlphaEngine(BaseAlphaEngine):
         key = _AlphaGroupKey(ref=ref, tf=tf)
         alpha_id = config.id()
         group = self._groups.setdefault(key, {})
-        instance_key = (alpha_type, alpha_id)
+        instance_key = _AlphaInstanceKey(alpha_type=alpha_type, alpha_id=alpha_id)
         if instance_key in group:
             return group[instance_key]
 
@@ -60,13 +66,13 @@ class AlphaEngine(BaseAlphaEngine):
         outputs: Dict[AlphaKey, BaseAlphaOutput] = {}
         ts = event.key.start_ts
         alpha_input = MarketDataAlphaInput(event=event, ts=ts)
-        for (alpha_type, alpha_id), alpha in group.items():
+        for instance_key, alpha in group.items():
             outputs[
                 AlphaKey(
                     ref=group_key.ref,
                     tf=group_key.tf,
-                    alpha_type=alpha_type,
-                    alpha_id=alpha_id,
+                    alpha_type=instance_key.alpha_type,
+                    alpha_id=instance_key.alpha_id,
                 )
             ] = alpha.update(alpha_input)
         return outputs
@@ -81,12 +87,12 @@ class AlphaEngine(BaseAlphaEngine):
 
     def keys(self) -> Iterable[AlphaKey]:
         for group_key, group in self._groups.items():
-            for alpha_type, alpha_id in group.keys():
+            for instance_key in group.keys():
                 yield AlphaKey(
                     ref=group_key.ref,
                     tf=group_key.tf,
-                    alpha_type=alpha_type,
-                    alpha_id=alpha_id,
+                    alpha_type=instance_key.alpha_type,
+                    alpha_id=instance_key.alpha_id,
                 )
 
     def reset(self) -> None:
@@ -104,4 +110,6 @@ class AlphaEngine(BaseAlphaEngine):
         group = self._groups.get(_AlphaGroupKey(ref=key.ref, tf=key.tf))
         if not group:
             return None
-        return group.get((key.alpha_type, key.alpha_id))
+        return group.get(
+            _AlphaInstanceKey(alpha_type=key.alpha_type, alpha_id=key.alpha_id)
+        )
