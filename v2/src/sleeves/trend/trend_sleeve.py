@@ -1782,20 +1782,30 @@ class TrendSleeve(BaseSleeve):
         if self.mds is None:
             raise ValueError("mds is not set; cannot get trading calendar.")
 
+        start_ts = pd.to_datetime(start)
+        end_ts = pd.to_datetime(end)
+        if interval in ("1d", "1wk", "1mo"):
+            start_ts = start_ts.normalize()
+            end_ts = end_ts.normalize()
+
         # Fetch OHLCV data for the reference ticker to determine trading days
         ohlcv = self.mds.get_ohlcv(
             ticker=reference_ticker,
-            start=start,
-            end=end,
+            start=start_ts,
+            end=end_ts,
             interval=interval,
             local_only=getattr(self.mds, "local_only", False),
         )
+        if ohlcv is None or ohlcv.empty:
+            return pd.DatetimeIndex([])
+
         # Ensure the index is a DatetimeIndex, sorted, and within the specified range
         if not isinstance(ohlcv.index, pd.DatetimeIndex):
             ohlcv.index = pd.to_datetime(ohlcv.index)
-        ohlcv.index = ohlcv.index.sort_values()
-        ohlcv.index = ohlcv.index[(ohlcv.index >= start) & (ohlcv.index <= end)]
-        return ohlcv.index
+        idx = ohlcv.index.sort_values()
+        idx = idx[~idx.duplicated(keep="last")]
+        idx = idx[(idx >= start_ts) & (idx <= end_ts)]
+        return idx
 
     @staticmethod
     def _infer_abs_days_from_window_size(window_size: int, signal_interval: str) -> int:
