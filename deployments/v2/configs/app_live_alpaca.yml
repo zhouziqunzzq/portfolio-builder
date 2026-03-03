@@ -7,7 +7,7 @@
 
 runtime:
   is_live: true
-  log_level: DEBUG
+  log_level: INFO
   log_to_file: true
   log_root: data_live_alpaca/logs
   state_file: data_live_alpaca/state/runtime_state.json

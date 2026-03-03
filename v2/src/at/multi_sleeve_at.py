@@ -440,7 +440,7 @@ class MultiSleeveATService(BaseATService):
                         now=now
                     )
                     if cleanup_event is None:
-                        self.log.info(
+                        self.log.debug(
                             "Position cleanup gated on, but no residual positions detected; skipping cleanup emit"
                         )
                     else:
@@ -1084,7 +1084,7 @@ class MultiSleeveATService(BaseATService):
             list(intents.keys()),
         )
         if len(intents) == 0:
-            self.log.info("No residual positions detected; skipping cleanup request")
+            self.log.debug("No residual positions detected; skipping cleanup request")
             return None
 
         cleanup_id = self._generate_position_cleanup_id()
