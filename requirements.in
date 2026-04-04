@@ -9,6 +9,7 @@ pyyaml
 alpaca-py
 publicdotcom-py!=0.1.7 # Broken in 0.1.7
 python-dotenv
+tzdata
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-otlp-proto-grpc
