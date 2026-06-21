@@ -26,7 +26,7 @@ from public_api_sdk.exceptions import (
     ServerError,
     ValidationError,
 )
-from public_api_sdk.models.instrument import Trading as PublicTrading
+from public_api_sdk.models.instrument import TradingPermission as PublicTrading
 from public_api_sdk.models.order import Order as PublicOrder
 
 from models import AccountSnapshot, PositionSnapshot
