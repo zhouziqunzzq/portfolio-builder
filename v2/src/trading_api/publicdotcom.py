@@ -54,6 +54,7 @@ from trading_api.exceptions import (
     OrderRejected,
     RateLimited,
     TemporaryUnavailable,
+    UnsupportedOrderShape,
 )
 
 
@@ -211,6 +212,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
             ),
             tradable=bool(tradable),
             fractionable=bool(fractionable),
+            supports_notional_buys=bool(fractionable),
         )
 
     # ------------------------------------------------------------------
@@ -523,7 +525,32 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         return "not found" in msg or "404" in msg
 
     @staticmethod
+    def _looks_like_unsupported_notional_order(exc: Exception) -> bool:
+        parts = [str(exc)]
+        response_data = getattr(exc, "response_data", None)
+        if response_data:
+            parts.append(str(response_data))
+        msg = " ".join(parts).lower()
+        return any(
+            phrase in msg
+            for phrase in (
+                "amount orders are not allowed",
+                "amount orders not allowed",
+                "amount orders are not supported",
+                "amount orders not supported",
+                "notional orders are not allowed",
+                "notional orders not allowed",
+                "notional orders are not supported",
+                "notional orders not supported",
+            )
+        )
+
+    @staticmethod
     def _map_exception(exc: Exception) -> BrokerApiError:
+        if PublicDotComTradingAPI._looks_like_unsupported_notional_order(exc):
+            return UnsupportedOrderShape(
+                str(exc) or "notional orders are not supported for this instrument"
+            )
         if isinstance(exc, AuthenticationError):
             return AuthError(str(exc) or "unauthorized")
         if isinstance(exc, RateLimitError):

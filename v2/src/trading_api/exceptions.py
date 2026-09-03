@@ -25,6 +25,10 @@ class InvalidOrder(BrokerApiError):
     """Non-retryable: order request is invalid for this broker."""
 
 
+class UnsupportedOrderShape(InvalidOrder):
+    """Non-retryable: the instrument does not support the requested order shape."""
+
+
 class OrderRejected(BrokerApiError):
     """Non-retryable: broker rejected the order."""
 
