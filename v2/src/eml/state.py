@@ -228,6 +228,7 @@ class PortfolioEMLState(BaseState):
         *,
         rebalance_id: str,
         executed_ts: Optional[float] = None,
+        execution_result: Optional[Mapping[str, Any]] = None,
     ) -> None:
         rid = str(rebalance_id)
         now_ts = float(executed_ts if executed_ts is not None else time.time())
@@ -236,11 +237,17 @@ class PortfolioEMLState(BaseState):
         if req is None:
             req = {"rebalance_id": rid}
 
+        result = dict(execution_result or {})
+        status = str(result.get("status") or "completed")
+
         entry = {
             **dict(req),
             "rebalance_id": rid,
+            "status": status,
             "executed_ts": now_ts,
         }
+        if result:
+            entry["execution_result"] = result
         self.executed_rebalance_history.append(entry)
         self._sort_history_inplace()
 
