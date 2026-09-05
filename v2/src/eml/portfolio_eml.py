@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 import time
 import uuid
@@ -33,10 +34,17 @@ from runtime_manager import RuntimeManager
 
 from .base_eml import BaseEML
 from .config import EMLConfig
+from .rebalance_execution import (
+    RebalanceBuySkipReason,
+    RebalanceExecutionResult,
+    RebalanceExecutionSkip,
+    RebalanceExecutionStatus,
+)
 from .state import PortfolioEMLState
 from utils.decimals import to_decimal
 
 from models.trading import (
+    InstrumentMeta,
     InstrumentRef,
     OrderFilter,
     OrderIntent,
@@ -46,13 +54,27 @@ from models.trading import (
 from trading_api.base import BaseTradingAPI
 from trading_api.alpaca import AlpacaTradingAPI
 from trading_api.publicdotcom import PublicDotComTradingAPI
-from trading_api.exceptions import OrderNotFoundYet
+from trading_api.exceptions import (
+    InvalidOrder,
+    NotTradable,
+    OrderNotFoundYet,
+    UnsupportedOrderShape,
+)
 
 
 class EMLShutdownRequested(Exception):
     """Raised internally to abort blocking execution during shutdown."""
 
     pass
+
+
+@dataclass(frozen=True)
+class RebalanceBuyExecutionContext:
+    """Read-only broker context shared across buys in one rebalance."""
+
+    instruments_by_symbol: Mapping[str, InstrumentMeta]
+    positions_by_symbol: Mapping[str, PositionSnapshot]
+    equity: float
 
 
 class PortfolioEMLService(BaseEML):
@@ -600,8 +622,11 @@ class PortfolioEMLService(BaseEML):
 
             try:
                 event = self._rebalance_request_from_state(payload)
-                self._execute_rebalance_plan(event)
-                self.state.mark_rebalance_executed(rebalance_id=rebalance_id)
+                result = self._execute_rebalance_plan(event)
+                self.state.mark_rebalance_executed(
+                    rebalance_id=rebalance_id,
+                    execution_result=result,
+                )
                 try:
                     self._rebalance_executions_counter.add(
                         1, {"result": "success", "service": self.name}
@@ -612,8 +637,10 @@ class PortfolioEMLService(BaseEML):
                 except Exception:
                     pass
                 self.log.info(
-                    "Rebalance executed successfully: rebalance_id=%s",
+                    "Rebalance execution finished: rebalance_id=%s status=%s skips=%d",
                     rebalance_id,
+                    result.status.value,
+                    len(result.skips),
                 )
             except EMLShutdownRequested:
                 # Quiet exit on shutdown; leave pending state intact.
@@ -660,7 +687,9 @@ class PortfolioEMLService(BaseEML):
                         rebalance_id,
                     )
 
-    def _execute_rebalance_plan(self, event: V2RebalancePlanRequestEvent) -> None:
+    def _execute_rebalance_plan(
+        self, event: V2RebalancePlanRequestEvent
+    ) -> RebalanceExecutionResult:
         """Synchronously execute a single rebalance plan by placing broker orders.
 
         This method is intentionally synchronous and may block while waiting for
@@ -675,9 +704,16 @@ class PortfolioEMLService(BaseEML):
             - min order size (`self.config.min_order_size_notional`)
             - float-noise thresholds
             - deterministic symbol sorting
-        5) Sanity check all symbols are tradable.
+        5) Fetch each instrument once and sanity check that all symbols are tradable.
         6) Best-effort cancel all currently-open broker orders (pre-flight safety).
-        7) Execute sells first, then buys, waiting for each order to fill.
+        7) Execute sells first, then capability-aware buys, waiting for each submitted
+            order to fill. Unsupported notional buys use a safe whole-share fallback;
+            deterministic unexecutable residuals are recorded as skips without
+            preventing later buys.
+
+        Returns:
+            A typed result with `COMPLETED` or `COMPLETED_WITH_SKIPS` status and
+            any deterministic symbol-level skips.
 
         Shutdown/error semantics:
         - If shutdown is requested during blocking execution, helper methods raise
@@ -776,7 +812,9 @@ class PortfolioEMLService(BaseEML):
                     "No executable orders after filtering; treating as executed: rebalance_id=%s",
                     rebalance_id,
                 )
-                return
+                return RebalanceExecutionResult(
+                    status=RebalanceExecutionStatus.COMPLETED
+                )
 
             self.log.debug(
                 "Built market orders: rebalance_id=%s sells=%s buys=%s",
@@ -785,8 +823,10 @@ class PortfolioEMLService(BaseEML):
                 buys,
             )
 
-            # 5) Sanity check tradability for all tickers in final plan
-            self._assert_symbols_tradable([o["symbol"] for o in (sells + buys)])
+            # 5) Fetch instrument metadata once and sanity check tradability.
+            instruments = self._get_instruments_and_assert_tradable(
+                [o["symbol"] for o in (sells + buys)]
+            )
             self.log.debug(
                 "All symbols in rebalance plan are tradable: rebalance_id=%s",
                 rebalance_id,
@@ -803,7 +843,18 @@ class PortfolioEMLService(BaseEML):
 
             # 6) Execute sells first (cash generation), then buys; block until filled
             self._execute_orders_blocking(sells)
-            self._execute_orders_blocking(buys)
+            buy_context = RebalanceBuyExecutionContext(
+                instruments_by_symbol=instruments,
+                positions_by_symbol=pos_by_symbol,
+                equity=equity,
+            )
+            skips = self._execute_buy_orders_blocking(buys, context=buy_context)
+            status = (
+                RebalanceExecutionStatus.COMPLETED_WITH_SKIPS
+                if skips
+                else RebalanceExecutionStatus.COMPLETED
+            )
+            return RebalanceExecutionResult(status=status, skips=tuple(skips))
         except EMLShutdownRequested:
             raise
         except Exception:
@@ -1444,7 +1495,9 @@ class PortfolioEMLService(BaseEML):
 
         return qty
 
-    def _assert_symbols_tradable(self, symbols: Iterable[str]) -> None:
+    def _get_instruments_and_assert_tradable(
+        self, symbols: Iterable[str]
+    ) -> Dict[str, InstrumentMeta]:
         unique = []
         seen = set()
         for s in symbols:
@@ -1455,6 +1508,7 @@ class PortfolioEMLService(BaseEML):
             unique.append(sym)
 
         not_tradable: List[str] = []
+        instruments: Dict[str, InstrumentMeta] = {}
         for sym in unique:
             try:
                 inst = self._trading_api.get_instrument(InstrumentRef(symbol=sym))
@@ -1466,6 +1520,7 @@ class PortfolioEMLService(BaseEML):
                 not_tradable.append(sym)
                 continue
             self.log.debug("Fetched instrument info for symbol=%s: %s", sym, inst)
+            instruments[sym] = inst
 
             if inst.tradable is False:
                 not_tradable.append(sym)
@@ -1474,6 +1529,287 @@ class PortfolioEMLService(BaseEML):
             raise RuntimeError(
                 f"Non-tradable symbols in rebalance plan: {sorted(not_tradable)}"
             )
+
+        return instruments
+
+    def _assert_symbols_tradable(self, symbols: Iterable[str]) -> None:
+        """Backward-compatible wrapper for callers that only need validation."""
+
+        self._get_instruments_and_assert_tradable(symbols)
+
+    def _execute_buy_orders_blocking(
+        self,
+        orders: List[Dict[str, Any]],
+        *,
+        context: RebalanceBuyExecutionContext,
+    ) -> List[RebalanceExecutionSkip]:
+        """Execute buys using notional orders or a safe whole-share fallback."""
+
+        skips: List[RebalanceExecutionSkip] = []
+        for order in orders:
+            symbol = self._normalize_symbol(order.get("symbol"))
+            instrument = context.instruments_by_symbol.get(symbol)
+            notional_supported = (
+                instrument.supports_notional_buys if instrument is not None else None
+            )
+
+            if notional_supported is not False:
+                try:
+                    self._execute_orders_blocking([order])
+                    continue
+                except UnsupportedOrderShape:
+                    self.log.warning(
+                        "Notional buy unsupported at submission; trying whole-share fallback: symbol=%s desired_notional=%s",
+                        symbol,
+                        order.get("notional"),
+                    )
+
+            skip = self._execute_whole_share_buy_fallback(order, context=context)
+            if skip is not None:
+                skips.append(skip)
+
+        return skips
+
+    def _execute_whole_share_buy_fallback(
+        self,
+        order: Mapping[str, Any],
+        *,
+        context: RebalanceBuyExecutionContext,
+    ) -> Optional[RebalanceExecutionSkip]:
+        """Build and execute a whole-share buy, returning a deterministic skip."""
+
+        symbol = self._normalize_symbol(order.get("symbol"))
+        fallback, skip = self._build_whole_share_buy_fallback(
+            order,
+            fallback_position=context.positions_by_symbol.get(symbol),
+            equity=context.equity,
+        )
+        if skip is not None:
+            self.log.warning(
+                "Skipping rebalance buy: symbol=%s desired_notional=%s reason=%s estimated_unit_cost=%s",
+                symbol,
+                skip.desired_notional,
+                skip.reason.value,
+                skip.estimated_unit_cost,
+            )
+            return skip
+
+        if fallback is None:
+            raise RuntimeError(
+                f"Whole-share fallback returned no order or skip for {symbol}"
+            )
+
+        try:
+            self._execute_orders_blocking([fallback])
+        except (InvalidOrder, NotTradable):
+            skip = self._buy_skip(
+                symbol=symbol,
+                desired_notional=to_decimal(order.get("notional")) or Decimal("0"),
+                reason=RebalanceBuySkipReason.QUANTITY_SUBMISSION_REJECTED,
+            )
+            self.log.warning(
+                "Skipping rebalance buy after quantity submission rejection: symbol=%s desired_notional=%s",
+                symbol,
+                skip.desired_notional,
+                exc_info=True,
+            )
+            return skip
+
+        return None
+
+    def _build_whole_share_buy_fallback(
+        self,
+        order: Mapping[str, Any],
+        *,
+        fallback_position: Optional[PositionSnapshot],
+        equity: float,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[RebalanceExecutionSkip]]:
+        symbol = self._normalize_symbol(order.get("symbol"))
+        desired_notional = to_decimal(order.get("notional"))
+        if desired_notional is None or desired_notional <= 0:
+            raise ValueError(
+                f"Invalid desired notional for whole-share fallback: {symbol}"
+            )
+
+        capabilities = self._trading_api.capabilities()
+        if not capabilities.supports_qty_market_orders:
+            return None, self._buy_skip(
+                symbol=symbol,
+                desired_notional=desired_notional,
+                reason=RebalanceBuySkipReason.QUANTITY_ORDERS_UNSUPPORTED,
+            )
+
+        account = self._get_account()
+        available_budget = self._available_buy_budget(
+            account=account,
+            desired_notional=desired_notional,
+            fallback_equity=Decimal(str(equity)),
+        )
+        if available_budget <= 0:
+            return None, self._buy_skip(
+                symbol=symbol,
+                desired_notional=desired_notional,
+                reason=RebalanceBuySkipReason.INSUFFICIENT_BUYING_POWER,
+            )
+
+        try:
+            unit_cost = self._estimate_whole_share_buy_cost(
+                symbol=symbol,
+                fallback_position=fallback_position,
+                supports_preflight=capabilities.supports_preflight,
+            )
+        except (InvalidOrder, NotTradable):
+            return None, self._buy_skip(
+                symbol=symbol,
+                desired_notional=desired_notional,
+                reason=RebalanceBuySkipReason.QUANTITY_PREFLIGHT_REJECTED,
+            )
+
+        if unit_cost is None or unit_cost <= 0:
+            return None, self._buy_skip(
+                symbol=symbol,
+                desired_notional=desired_notional,
+                reason=RebalanceBuySkipReason.UNIT_COST_UNAVAILABLE,
+            )
+
+        quantity = int(available_budget / unit_cost)
+        if quantity < 1:
+            return None, self._buy_skip(
+                symbol=symbol,
+                desired_notional=desired_notional,
+                reason=RebalanceBuySkipReason.BELOW_ONE_WHOLE_SHARE,
+                estimated_unit_cost=unit_cost,
+            )
+
+        if capabilities.supports_preflight:
+            try:
+                estimated_cost = self._preflight_buy_quantity(
+                    symbol=symbol, quantity=quantity
+                )
+            except (InvalidOrder, NotTradable):
+                return None, self._buy_skip(
+                    symbol=symbol,
+                    desired_notional=desired_notional,
+                    reason=RebalanceBuySkipReason.QUANTITY_PREFLIGHT_REJECTED,
+                    estimated_unit_cost=unit_cost,
+                )
+
+            if estimated_cost is not None and estimated_cost > available_budget:
+                # The multi-share preflight is authoritative: fees or live price
+                # movement can make the quantity derived from the one-share estimate
+                # exceed the available budget. Scale it down and validate again.
+                quantity = int(Decimal(quantity) * available_budget / estimated_cost)
+                if quantity < 1:
+                    return None, self._buy_skip(
+                        symbol=symbol,
+                        desired_notional=desired_notional,
+                        reason=RebalanceBuySkipReason.BELOW_ONE_WHOLE_SHARE,
+                        estimated_unit_cost=unit_cost,
+                    )
+                try:
+                    self._preflight_buy_quantity(symbol=symbol, quantity=quantity)
+                except (InvalidOrder, NotTradable):
+                    return None, self._buy_skip(
+                        symbol=symbol,
+                        desired_notional=desired_notional,
+                        reason=RebalanceBuySkipReason.QUANTITY_PREFLIGHT_REJECTED,
+                        estimated_unit_cost=unit_cost,
+                    )
+
+        return (
+            {
+                "symbol": symbol,
+                "side": "buy",
+                "qty": quantity,
+                "notional": None,
+            },
+            None,
+        )
+
+    def _estimate_whole_share_buy_cost(
+        self,
+        *,
+        symbol: str,
+        fallback_position: Optional[PositionSnapshot],
+        supports_preflight: bool,
+    ) -> Optional[Decimal]:
+        """Estimate one-share cost from live broker preflight, then held position.
+
+        Public supports preflight calculations for symbols with no open position, so
+        that live SDK result is always preferred. The position-implied price is only
+        a conservative fallback for adapters that cannot return a preflight cost.
+        """
+
+        if supports_preflight:
+            estimated = self._preflight_buy_quantity(symbol=symbol, quantity=1)
+            if estimated is not None and estimated > 0:
+                return estimated
+
+        if fallback_position is None:
+            return None
+        qty = to_decimal(fallback_position.qty)
+        market_value = to_decimal(fallback_position.market_value)
+        if qty is None or market_value is None or qty <= 0 or market_value <= 0:
+            return None
+        return market_value / qty
+
+    def _preflight_buy_quantity(
+        self, *, symbol: str, quantity: int
+    ) -> Optional[Decimal]:
+        intent = OrderIntent(
+            client_order_id=str(uuid.uuid4()),
+            instrument=InstrumentRef(symbol=symbol),
+            side=OrderSide.BUY,
+            qty=Decimal(quantity),
+            notional=None,
+        )
+        result = self._trading_api.preflight_order(intent)
+        estimated_cost = to_decimal(result.estimated_cost)
+        if estimated_cost is None:
+            return None
+        return abs(estimated_cost)
+
+    def _available_buy_budget(
+        self,
+        *,
+        account: AccountSnapshot,
+        desired_notional: Decimal,
+        fallback_equity: Decimal,
+    ) -> Decimal:
+        """Return the strictest desired-notional, buying-power, and cash budget."""
+
+        budgets = [desired_notional]
+
+        buying_power = to_decimal(account.buying_power)
+        if buying_power is not None:
+            budgets.append(max(Decimal("0"), buying_power))
+
+        cash = to_decimal(account.cash)
+        if cash is not None:
+            raw_equity = to_decimal(account.equity) or fallback_equity
+            reserve = Decimal("0")
+            if self.config.cash_buffer_pct is not None:
+                reserve = raw_equity * Decimal(str(self.config.cash_buffer_pct))
+            elif self.config.cash_buffer_abs is not None:
+                reserve = Decimal(str(self.config.cash_buffer_abs))
+            budgets.append(max(Decimal("0"), cash - reserve))
+
+        return min(budgets)
+
+    @staticmethod
+    def _buy_skip(
+        *,
+        symbol: str,
+        desired_notional: Decimal,
+        reason: RebalanceBuySkipReason,
+        estimated_unit_cost: Optional[Decimal] = None,
+    ) -> RebalanceExecutionSkip:
+        return RebalanceExecutionSkip(
+            symbol=symbol,
+            desired_notional=desired_notional,
+            reason=reason,
+            estimated_unit_cost=estimated_unit_cost,
+        )
 
     def _execute_orders_blocking(self, orders: List[Dict[str, Any]]) -> None:
         if not orders:

@@ -10,6 +10,8 @@ from events.events import (
 )
 from states.base_state import BaseState
 
+from .rebalance_execution import RebalanceExecutionResult, RebalanceExecutionStatus
+
 
 class PortfolioEMLState(BaseState):
     STATE_KEY = "eml.portfolio"
@@ -228,6 +230,7 @@ class PortfolioEMLState(BaseState):
         *,
         rebalance_id: str,
         executed_ts: Optional[float] = None,
+        execution_result: Optional[RebalanceExecutionResult] = None,
     ) -> None:
         rid = str(rebalance_id)
         now_ts = float(executed_ts if executed_ts is not None else time.time())
@@ -236,11 +239,20 @@ class PortfolioEMLState(BaseState):
         if req is None:
             req = {"rebalance_id": rid}
 
+        status = (
+            execution_result.status
+            if execution_result is not None
+            else RebalanceExecutionStatus.COMPLETED
+        )
+
         entry = {
             **dict(req),
             "rebalance_id": rid,
+            "status": status.value,
             "executed_ts": now_ts,
         }
+        if execution_result is not None:
+            entry["execution_result"] = execution_result.to_payload()
         self.executed_rebalance_history.append(entry)
         self._sort_history_inplace()
 

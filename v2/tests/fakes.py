@@ -51,6 +51,9 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         self._account: Any = None
         self._positions: List[Any] = []
         self._instruments: Dict[str, InstrumentMeta] = {}
+        self._preflight_costs: Dict[tuple[str, Decimal], Decimal] = {}
+        self._preflight_errors: Dict[tuple[str, str], Exception] = {}
+        self._submit_errors: Dict[tuple[str, str], Exception] = {}
 
         self.submitted: List[Dict[str, Any]] = []
         self.actions: List[str] = []
@@ -69,6 +72,7 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         self.list_orders_called: int = 0
         self.cancel_order_called: int = 0
         self.cancelled_ids: List[str] = []
+        self.supports_preflight: bool = False
 
     # -----------------
     # Helpers for tests
@@ -86,13 +90,30 @@ class FakeTradingAPI(BaseSyncTradingAPI):
         *,
         tradable: bool = True,
         fractionable: Optional[bool] = None,
+        supports_notional_buys: Optional[bool] = None,
     ) -> None:
         sym = str(symbol).upper()
         self._instruments[sym] = InstrumentMeta(
             instrument=InstrumentRef(symbol=sym),
             tradable=bool(tradable),
             fractionable=fractionable,
+            supports_notional_buys=supports_notional_buys,
         )
+
+    def set_preflight_cost(
+        self, symbol: str, *, quantity: Decimal | int, estimated_cost: Decimal | int
+    ) -> None:
+        self.supports_preflight = True
+        self._preflight_costs[(str(symbol).upper(), Decimal(quantity))] = Decimal(
+            estimated_cost
+        )
+
+    def set_preflight_error(self, symbol: str, *, shape: str, error: Exception) -> None:
+        self.supports_preflight = True
+        self._preflight_errors[(str(symbol).upper(), str(shape))] = error
+
+    def set_submit_error(self, symbol: str, *, shape: str, error: Exception) -> None:
+        self._submit_errors[(str(symbol).upper(), str(shape))] = error
 
     # -----------------
     # TradingAPI methods
@@ -104,7 +125,7 @@ class FakeTradingAPI(BaseSyncTradingAPI):
             supports_qty_market_orders=True,
             supports_fractional_qty=True,
             supports_notional_sells=False,
-            supports_preflight=False,
+            supports_preflight=self.supports_preflight,
         )
 
     def get_account(self):
@@ -127,7 +148,19 @@ class FakeTradingAPI(BaseSyncTradingAPI):
 
     def preflight_order(self, intent: OrderIntent) -> PreflightOrderResult:
         self.actions.append("preflight_order")
-        return PreflightOrderResult(instrument=intent.instrument, raw={"noop": True})
+        symbol = str(intent.instrument.symbol).upper()
+        shape = "notional" if intent.notional is not None else "quantity"
+        error = self._preflight_errors.get((symbol, shape))
+        if error is not None:
+            raise error
+        estimated_cost = None
+        if intent.qty is not None:
+            estimated_cost = self._preflight_costs.get((symbol, intent.qty))
+        return PreflightOrderResult(
+            instrument=intent.instrument,
+            estimated_cost=estimated_cost,
+            raw={"noop": True},
+        )
 
     def submit_order(self, intent: OrderIntent) -> PlacedOrder:
         self.actions.append("submit_order")
@@ -139,6 +172,11 @@ class FakeTradingAPI(BaseSyncTradingAPI):
             side_s = "buy"
         elif "sell" in side_s:
             side_s = "sell"
+
+        shape = "notional" if intent.notional is not None else "quantity"
+        error = self._submit_errors.get((str(intent.instrument.symbol).upper(), shape))
+        if error is not None:
+            raise error
 
         self.submitted.append(
             {
