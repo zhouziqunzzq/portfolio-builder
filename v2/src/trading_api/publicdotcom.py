@@ -54,6 +54,7 @@ from trading_api.exceptions import (
     OrderRejected,
     RateLimited,
     TemporaryUnavailable,
+    UnsupportedOrderShape,
 )
 
 
@@ -202,7 +203,13 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
             raise mapped from e
 
         tradable = inst.trading != PublicTrading.DISABLED
-        fractionable = inst.fractional_trading == PublicTrading.BUY_AND_SELL
+        fractional_buy_supported = inst.fractional_trading == PublicTrading.BUY_AND_SELL
+
+        # Public exposes notional equity buys through the amount order field,
+        # but does not expose a separate per-instrument amount-order capability.
+        # Use fractional buy permission as the conservative notional-buy signal;
+        # broker preflight and exception mapping remain authoritative fallbacks.
+        supports_notional_buys = fractional_buy_supported
 
         return InstrumentMeta(
             instrument=InstrumentRef(
@@ -210,7 +217,8 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 instrument_type=instrument.instrument_type,
             ),
             tradable=bool(tradable),
-            fractionable=bool(fractionable),
+            fractionable=fractional_buy_supported,
+            supports_notional_buys=supports_notional_buys,
         )
 
     # ------------------------------------------------------------------
@@ -523,7 +531,32 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         return "not found" in msg or "404" in msg
 
     @staticmethod
+    def _looks_like_unsupported_notional_order(exc: Exception) -> bool:
+        parts = [str(exc)]
+        response_data = getattr(exc, "response_data", None)
+        if response_data:
+            parts.append(str(response_data))
+        msg = " ".join(parts).lower()
+        return any(
+            phrase in msg
+            for phrase in (
+                "amount orders are not allowed",
+                "amount orders not allowed",
+                "amount orders are not supported",
+                "amount orders not supported",
+                "notional orders are not allowed",
+                "notional orders not allowed",
+                "notional orders are not supported",
+                "notional orders not supported",
+            )
+        )
+
+    @staticmethod
     def _map_exception(exc: Exception) -> BrokerApiError:
+        if PublicDotComTradingAPI._looks_like_unsupported_notional_order(exc):
+            return UnsupportedOrderShape(
+                str(exc) or "notional orders are not supported for this instrument"
+            )
         if isinstance(exc, AuthenticationError):
             return AuthError(str(exc) or "unauthorized")
         if isinstance(exc, RateLimitError):

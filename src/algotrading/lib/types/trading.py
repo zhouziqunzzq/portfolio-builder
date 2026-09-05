@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any, FrozenSet, Optional
-from .instruments import InstrumentType, InstrumentRef
+from .instruments import InstrumentRef, InstrumentType as InstrumentType
 
 
 class OrderSide(Enum):
@@ -41,6 +41,9 @@ class InstrumentMeta:
     instrument: InstrumentRef
     tradable: Optional[bool] = None
     fractionable: Optional[bool] = None
+    # Whether this specific instrument accepts dollar-amount BUY orders.
+    # None means the broker does not expose an instrument-level answer.
+    supports_notional_buys: Optional[bool] = None
 
     @property
     def symbol(self) -> str:
