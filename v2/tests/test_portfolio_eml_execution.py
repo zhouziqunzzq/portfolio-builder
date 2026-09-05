@@ -1,9 +1,15 @@
 import time
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 
 from v2.src.eml.portfolio_eml import PortfolioEMLService
+from v2.src.eml.rebalance_execution import (
+    RebalanceBuySkipReason,
+    RebalanceExecutionSkip,
+    RebalanceExecutionStatus,
+)
 from v2.src.eml.config import EMLConfig
 from v2.src.eml.state import PortfolioEMLState
 from v2.src.events.event_bus import EventBus
@@ -151,7 +157,7 @@ def test_supported_or_unknown_notional_buy_capability_preserves_notional_order(
         )
     )
 
-    assert result.status == "completed"
+    assert result.status is RebalanceExecutionStatus.COMPLETED
     assert result.skips == ()
     assert len(trading.submitted) == 1
     assert trading.submitted[0]["notional"] is not None
@@ -179,7 +185,7 @@ def test_unsupported_notional_buy_uses_preflighted_whole_share_quantity(monkeypa
         )
     )
 
-    assert result.status == "completed"
+    assert result.status is RebalanceExecutionStatus.COMPLETED
     assert len(trading.submitted) == 1
     assert trading.submitted[0]["notional"] is None
     assert int(trading.submitted[0]["qty"]) == 5
@@ -210,15 +216,14 @@ def test_sub_share_fallback_is_skipped_and_later_buy_executes(monkeypatch):
         )
     )
 
-    assert result.status == "completed_with_skips"
+    assert result.status is RebalanceExecutionStatus.COMPLETED_WITH_SKIPS
     assert result.skips == (
-        {
-            "symbol": "AAA",
-            "side": "buy",
-            "desired_notional": 50.0,
-            "reason": "below_one_whole_share",
-            "estimated_unit_cost": 100.0,
-        },
+        RebalanceExecutionSkip(
+            symbol="AAA",
+            desired_notional=Decimal("50.0"),
+            reason=RebalanceBuySkipReason.BELOW_ONE_WHOLE_SHARE,
+            estimated_unit_cost=Decimal("100"),
+        ),
     )
     assert [order["symbol"] for order in trading.submitted] == ["BBB"]
 
@@ -249,7 +254,7 @@ def test_runtime_unsupported_notional_rejection_uses_quantity_fallback(monkeypat
         )
     )
 
-    assert result.status == "completed"
+    assert result.status is RebalanceExecutionStatus.COMPLETED
     assert len(trading.submitted) == 1
     assert trading.submitted[0]["notional"] is None
     assert int(trading.submitted[0]["qty"]) == 3
@@ -280,8 +285,8 @@ def test_quantity_preflight_rejection_skips_only_unsupported_symbol(monkeypatch)
         )
     )
 
-    assert result.status == "completed_with_skips"
-    assert result.skips[0]["reason"] == "quantity_preflight_rejected"
+    assert result.status is RebalanceExecutionStatus.COMPLETED_WITH_SKIPS
+    assert result.skips[0].reason is RebalanceBuySkipReason.QUANTITY_PREFLIGHT_REJECTED
     assert [order["symbol"] for order in trading.submitted] == ["BBB"]
 
 
@@ -312,8 +317,8 @@ def test_quantity_submission_rejection_skips_only_unsupported_symbol(monkeypatch
         )
     )
 
-    assert result.status == "completed_with_skips"
-    assert result.skips[0]["reason"] == "quantity_submission_rejected"
+    assert result.status is RebalanceExecutionStatus.COMPLETED_WITH_SKIPS
+    assert result.skips[0].reason is RebalanceBuySkipReason.QUANTITY_SUBMISSION_REJECTED
     assert [order["symbol"] for order in trading.submitted] == ["BBB"]
 
 
@@ -372,7 +377,7 @@ def test_whole_share_fallback_honors_cash_buffer(monkeypatch):
         )
     )
 
-    assert result.status == "completed"
+    assert result.status is RebalanceExecutionStatus.COMPLETED
     assert int(trading.submitted[0]["qty"]) == 1
 
 
