@@ -55,7 +55,7 @@ def test_instrument_notional_buy_capability_defaults_to_unknown():
         (PublicTrading.DISABLED, False),
     ],
 )
-def test_public_instrument_maps_fractional_permission_to_notional_buys(
+def test_public_instrument_uses_fractional_buy_permission_as_notional_buy_signal(
     fractional_trading, expected
 ):
     adapter = _adapter_with_client(

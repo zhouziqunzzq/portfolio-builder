@@ -203,7 +203,13 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
             raise mapped from e
 
         tradable = inst.trading != PublicTrading.DISABLED
-        fractionable = inst.fractional_trading == PublicTrading.BUY_AND_SELL
+        fractional_buy_supported = inst.fractional_trading == PublicTrading.BUY_AND_SELL
+
+        # Public exposes notional equity buys through the amount order field,
+        # but does not expose a separate per-instrument amount-order capability.
+        # Use fractional buy permission as the conservative notional-buy signal;
+        # broker preflight and exception mapping remain authoritative fallbacks.
+        supports_notional_buys = fractional_buy_supported
 
         return InstrumentMeta(
             instrument=InstrumentRef(
@@ -211,8 +217,8 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 instrument_type=instrument.instrument_type,
             ),
             tradable=bool(tradable),
-            fractionable=bool(fractionable),
-            supports_notional_buys=bool(fractionable),
+            fractionable=fractional_buy_supported,
+            supports_notional_buys=supports_notional_buys,
         )
 
     # ------------------------------------------------------------------
