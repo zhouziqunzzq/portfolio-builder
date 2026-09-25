@@ -76,6 +76,11 @@ class AmbiguousOrderOutcome(Exception):
     """Broker may still execute an order; this request needs manual review."""
 
 
+TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED}
+)
+
+
 @dataclass(frozen=True)
 class RebalanceBuyExecutionContext:
     """Read-only broker context shared across buys in one rebalance."""
@@ -2084,11 +2089,7 @@ class PortfolioEMLService(BaseEML):
             if status == OrderStatus.FILLED:
                 self._observe_order_fill(start, now_fn)
                 return o
-            if status in {
-                OrderStatus.CANCELED,
-                OrderStatus.REJECTED,
-                OrderStatus.EXPIRED,
-            }:
+            if status in TERMINAL_ORDER_STATUSES:
                 if self._has_positive_fill(o):
                     self._log_partial_fill(o)
                     self._observe_order_fill(start, now_fn)
@@ -2097,6 +2098,8 @@ class PortfolioEMLService(BaseEML):
                     raise AmbiguousOrderOutcome(
                         f"terminal order has unknown fill quantity: {order_id}"
                     )
+                # The broker stopped this order with no shares filled. Let the
+                # caller count this execution failure toward the request retry cap.
                 raise RuntimeError(
                     f"Order did not fill (status={status}): order_id={order_id}"
                 )
@@ -2157,8 +2160,7 @@ class PortfolioEMLService(BaseEML):
 
         if order.status == OrderStatus.FILLED:
             return order
-        terminal = {OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED}
-        if order.status not in terminal:
+        if order.status not in TERMINAL_ORDER_STATUSES:
             try:
                 self._trading_api.cancel_order(order_id)
             except Exception as exc:
@@ -2167,7 +2169,7 @@ class PortfolioEMLService(BaseEML):
                 ) from exc
 
             cancel_start = float(now_fn())
-            while order.status not in terminal | {OrderStatus.FILLED}:
+            while order.status not in TERMINAL_ORDER_STATUSES | {OrderStatus.FILLED}:
                 if self._shutdown_requested():
                     raise EMLShutdownRequested("shutdown requested")
                 if float(now_fn()) - cancel_start > float(timeout_seconds):

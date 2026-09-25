@@ -235,6 +235,19 @@ def test_timed_out_confirmed_zero_fill_can_retry():
     assert trading.cancelled_ids == ["broker-1"]
 
 
+def test_terminal_cancellation_with_zero_fill_fails_this_attempt():
+    trading = FakeTradingAPI()
+    svc = _service(trading)
+    trading.get_order = lambda order_id: OrderState(
+        broker_order_id=order_id,
+        status=OrderStatus.CANCELED,
+        filled_qty=Decimal("0"),
+    )
+
+    with pytest.raises(RuntimeError, match="Order did not fill"):
+        svc._wait_for_order_fill("broker-1", sleep_fn=lambda _: None)
+
+
 def test_ambiguous_notional_sell_does_not_try_quantity_fallback():
     trading = FakeTradingAPI()
     trading.set_submit_error(
