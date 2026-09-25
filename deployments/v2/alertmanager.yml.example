@@ -21,6 +21,13 @@ route:
     receiver: "pushover-critical"
     continue: false
 
+  # Only PR4's explicitly tagged warning alerts send a low-priority push.
+  - matchers:
+    - notification_tier="low"
+    receiver: "pushover-warning"
+    group_by: [ "alertname", "service", "deployment_environment", "reason", "terminal_status" ]
+    continue: false
+
 receivers:
 - name: "null"
 
@@ -34,3 +41,12 @@ receivers:
     priority: "1" # high priority
     retry: 60s # retry every 60s
     expire: 1h # keep retrying for 1 hour
+
+- name: pushover-warning
+  pushover_configs:
+  - user_key: "<PUSHOVER_USER_KEY>"
+    token: "<PUSHOVER_APP_TOKEN>"
+    title: "{{ .CommonAnnotations.summary }}"
+    message: >-
+      {{ range .Alerts -}} {{ .Annotations.description }} {{ end }}
+    priority: "0" # normal priority; do not page

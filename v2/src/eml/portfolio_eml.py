@@ -210,6 +210,25 @@ class PortfolioEMLService(BaseEML):
             unit="s",
         )
 
+        self._rebalance_buy_skips_counter = meter.create_counter(
+            name="eml.rebalance_buy_skips_total",
+            description="Counts skipped rebalance buys in completed requests, by reason",
+        )
+        self._rebalance_partial_fills_counter = meter.create_counter(
+            name="eml.rebalance_partial_fills_total",
+            description="Counts accepted positive partial fills, by terminal order status",
+        )
+        # Establish zero-valued series before the first event so a Prometheus
+        # increase() alert can observe the first skip or partial fill.
+        for reason in RebalanceBuySkipReason:
+            self._rebalance_buy_skips_counter.add(
+                0, {"service": self.name, "reason": reason.value}
+            )
+        for status in TERMINAL_ORDER_STATUSES:
+            self._rebalance_partial_fills_counter.add(
+                0, {"service": self.name, "terminal_status": status.value}
+            )
+
         def _obs_account_value(field: str) -> list[Observation]:
             acct = self._last_account
             if acct is None:
@@ -293,6 +312,16 @@ class PortfolioEMLService(BaseEML):
             callbacks=[_obs_failed_rebalances],
         )
 
+        def _obs_manual_review_rebalances(_: object) -> list[Observation]:
+            failed = getattr(self.state, "failed_rebalance_requests", None)
+            return [Observation(float(self._count_manual_review_requests(failed)))]
+
+        meter.create_observable_gauge(
+            name="eml.rebalance_manual_review_requests",
+            description="Failed rebalance requests awaiting manual review",
+            callbacks=[_obs_manual_review_rebalances],
+        )
+
         def _obs_pending_execution_retries(_: object) -> list[Observation]:
             pending = getattr(self.state, "pending_rebalance_requests", None)
             if not isinstance(pending, Mapping) or not pending:
@@ -360,6 +389,18 @@ class PortfolioEMLService(BaseEML):
         self._orders_submitted_counter = meter.create_counter(
             name="eml.orders_submitted",
             description="Count of broker orders submitted by EML",
+        )
+
+    @staticmethod
+    def _count_manual_review_requests(failed: object) -> int:
+        """Count PR3's text-classified manual reviews until PR5 types them."""
+        if not isinstance(failed, list):
+            return 0
+        return sum(
+            1
+            for entry in failed
+            if isinstance(entry, Mapping)
+            and str(entry.get("error", "")).startswith("manual review required:")
         )
 
     async def _on_startup(self) -> None:
@@ -640,15 +681,7 @@ class PortfolioEMLService(BaseEML):
                     rebalance_id=rebalance_id,
                     execution_result=result,
                 )
-                try:
-                    self._rebalance_executions_counter.add(
-                        1, {"result": "success", "service": self.name}
-                    )
-                    self._executed_rebalance_count_counter.add(
-                        1, {"service": self.name}
-                    )
-                except Exception:
-                    pass
+                self._observe_completed_rebalance(result)
                 self.log.info(
                     "Rebalance execution finished: rebalance_id=%s status=%s skips=%d",
                     rebalance_id,
@@ -672,6 +705,12 @@ class PortfolioEMLService(BaseEML):
                     rebalance_id=rebalance_id,
                     error=f"manual review required: {exc}",
                 )
+                try:
+                    self._rebalance_executions_counter.add(
+                        1, {"result": "manual_review", "service": self.name}
+                    )
+                except Exception:
+                    pass
             except Exception:
                 # Best-effort: keep processing other plans; do not mark as executed.
                 self.log.exception(
@@ -709,6 +748,26 @@ class PortfolioEMLService(BaseEML):
                         "Failed updating retry/failed state for pending rebalance: rebalance_id=%s",
                         rebalance_id,
                     )
+
+    def _observe_completed_rebalance(self, result: RebalanceExecutionResult) -> None:
+        """Count persisted request outcomes without request- or symbol-level labels."""
+        try:
+            self._rebalance_executions_counter.add(
+                1,
+                {
+                    "result": "success",
+                    "status": result.status.value,
+                    "service": self.name,
+                },
+            )
+            self._executed_rebalance_count_counter.add(1, {"service": self.name})
+            for skip in result.skips:
+                self._rebalance_buy_skips_counter.add(
+                    1, {"service": self.name, "reason": skip.reason.value}
+                )
+        except Exception:
+            # Telemetry must never change execution or retry behavior.
+            self.log.exception("Failed recording completed rebalance metrics")
 
     def _execute_rebalance_plan(
         self, event: V2RebalancePlanRequestEvent
@@ -2132,6 +2191,13 @@ class PortfolioEMLService(BaseEML):
             order.filled_qty,
             order.filled_notional,
         )
+        try:
+            self._rebalance_partial_fills_counter.add(
+                1,
+                {"service": self.name, "terminal_status": order.status.value},
+            )
+        except Exception:
+            self.log.exception("Failed recording accepted partial fill metric")
 
     def _observe_order_fill(self, start: float, now_fn: Callable[[], float]) -> None:
         try:
