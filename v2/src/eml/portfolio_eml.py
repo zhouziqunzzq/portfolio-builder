@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
@@ -39,6 +39,7 @@ from .rebalance_execution import (
     RebalanceExecutionResult,
     RebalanceExecutionSkip,
     RebalanceExecutionStatus,
+    ProcessedRebalanceOrder,
 )
 from .state import PortfolioEMLState
 from utils.decimals import to_decimal
@@ -49,7 +50,9 @@ from models.trading import (
     OrderFilter,
     OrderIntent,
     OrderSide,
+    OrderState,
     OrderStatus,
+    PlacedOrder,
 )
 from trading_api.base import BaseTradingAPI
 from trading_api.alpaca import AlpacaTradingAPI
@@ -58,6 +61,7 @@ from trading_api.exceptions import (
     InvalidOrder,
     NotTradable,
     OrderNotFoundYet,
+    OrderRejected,
     UnsupportedOrderShape,
 )
 
@@ -66,6 +70,15 @@ class EMLShutdownRequested(Exception):
     """Raised internally to abort blocking execution during shutdown."""
 
     pass
+
+
+class AmbiguousOrderOutcome(Exception):
+    """Broker may still execute an order; this request needs manual review."""
+
+
+TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED}
+)
 
 
 @dataclass(frozen=True)
@@ -510,9 +523,9 @@ class PortfolioEMLService(BaseEML):
         # Track pending rebalance requests in persisted state, and send back confirmation.
         now_ts = time.time()
         try:
-            if self.state.has_pending_rebalance_request(event.rebalance_id):
+            if self.state.has_seen_rebalance_request(event.rebalance_id):
                 self.log.info(
-                    "RebalancePlanRequestEvent already pending; ignoring duplicate: rebalance_id=%s",
+                    "RebalancePlanRequestEvent already seen; ignoring duplicate: rebalance_id=%s",
                     event.rebalance_id,
                 )
             else:
@@ -649,6 +662,16 @@ class PortfolioEMLService(BaseEML):
                     rebalance_id,
                 )
                 return
+            except AmbiguousOrderOutcome as exc:
+                self.log.error(
+                    "Rebalance requires manual review after uncertain order outcome: rebalance_id=%s error=%s",
+                    rebalance_id,
+                    exc,
+                )
+                self.state.mark_rebalance_failed(
+                    rebalance_id=rebalance_id,
+                    error=f"manual review required: {exc}",
+                )
             except Exception:
                 # Best-effort: keep processing other plans; do not mark as executed.
                 self.log.exception(
@@ -752,7 +775,9 @@ class PortfolioEMLService(BaseEML):
 
             # 2) Fetch current account + positions
             account = self._get_account()
-            positions = self._list_positions() if self.config.include_positions else []
+            # PR3 assumes this read immediately includes any completed trade.
+            # Rebalances need positions even when routine polling is disabled.
+            positions = self._list_positions()
 
             equity = self._get_effective_equity(account)
             if equity <= 0:
@@ -784,6 +809,12 @@ class PortfolioEMLService(BaseEML):
                 target_weights=target_weights,
                 min_order_size_notional=float(self.config.min_order_size_notional),
             )
+
+            # One confirmed fill is enough for a symbol in this request, even if
+            # prices moved, the side reversed, or whole-share fallback left a gap.
+            processed = self.state.processed_rebalance_symbols(str(rebalance_id))
+            sells = [order for order in sells if order["symbol"] not in processed]
+            buys = [order for order in buys if order["symbol"] not in processed]
 
             if dropped_by_min_size:
                 min_abs = float(self.config.min_order_size_notional)
@@ -842,13 +873,15 @@ class PortfolioEMLService(BaseEML):
                 )
 
             # 6) Execute sells first (cash generation), then buys; block until filled
-            self._execute_orders_blocking(sells)
+            self._execute_orders_blocking(sells, rebalance_id=str(rebalance_id))
             buy_context = RebalanceBuyExecutionContext(
                 instruments_by_symbol=instruments,
                 positions_by_symbol=pos_by_symbol,
                 equity=equity,
             )
-            skips = self._execute_buy_orders_blocking(buys, context=buy_context)
+            skips = self._execute_buy_orders_blocking(
+                buys, context=buy_context, rebalance_id=str(rebalance_id)
+            )
             status = (
                 RebalanceExecutionStatus.COMPLETED_WITH_SKIPS
                 if skips
@@ -1542,6 +1575,7 @@ class PortfolioEMLService(BaseEML):
         orders: List[Dict[str, Any]],
         *,
         context: RebalanceBuyExecutionContext,
+        rebalance_id: Optional[str] = None,
     ) -> List[RebalanceExecutionSkip]:
         """Execute buys using notional orders or a safe whole-share fallback."""
 
@@ -1555,7 +1589,7 @@ class PortfolioEMLService(BaseEML):
 
             if notional_supported is not False:
                 try:
-                    self._execute_orders_blocking([order])
+                    self._execute_orders_blocking([order], rebalance_id=rebalance_id)
                     continue
                 except UnsupportedOrderShape:
                     self.log.warning(
@@ -1564,7 +1598,9 @@ class PortfolioEMLService(BaseEML):
                         order.get("notional"),
                     )
 
-            skip = self._execute_whole_share_buy_fallback(order, context=context)
+            skip = self._execute_whole_share_buy_fallback(
+                order, context=context, rebalance_id=rebalance_id
+            )
             if skip is not None:
                 skips.append(skip)
 
@@ -1575,6 +1611,7 @@ class PortfolioEMLService(BaseEML):
         order: Mapping[str, Any],
         *,
         context: RebalanceBuyExecutionContext,
+        rebalance_id: Optional[str] = None,
     ) -> Optional[RebalanceExecutionSkip]:
         """Build and execute a whole-share buy, returning a deterministic skip."""
 
@@ -1600,7 +1637,11 @@ class PortfolioEMLService(BaseEML):
             )
 
         try:
-            self._execute_orders_blocking([fallback])
+            self._execute_orders_blocking(
+                [fallback],
+                rebalance_id=rebalance_id,
+                used_whole_share_fallback=True,
+            )
         except (InvalidOrder, NotTradable):
             skip = self._buy_skip(
                 symbol=symbol,
@@ -1811,7 +1852,13 @@ class PortfolioEMLService(BaseEML):
             estimated_unit_cost=estimated_unit_cost,
         )
 
-    def _execute_orders_blocking(self, orders: List[Dict[str, Any]]) -> None:
+    def _execute_orders_blocking(
+        self,
+        orders: List[Dict[str, Any]],
+        *,
+        rebalance_id: Optional[str] = None,
+        used_whole_share_fallback: bool = False,
+    ) -> None:
         if not orders:
             return
 
@@ -1825,13 +1872,13 @@ class PortfolioEMLService(BaseEML):
                 raise ValueError(f"Invalid order side: {side}")
 
             if side == "sell":
-                order_id = self._submit_sell_market_order_prefer_notional(
+                placed = self._submit_sell_market_order_prefer_notional(
                     symbol=symbol,
                     notional=order.get("notional"),
                     qty_fallback=order.get("qty_fallback"),
                 )
             else:
-                order_id = self._submit_market_order(
+                placed = self._submit_market_order(
                     symbol=symbol,
                     side=side,
                     qty=order.get("qty"),
@@ -1841,25 +1888,57 @@ class PortfolioEMLService(BaseEML):
                 "Submitted market order: symbol=%s side=%s order_id=%s",
                 symbol,
                 side,
-                order_id,
+                placed.broker_order_id,
             )
 
             self.log.info(
                 "Waiting for order fill: symbol=%s side=%s order_id=%s",
                 symbol,
                 side,
-                order_id,
+                placed.broker_order_id,
             )
-            self._wait_for_order_fill(
-                order_id,
+            final_order = self._wait_for_order_fill(
+                placed.broker_order_id,
                 timeout_seconds=float(self.config.wait_for_order_fill_timeout_secs),
             )
             self.log.info(
-                "Order filled: symbol=%s side=%s order_id=%s",
+                "Order filled: symbol=%s side=%s order_id=%s status=%s",
                 symbol,
                 side,
-                order_id,
+                placed.broker_order_id,
+                final_order.status.value,
             )
+            if final_order.status != OrderStatus.FILLED:
+                self.log.warning(
+                    "Partial rebalance trade accepted: symbol=%s side=%s requested_qty=%s requested_notional=%s filled_qty=%s filled_notional=%s",
+                    symbol,
+                    side,
+                    order.get("qty"),
+                    order.get("notional"),
+                    final_order.filled_qty,
+                    final_order.filled_notional,
+                )
+
+            if rebalance_id is not None and self.state.has_pending_rebalance_request(
+                rebalance_id
+            ):
+                entry = ProcessedRebalanceOrder(
+                    rebalance_id=rebalance_id,
+                    symbol=symbol,
+                    side=side,
+                    client_order_id=placed.client_order_id,
+                    broker_order_id=placed.broker_order_id,
+                    fill_kind=(
+                        "full"
+                        if final_order.status == OrderStatus.FILLED
+                        else "partial"
+                    ),
+                    used_whole_share_fallback=used_whole_share_fallback,
+                    filled_qty=final_order.filled_qty,
+                    filled_notional=final_order.filled_notional,
+                    recorded_at=datetime.now(timezone.utc).isoformat(),
+                )
+                self.state.record_processed_rebalance_order(entry)
 
     def _submit_sell_market_order_prefer_notional(
         self,
@@ -1867,11 +1946,11 @@ class PortfolioEMLService(BaseEML):
         symbol: str,
         notional: Any = None,
         qty_fallback: Any = None,
-    ) -> str:
+    ) -> PlacedOrder:
         """Submit a SELL market order.
 
-        Prefers notional sells when available, but will fall back to qty if the
-        broker/API rejects notional sells.
+        Prefers notional sells when available, but falls back to quantity only
+        when the broker definitively rejects the notional order shape.
         """
 
         if notional is not None:
@@ -1882,7 +1961,7 @@ class PortfolioEMLService(BaseEML):
                     qty=None,
                     notional=notional,
                 )
-            except Exception:
+            except UnsupportedOrderShape:
                 self.log.warning(
                     "Notional sell rejected; falling back to qty sell: symbol=%s notional=%s",
                     symbol,
@@ -1909,7 +1988,7 @@ class PortfolioEMLService(BaseEML):
         side: str,
         qty: Any = None,
         notional: Any = None,
-    ) -> str:
+    ) -> PlacedOrder:
         if qty is not None and notional is not None:
             raise ValueError(
                 "Market order must specify either qty or notional, not both"
@@ -1939,7 +2018,16 @@ class PortfolioEMLService(BaseEML):
             qty=to_decimal(qty),
             notional=to_decimal(notional),
         )
-        placed = self._trading_api.submit_order(intent)
+        try:
+            placed = self._trading_api.submit_order(intent)
+        except (InvalidOrder, NotTradable, OrderRejected):
+            # These are definite rejections; a different order shape may be safe.
+            raise
+        except Exception as exc:
+            raise AmbiguousOrderOutcome(
+                f"submission outcome unknown for {symbol} {side} "
+                f"(client_order_id={intent.client_order_id})"
+            ) from exc
         try:
             self._orders_submitted_counter.add(
                 1,
@@ -1950,7 +2038,7 @@ class PortfolioEMLService(BaseEML):
             )
         except Exception:
             pass
-        return placed.broker_order_id
+        return placed
 
     def _wait_for_order_fill(
         self,
@@ -1960,7 +2048,7 @@ class PortfolioEMLService(BaseEML):
         poll_interval_seconds: float = 1.0,
         sleep_fn: Callable[[float], None] = time.sleep,
         now_fn: Callable[[], float] = time.time,
-    ) -> None:
+    ) -> OrderState:
         start = float(now_fn())
 
         while True:
@@ -1968,9 +2056,15 @@ class PortfolioEMLService(BaseEML):
                 raise EMLShutdownRequested("shutdown requested")
 
             if float(now_fn()) - start > float(timeout_seconds):
-                raise TimeoutError(
-                    f"Timed out waiting for order fill: order_id={order_id}"
+                final = self._finish_timed_out_order(
+                    order_id,
+                    timeout_seconds=timeout_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    sleep_fn=sleep_fn,
+                    now_fn=now_fn,
                 )
+                self._observe_order_fill(start, now_fn)
+                return final
 
             try:
                 o = self._trading_api.get_order(order_id)
@@ -1980,6 +2074,10 @@ class PortfolioEMLService(BaseEML):
                 self.log.info("Order not found yet; will retry: order_id=%s", order_id)
                 sleep_fn(float(poll_interval_seconds))
                 continue
+            except Exception as exc:
+                raise AmbiguousOrderOutcome(
+                    f"cannot check submitted order {order_id}"
+                ) from exc
             status = o.status
 
             self.log.debug(
@@ -1989,25 +2087,115 @@ class PortfolioEMLService(BaseEML):
             )
 
             if status == OrderStatus.FILLED:
-                try:
-                    latency = max(0.0, float(now_fn()) - start)
-                    self._order_fills_counter.add(1, {"service": self.name})
-                    self._order_fill_latency_hist.record(
-                        float(latency), {"service": self.name}
+                self._observe_order_fill(start, now_fn)
+                return o
+            if status in TERMINAL_ORDER_STATUSES:
+                if self._has_positive_fill(o):
+                    self._log_partial_fill(o)
+                    self._observe_order_fill(start, now_fn)
+                    return o
+                if not self._has_confirmed_zero_fill(o):
+                    raise AmbiguousOrderOutcome(
+                        f"terminal order has unknown fill quantity: {order_id}"
                     )
-                except Exception:
-                    pass
-                return
-            if status in {
-                OrderStatus.CANCELED,
-                OrderStatus.REJECTED,
-                OrderStatus.EXPIRED,
-            }:
+                # The broker stopped this order with no shares filled. Let the
+                # caller count this execution failure toward the request retry cap.
                 raise RuntimeError(
                     f"Order did not fill (status={status}): order_id={order_id}"
                 )
 
             sleep_fn(float(poll_interval_seconds))
+
+    @staticmethod
+    def _has_positive_fill(order: OrderState) -> bool:
+        return any(
+            value is not None and value > 0
+            for value in (order.filled_qty, order.filled_notional)
+        )
+
+    @staticmethod
+    def _has_confirmed_zero_fill(order: OrderState) -> bool:
+        return order.status == OrderStatus.REJECTED or (
+            not PortfolioEMLService._has_positive_fill(order)
+            and any(
+                value == 0
+                for value in (order.filled_qty, order.filled_notional)
+                if value is not None
+            )
+        )
+
+    def _log_partial_fill(self, order: OrderState) -> None:
+        self.log.warning(
+            "Treating stopped partial fill as rebalance success: order_id=%s status=%s filled_qty=%s filled_notional=%s; no residual order will be submitted",
+            order.broker_order_id,
+            order.status.value,
+            order.filled_qty,
+            order.filled_notional,
+        )
+
+    def _observe_order_fill(self, start: float, now_fn: Callable[[], float]) -> None:
+        try:
+            latency = max(0.0, float(now_fn()) - start)
+            self._order_fills_counter.add(1, {"service": self.name})
+            self._order_fill_latency_hist.record(latency, {"service": self.name})
+        except Exception:
+            pass
+
+    def _finish_timed_out_order(
+        self,
+        order_id: str,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float,
+        sleep_fn: Callable[[float], None],
+        now_fn: Callable[[], float],
+    ) -> OrderState:
+        """Stop an unfilled remainder before accepting a timed-out partial fill."""
+        try:
+            order = self._trading_api.get_order(order_id)
+        except Exception as exc:
+            raise AmbiguousOrderOutcome(
+                f"cannot check timed-out order {order_id}"
+            ) from exc
+
+        if order.status == OrderStatus.FILLED:
+            return order
+        if order.status not in TERMINAL_ORDER_STATUSES:
+            try:
+                self._trading_api.cancel_order(order_id)
+            except Exception as exc:
+                raise AmbiguousOrderOutcome(
+                    f"cannot confirm cancellation of timed-out order {order_id}"
+                ) from exc
+
+            cancel_start = float(now_fn())
+            while order.status not in TERMINAL_ORDER_STATUSES | {OrderStatus.FILLED}:
+                if self._shutdown_requested():
+                    raise EMLShutdownRequested("shutdown requested")
+                if float(now_fn()) - cancel_start > float(timeout_seconds):
+                    raise AmbiguousOrderOutcome(
+                        f"cancellation not confirmed for timed-out order {order_id}"
+                    )
+                sleep_fn(float(poll_interval_seconds))
+                try:
+                    order = self._trading_api.get_order(order_id)
+                except OrderNotFoundYet:
+                    continue
+                except Exception as exc:
+                    raise AmbiguousOrderOutcome(
+                        f"cannot check cancellation of order {order_id}"
+                    ) from exc
+
+        if order.status == OrderStatus.FILLED:
+            return order
+        if self._has_positive_fill(order):
+            self._log_partial_fill(order)
+            return order
+        if not self._has_confirmed_zero_fill(order):
+            raise AmbiguousOrderOutcome(
+                f"timed-out order has unknown fill quantity: {order_id}"
+            )
+        raise TimeoutError(f"Timed out with no fill: order_id={order_id}")
 
     @staticmethod
     def _rebalance_request_from_state(

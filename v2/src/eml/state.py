@@ -10,12 +10,16 @@ from events.events import (
 )
 from states.base_state import BaseState
 
-from .rebalance_execution import RebalanceExecutionResult, RebalanceExecutionStatus
+from .rebalance_execution import (
+    ProcessedRebalanceOrder,
+    RebalanceExecutionResult,
+    RebalanceExecutionStatus,
+)
 
 
 class PortfolioEMLState(BaseState):
     STATE_KEY = "eml.portfolio"
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     # Pending rebalance requests (rebalance_id -> request payload)
     pending_rebalance_requests: Dict[str, Dict[str, Any]]
@@ -169,6 +173,35 @@ class PortfolioEMLState(BaseState):
     def has_pending_rebalance_request(self, rebalance_id: str) -> bool:
         return str(rebalance_id) in self.pending_rebalance_requests
 
+    def has_seen_rebalance_request(self, rebalance_id: str) -> bool:
+        """Prevent a duplicate event from restarting an executed or failed request."""
+        rid = str(rebalance_id)
+        return self.has_pending_rebalance_request(rid) or any(
+            str(entry.get("rebalance_id")) == rid
+            for history in (
+                self.executed_rebalance_history,
+                self.failed_rebalance_requests,
+            )
+            for entry in history
+        )
+
+    def processed_rebalance_symbols(self, rebalance_id: str) -> set[str]:
+        request = self.pending_rebalance_requests.get(str(rebalance_id), {})
+        return {
+            ProcessedRebalanceOrder.from_payload(entry).symbol
+            for entry in request.get("execution_journal", [])
+        }
+
+    def record_processed_rebalance_order(self, entry: ProcessedRebalanceOrder) -> None:
+        request = self.pending_rebalance_requests.get(entry.rebalance_id)
+        if request is None:
+            raise KeyError(f"Rebalance request is not pending: {entry.rebalance_id}")
+        if entry.symbol in self.processed_rebalance_symbols(entry.rebalance_id):
+            raise ValueError(
+                f"Rebalance symbol already processed: {entry.rebalance_id}/{entry.symbol}"
+            )
+        request.setdefault("execution_journal", []).append(entry.to_payload())
+
     def remember_pending_rebalance_request(
         self, event: V2RebalancePlanRequestEvent
     ) -> None:
@@ -180,6 +213,9 @@ class PortfolioEMLState(BaseState):
             "correlation_id": getattr(event, "correlation_id", ""),
             "status": "pending",
             "execution_failures": 0,
+            # PR3 assumes a completed order is immediately reflected in positions.
+            # Only confirmed fills are journaled; crash recovery is out of scope.
+            "execution_journal": [],
         }
 
     def increment_pending_rebalance_execution_failure(self, rebalance_id: str) -> int:
