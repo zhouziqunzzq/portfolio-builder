@@ -82,6 +82,8 @@ Observability & deployment
 --------------------------
 - v2 is instrumented with OpenTelemetry. The EML and other services expose metrics that can be scraped by an OpenTelemetry collector / Prometheus.
 - The repository includes a local observability stack: `docker-compose.obs.yml` to run an `otelcol` collector, `prometheus`, `grafana`, and `alertmanager` for local debugging and alerting.
+- Rebalance metrics distinguish `completed` from `completed_with_skips`, count each skipped buy by reason and each accepted partial fill by terminal status, and show how many failed requests require manual review. Metrics deliberately omit request and order identifiers from labels.
+- Live skip and partial-fill alerts use a low-priority notification route. Copy the `notification_tier="low"` route and `pushover-warning` receiver from `deployments/v2/alertmanager.yml.example` into the deployment's private `alertmanager.yml` to enable delivery; existing failed-request paging remains in place.
 
 Quick start: observability stack
 
@@ -116,4 +118,3 @@ Notes & tips
 - Use `v2/src/runtime_manager.py` to construct the same runtime singletons used by the backtest and live runners; this ensures parity between research and production runs.
 - Metrics: EML exposes detailed metrics (order fills, pending rebalances, account gauges) via OpenTelemetry; configure your collector to export to Prometheus and Grafana.
 - Safety: EML includes startup/shutdown safety hooks (e.g., cancel open orders) and retry semantics — review `v2/src/eml/portfolio_eml.py` before enabling live trading.
-

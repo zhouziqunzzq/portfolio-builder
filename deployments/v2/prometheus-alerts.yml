@@ -31,3 +31,23 @@ groups:
     annotations:
       summary: "EML has failed rebalance request(s) (paper)"
       description: "There is at least one failed rebalance request recorded in EML state for PAPER (current value: {{ $value }})."
+
+  - alert: EMLRebalanceBuySkipped_live
+    expr: sum by (deployment_environment, reason) (increase(eml_rebalance_buy_skips_total{deployment_environment=~"live_alpaca|live_publicdotcom|live_publicdotcom_roth|live_publicdotcom_roth_wd"}[1h])) > 0
+    labels:
+      severity: warning
+      service: eml
+      notification_tier: low
+    annotations:
+      summary: "EML skipped a rebalance buy ({{ $labels.deployment_environment }})"
+      description: "At least one rebalance buy was intentionally skipped in the past hour for {{ $labels.deployment_environment }} (reason: {{ $labels.reason }}). The request completed with skips and will not be retried automatically."
+
+  - alert: EMLRebalancePartialFill_live
+    expr: sum by (deployment_environment, terminal_status) (increase(eml_rebalance_partial_fills_total{deployment_environment=~"live_alpaca|live_publicdotcom|live_publicdotcom_roth|live_publicdotcom_roth_wd"}[1h])) > 0
+    labels:
+      severity: warning
+      service: eml
+      notification_tier: low
+    annotations:
+      summary: "EML accepted a partial rebalance fill ({{ $labels.deployment_environment }})"
+      description: "At least one positive partial fill was accepted in the past hour for {{ $labels.deployment_environment }} (terminal order status: {{ $labels.terminal_status }}). No residual order is submitted for that request and symbol."
