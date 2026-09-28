@@ -4,7 +4,7 @@
 #
 #    pip-compile requirements.in
 #
-alpaca-py==0.43.2
+alpaca-py==0.44.0
     # via -r requirements.in
 annotated-types==0.7.0
     # via pydantic
@@ -104,7 +104,7 @@ protobuf==6.33.6
     #   googleapis-common-protos
     #   opentelemetry-proto
     #   yfinance
-publicdotcom-py==0.1.17
+publicdotcom-py==0.1.24
     # via -r requirements.in
 pyarrow==23.0.1
     # via -r requirements.in
