@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, List, Optional
@@ -151,7 +152,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 adj_equity=None,  # handled by EML
             )
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="get_account") from e
 
     def list_positions(self) -> List[PositionSnapshot]:
         try:
@@ -179,7 +180,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 )
             return out
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="list_positions") from e
 
     # ------------------------------------------------------------------
     # Instruments
@@ -196,7 +197,7 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 ),
             )
         except Exception as e:
-            mapped = self._map_exception(e)
+            mapped = self._map_exception(e, operation="get_instrument")
             if isinstance(mapped, OrderNotFoundYet):
                 # Instrument lookup is not an eventual-consistency case.
                 raise NotTradable(str(e) or "instrument not found") from e
@@ -256,8 +257,10 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 estimated_proceeds=resp.estimated_proceeds,
                 raw=resp,
             )
+        except BrokerApiError:
+            raise
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="preflight_order") from e
 
     def submit_order(self, intent: OrderIntent) -> PlacedOrder:
         symbol = self._normalize_symbol(intent.instrument.symbol)
@@ -279,13 +282,13 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         except BrokerApiError:
             raise
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="submit_order") from e
 
     def get_order(self, broker_order_id: str) -> OrderState:
         try:
             o = self._client.get_order(order_id=str(broker_order_id))
         except Exception as e:
-            mapped = self._map_exception(e)
+            mapped = self._map_exception(e, operation="get_order")
             if isinstance(mapped, OrderNotFoundYet):
                 raise OrderNotFoundYet("order not visible yet") from e
             raise mapped from e
@@ -312,13 +315,13 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
                 out.append(st)
             return out
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="list_orders") from e
 
     def cancel_order(self, broker_order_id: str) -> None:
         try:
             self._client.cancel_order(order_id=str(broker_order_id))
         except Exception as e:
-            raise self._map_exception(e) from e
+            raise self._map_exception(e, operation="cancel_order") from e
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -552,46 +555,99 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         )
 
     @staticmethod
-    def _map_exception(exc: Exception) -> BrokerApiError:
-        if PublicDotComTradingAPI._looks_like_unsupported_notional_order(exc):
-            return UnsupportedOrderShape(
-                str(exc) or "notional orders are not supported for this instrument"
-            )
+    def _map_exception(exc: Exception, *, operation: str) -> BrokerApiError:
+        """Map SDK failures without confusing read failures with invalid orders.
+
+        Public sometimes wraps an upstream timeout/server failure in HTTP 400,
+        which the SDK calls ValidationError. Recognize that narrow envelope
+        before applying validation rules; do not make arbitrary 400s retryable.
+        This classification does not itself retry any broker operation.
+
+        Classification precedence (first matching rule wins):
+        1. Preserve errors already classified as BrokerApiError.
+        2. Handle SDK authentication, rate-limit and server-error subclasses.
+        3. Handle APIError authentication/throttling/transient status codes,
+           including the specific HTTP 400 wrapped upstream 408/5xx envelope.
+        4. Recognize unsupported notional-order shapes for order requests.
+        5. Handle SDK ValidationError and NotFoundError with operation context.
+        6. Handle remaining APIError 400/422/404 responses with operation
+           context, including plain APIError instances without SDK subclasses.
+        7. Apply message-based fallbacks, then return generic BrokerApiError.
+
+        The two APIError blocks are deliberately separated: transient failures
+        must win before validation, while terminal 400/422/404 fallbacks must
+        allow the specific order-shape and SDK-subclass rules to match first.
+        """
+        if isinstance(exc, BrokerApiError):
+            return exc
+
+        message = f"{operation}: {str(exc) or exc.__class__.__name__}"
+        order_request = operation in {"preflight_order", "submit_order", "cancel_order"}
+
+        def not_found() -> BrokerApiError:
+            if operation in {"get_order", "cancel_order", "get_instrument"}:
+                # get_instrument translates this into NotTradable at its boundary.
+                return OrderNotFoundYet(message)
+            return BrokerApiError(message)
+
         if isinstance(exc, AuthenticationError):
-            return AuthError(str(exc) or "unauthorized")
+            return AuthError(message)
         if isinstance(exc, RateLimitError):
-            return RateLimited(str(exc) or "rate limited")
+            return RateLimited(
+                message, retry_after_seconds=getattr(exc, "retry_after", None)
+            )
         if isinstance(exc, ServerError):
-            return TemporaryUnavailable(str(exc) or "temporary unavailable")
-        if isinstance(exc, ValidationError):
-            return InvalidOrder(str(exc) or "invalid order")
-        if isinstance(exc, NotFoundError):
-            # Used for get_order (eventual consistency) and some lookups.
-            return OrderNotFoundYet(str(exc) or "not found")
+            return TemporaryUnavailable(message)
 
         if isinstance(exc, APIError):
             code = exc.status_code
             if code in {401, 403}:
-                return AuthError(str(exc) or "unauthorized")
+                return AuthError(message)
             if code == 429:
-                return RateLimited(str(exc) or "rate limited")
-            if code is not None and 500 <= int(code) <= 599:
-                return TemporaryUnavailable(str(exc) or "temporary unavailable")
+                return RateLimited(message)
+            if code == 408 or (code is not None and 500 <= int(code) <= 599):
+                return TemporaryUnavailable(message)
             if code == 400:
-                return InvalidOrder(str(exc) or "invalid order")
-            if code == 422:
-                return OrderRejected(str(exc) or "order rejected")
-            if code == 404:
-                return OrderNotFoundYet(str(exc) or "not found")
+                # Include the SDK payload: some responses carry the upstream
+                # detail there rather than in the top-level message.
+                detail = f"{exc} {getattr(exc, 'response_data', None) or ''}"
+                if re.search(
+                    r"\bunable to read upstream response with status (?:408|5\d{2})\b",
+                    detail,
+                    re.IGNORECASE,
+                ):
+                    return TemporaryUnavailable(message)
+
+        if (
+            order_request
+            and PublicDotComTradingAPI._looks_like_unsupported_notional_order(exc)
+        ):
+            return UnsupportedOrderShape(message)
+        if isinstance(exc, ValidationError):
+            return InvalidOrder(message) if order_request else BrokerApiError(message)
+        if isinstance(exc, NotFoundError):
+            return not_found()
+
+        if isinstance(exc, APIError):
+            if exc.status_code == 400:
+                return (
+                    InvalidOrder(message) if order_request else BrokerApiError(message)
+                )
+            if exc.status_code == 422:
+                return (
+                    OrderRejected(message) if order_request else BrokerApiError(message)
+                )
+            if exc.status_code == 404:
+                return not_found()
 
         msg = str(exc).lower()
         if "rate limit" in msg or "too many" in msg:
-            return RateLimited(str(exc) or "rate limited")
+            return RateLimited(message)
         if "unauthorized" in msg or "forbidden" in msg:
-            return AuthError(str(exc) or "unauthorized")
-        if "not tradable" in msg:
-            return NotTradable(str(exc) or "not tradable")
+            return AuthError(message)
+        if order_request and "not tradable" in msg:
+            return NotTradable(message)
         if "not found" in msg or "404" in msg:
-            return OrderNotFoundYet(str(exc) or "not found")
+            return not_found()
 
-        return BrokerApiError(str(exc) or exc.__class__.__name__)
+        return BrokerApiError(message)
