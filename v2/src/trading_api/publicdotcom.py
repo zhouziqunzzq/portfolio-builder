@@ -562,6 +562,21 @@ class PublicDotComTradingAPI(BaseSyncTradingAPI):
         which the SDK calls ValidationError. Recognize that narrow envelope
         before applying validation rules; do not make arbitrary 400s retryable.
         This classification does not itself retry any broker operation.
+
+        Classification precedence (first matching rule wins):
+        1. Preserve errors already classified as BrokerApiError.
+        2. Handle SDK authentication, rate-limit and server-error subclasses.
+        3. Handle APIError authentication/throttling/transient status codes,
+           including the specific HTTP 400 wrapped upstream 408/5xx envelope.
+        4. Recognize unsupported notional-order shapes for order requests.
+        5. Handle SDK ValidationError and NotFoundError with operation context.
+        6. Handle remaining APIError 400/422/404 responses with operation
+           context, including plain APIError instances without SDK subclasses.
+        7. Apply message-based fallbacks, then return generic BrokerApiError.
+
+        The two APIError blocks are deliberately separated: transient failures
+        must win before validation, while terminal 400/422/404 fallbacks must
+        allow the specific order-shape and SDK-subclass rules to match first.
         """
         if isinstance(exc, BrokerApiError):
             return exc
